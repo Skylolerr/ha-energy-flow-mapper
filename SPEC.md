@@ -132,6 +132,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 {
   "domain": "energy_flow_mapper",
   "name": "Energy Flow Mapper",
+  "after_dependencies": ["recorder"],
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
   "single_config_entry": true,
@@ -145,7 +146,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 }
 ```
 
-`recorder` kommt über `energy` mit.
+`recorder` steht in `after_dependencies`, weil die externen Statistiken aus dem Recorder gelesen werden; geladen wird er ohnehin über `energy`.
 
 ### hacs.json
 
