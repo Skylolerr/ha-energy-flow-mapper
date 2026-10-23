@@ -10,7 +10,6 @@ permissions:
 
 # The hacs/action job (category: integration, no ignores) is added in phase 3,
 # once the repo is public and has brand icons, a description and topics.
-# The panel job (build + committed bundle check) is added in phase 2.
 
 jobs:
   hassfest:
@@ -38,3 +37,34 @@ jobs:
         run: ruff format --check .
       - name: mypy
         run: mypy custom_components/energy_flow_mapper
+
+  panel:
+    name: Panel
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: panel
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: panel/.nvmrc
+          cache: npm
+          cache-dependency-path: panel/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Test
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Committed bundle matches the source
+        run: |
+          bundle=../custom_components/energy_flow_mapper/frontend
+          if [ -n "$(git status --porcelain -- "$bundle")" ]; then
+            git status --porcelain -- "$bundle"
+            git diff -- "$bundle" | head -50
+            echo "::error::The committed panel bundle is outdated. Run 'npm run build' in panel/ and commit the result."
+            exit 1
+          fi
