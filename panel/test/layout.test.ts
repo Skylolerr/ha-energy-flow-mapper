@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { buildTree, sourceRows } from "../src/draft";
 import {
   arrowHead,
+  arrowSize,
+  dashPattern,
   BOX_H,
   BOX_W,
   edgePath,
@@ -147,5 +149,30 @@ describe("arrowHead", () => {
     const bottom = { id: "b", kind: "device" as const, x: 200, y: 200, w: 100, h: 60 };
     expect(arrowHead(top, bottom)).toBe("244,191.6 256,191.6 250,200");
     expect(arrowHead(bottom, top)).toBe("44,68.4 56,68.4 50,60");
+  });
+});
+
+describe("arrow sizes", () => {
+  it("grow with the line and stay wider than it", () => {
+    expect(arrowSize(2)).toEqual({ half: 5, length: 6.5 });
+    const thick = arrowSize(8);
+    expect(thick.half).toBeCloseTo(9.7);
+    expect(thick.half * 2).toBeGreaterThan(8 * 2);
+    expect(thick.length).toBeCloseTo(12.61);
+  });
+
+  it("stops the line before the target", () => {
+    const top = { id: "a", kind: "home" as const, x: 0, y: 0, w: 100, h: 60 };
+    const bottom = { id: "b", kind: "device" as const, x: 200, y: 200, w: 100, h: 60 };
+    expect(edgePath(top, bottom, 10)).toBe("M 50 60 C 50 125, 250 125, 250 190");
+    expect(edgePath(bottom, top, 10)).toBe("M 250 200 C 250 135, 50 135, 50 70");
+    expect(arrowHead(top, bottom, 5, 6.5)).toBe("245,193.5 255,193.5 250,200");
+  });
+});
+
+describe("dashPattern", () => {
+  it("keeps thin dashes and lengthens thick ones", () => {
+    expect(dashPattern(2)).toBe("4 4");
+    expect(dashPattern(8)).toBe("16 10");
   });
 });

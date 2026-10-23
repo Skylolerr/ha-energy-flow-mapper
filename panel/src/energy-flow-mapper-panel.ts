@@ -15,7 +15,9 @@ import {
 import { icon } from "./icons";
 import {
   arrowHead,
+  arrowSize,
   type Block,
+  dashPattern,
   type Edge,
   edgePath,
   HOME_ID,
@@ -927,16 +929,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     const color = this._edgeColor(edge, blocks);
     const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null);
+    const width = strokeWidth(edge.power, maxPower);
+    const head = arrowSize(width);
+    // The line ends just inside the base of the arrowhead (flat end), so it
+    // neither pokes out of the tip nor leaves a gap.
     return svg`<g class="edge edge-${edge.kind}" data-from=${edge.from} data-to=${edge.to}>
       <path
-        d=${edgePath(from, to)}
+        d=${edgePath(from, to, head.length - 1)}
         fill="none"
         stroke=${color}
-        stroke-width=${strokeWidth(edge.power, maxPower)}
-        stroke-dasharray=${dashed ? "4 4" : "none"}
-        stroke-linecap="round"
+        stroke-width=${width}
+        stroke-dasharray=${dashed ? dashPattern(width) : "none"}
+        stroke-linecap="butt"
       ></path>
-      <polygon points=${arrowHead(from, to)} fill=${color}></polygon>
+      <polygon points=${arrowHead(from, to, head.half, head.length)} fill=${color}></polygon>
     </g>`;
   }
 

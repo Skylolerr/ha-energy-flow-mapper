@@ -206,22 +206,36 @@ export function strokeWidth(power: number | null, maxPower: number): number {
 /**
  * A smooth connector between facing edges of two blocks: bottom to top when
  * it points down, top to bottom when it points up (Home to grid export).
+ * `inset` stops the line before the target, where the arrowhead begins.
  */
-export function edgePath(from: Block, to: Block): string {
+export function edgePath(from: Block, to: Block, inset = 0): string {
   const down = from.y <= to.y;
   const x1 = from.x + from.w / 2;
   const y1 = down ? from.y + from.h : from.y;
   const x2 = to.x + to.w / 2;
-  const y2 = down ? to.y : to.y + to.h;
+  const y2 = down ? to.y - inset : to.y + to.h + inset;
   const mid = (y1 + y2) / 2;
   return `M ${x1} ${y1} C ${x1} ${mid}, ${x2} ${mid}, ${x2} ${y2}`;
 }
 
+/** Arrowhead size for a line width: always clearly wider than the line. */
+export function arrowSize(lineWidth: number): { half: number; length: number } {
+  const half = Math.max(5, lineWidth * 0.9 + 2.5);
+  return { half, length: half * 1.3 };
+}
+
 /** Arrowhead triangle at the end of an edge (points down, or up for export). */
-export function arrowHead(from: Block, to: Block, size = 6): string {
+export function arrowHead(from: Block, to: Block, half = 6, length = half * 1.4): string {
   const down = from.y <= to.y;
   const x = to.x + to.w / 2;
   const y = down ? to.y : to.y + to.h;
-  const back = down ? y - size * 1.4 : y + size * 1.4;
-  return `${x - size},${back} ${x + size},${back} ${x},${y}`;
+  const back = down ? y - length : y + length;
+  return `${x - half},${back} ${x + half},${back} ${x},${y}`;
+}
+
+/** Dashes that stay proportionate on thick lines. */
+export function dashPattern(lineWidth: number): string {
+  const dash = Math.max(4, lineWidth * 2);
+  const gap = Math.max(4, lineWidth * 1.25);
+  return `${dash} ${gap}`;
 }
