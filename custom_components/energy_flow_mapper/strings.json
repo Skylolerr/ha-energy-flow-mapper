@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Flow Mapper",
+        "description": "Adds an admin panel to view and edit the energy dashboard configuration as a tree. Your energy settings are not changed by the setup."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Energy Flow Mapper is already set up."
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Flow Mapper is not loaded."
+    },
+    "unsupported_energy_api": {
+      "message": "The energy settings of this Home Assistant release are not supported by Energy Flow Mapper."
+    },
+    "conflict": {
+      "message": "The energy settings were changed elsewhere in the meantime. Reload and try again."
+    },
+    "invalid_changes": {
+      "message": "The changes cannot be saved: {issues}."
+    },
+    "device_exists": {
+      "message": "{stat} is already in the energy dashboard."
+    },
+    "unknown_device": {
+      "message": "{stat} is not a device in the energy dashboard."
+    },
+    "unknown_change": {
+      "message": "Unknown change for {stat}."
+    },
+    "backup_not_found": {
+      "message": "No backup found with ID {backup_id}."
+    },
+    "rejected_by_home_assistant": {
+      "message": "Home Assistant rejected the energy settings: {error}"
+    }
+  },
+  "issues": {
+    "unsupported_energy_api": {
+      "title": "Energy Flow Mapper does not support this Home Assistant release",
+      "description": "The energy settings of this Home Assistant release do not match what Energy Flow Mapper expects. To protect your settings, the editor is disabled. Update Energy Flow Mapper, or report the problem if no update is available."
+    }
+  }
+}

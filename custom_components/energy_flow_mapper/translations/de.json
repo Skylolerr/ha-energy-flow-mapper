@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Flow Mapper",
+        "description": "Fügt ein Admin-Panel hinzu, um die Konfiguration des Energie-Dashboards als Baum anzuzeigen und zu bearbeiten. Die Einrichtung ändert deine Energie-Einstellungen nicht."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Energy Flow Mapper ist bereits eingerichtet."
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Flow Mapper ist nicht geladen."
+    },
+    "unsupported_energy_api": {
+      "message": "Die Energie-Einstellungen dieser Home-Assistant-Version werden von Energy Flow Mapper nicht unterstützt."
+    },
+    "conflict": {
+      "message": "Die Energie-Einstellungen wurden in der Zwischenzeit an anderer Stelle geändert. Lade neu und versuche es noch einmal."
+    },
+    "invalid_changes": {
+      "message": "Die Änderungen können nicht gespeichert werden: {issues}."
+    },
+    "device_exists": {
+      "message": "{stat} ist bereits im Energie-Dashboard."
+    },
+    "unknown_device": {
+      "message": "{stat} ist kein Gerät im Energie-Dashboard."
+    },
+    "unknown_change": {
+      "message": "Unbekannte Änderung für {stat}."
+    },
+    "backup_not_found": {
+      "message": "Keine Sicherung mit der ID {backup_id} gefunden."
+    },
+    "rejected_by_home_assistant": {
+      "message": "Home Assistant hat die Energie-Einstellungen abgelehnt: {error}"
+    }
+  },
+  "issues": {
+    "unsupported_energy_api": {
+      "title": "Energy Flow Mapper unterstützt diese Home-Assistant-Version nicht",
+      "description": "Die Energie-Einstellungen dieser Home-Assistant-Version passen nicht zu dem, was Energy Flow Mapper erwartet. Zum Schutz deiner Einstellungen ist der Editor deaktiviert. Aktualisiere Energy Flow Mapper oder melde das Problem, falls kein Update verfügbar ist."
+    }
+  }
+}
