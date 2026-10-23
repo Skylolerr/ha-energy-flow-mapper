@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, so changes of the energy API in new Home Assistant releases show up early.
+    - cron: "0 5 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (${{ matrix.home-assistant }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # minimum: the pinned versions in requirements_test.txt
+        # latest: the newest Home Assistant release
+        home-assistant: [minimum, latest]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      - name: Install dependencies
+        run: pip install -r requirements_test.txt
+      - name: Upgrade to the latest Home Assistant
+        if: matrix.home-assistant == 'latest'
+        run: pip install --upgrade pytest-homeassistant-custom-component
+      - name: Show Home Assistant version
+        run: python -c "from homeassistant.const import __version__; print(__version__)"
+      - name: Run tests with coverage
+        run: pytest --cov-report=xml
