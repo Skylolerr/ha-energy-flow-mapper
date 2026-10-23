@@ -68,9 +68,12 @@ pytest
 ruff check . && ruff format --check .
 mypy custom_components/energy_flow_mapper
 
-# Deploy to your own HA instance (values from .env, see .env.example)
-scripts/deploy.sh
+# Deploy to the maintainer's HA instance (values from .env, see .env.example)
+scripts/deploy.sh --no-restart
 ```
+
+**Never restart or reload the maintainer's Home Assistant.** Deploy only copies the
+files; the maintainer always restarts Home Assistant themselves.
 
 On the maintainer's Windows machine HA cannot be imported natively. The venv contains
 local-only stubs (`fcntl.py`, `resource.py`, `win_ha_test_shim.py` in
