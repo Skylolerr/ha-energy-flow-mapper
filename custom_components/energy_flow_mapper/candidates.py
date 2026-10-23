@@ -1,9 +1,11 @@
-"""Describe statistics and find energy sensors that are not used yet."""
+"""Describe statistics and find sensors and statistics that are not used yet."""
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from typing import Any
 
+from homeassistant.components.recorder.statistics import async_list_statistic_ids
 from homeassistant.components.sensor import (
     ATTR_STATE_CLASS,
     SensorDeviceClass,
@@ -14,6 +16,7 @@ from homeassistant.const import (
     ATTR_FRIENDLY_NAME,
     ATTR_UNIT_OF_MEASUREMENT,
     UnitOfEnergy,
+    UnitOfPower,
 )
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers import area_registry as ar
@@ -24,7 +27,9 @@ from homeassistant.helpers import floor_registry as fr
 from .hierarchy import KEY_DEVICES, STAT, Prefs, used_stats
 
 ENERGY_UNITS = frozenset(unit.value for unit in UnitOfEnergy)
+POWER_UNITS = frozenset(unit.value for unit in UnitOfPower)
 METER_STATE_CLASSES = (SensorStateClass.TOTAL, SensorStateClass.TOTAL_INCREASING)
+INTEGRATION_DOMAIN = "integration"
 
 
 def _device_class(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -38,10 +43,15 @@ def _device_class(hass: HomeAssistant, entity_id: str) -> str | None:
 
 
 @callback
-def async_stat_info(hass: HomeAssistant, stat: str) -> dict[str, Any]:
+def async_stat_info(
+    hass: HomeAssistant,
+    stat: str,
+    external: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Return name, unit, device, area and floor of a statistic.
 
-    Statistics that are not entities (external statistics) only get their ID.
+    Statistics that are not entities (external statistics) get name and unit
+    from the recorder metadata in `external`, if known.
     """
     info: dict[str, Any] = {
         "stat": stat,
@@ -57,6 +67,11 @@ def async_stat_info(hass: HomeAssistant, stat: str) -> dict[str, Any]:
         "floor_name": None,
     }
     if not valid_entity_id(stat):
+        meta = (external or {}).get(stat)
+        if meta is not None:
+            info["name"] = meta.get("name")
+            info["unit"] = meta.get("statistics_unit_of_measurement")
+            info["device_class"] = SensorDeviceClass.ENERGY.value
         return info
 
     state = hass.states.get(stat)
@@ -92,9 +107,16 @@ def async_stat_info(hass: HomeAssistant, stat: str) -> dict[str, Any]:
 
 
 @callback
-def async_stats_info(hass: HomeAssistant, prefs: Prefs) -> dict[str, dict[str, Any]]:
+def async_stats_info(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    external: Mapping[str, Mapping[str, Any]] | None = None,
+) -> dict[str, dict[str, Any]]:
     """Describe every statistic referenced in the preferences."""
-    return {stat: async_stat_info(hass, stat) for stat in sorted(used_stats(prefs))}
+    return {
+        stat: async_stat_info(hass, stat, external)
+        for stat in sorted(used_stats(prefs))
+    }
 
 
 @callback
@@ -155,6 +177,10 @@ def async_candidates(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, Any]]:
         info = async_stat_info(hass, state.entity_id)
         info["power"] = _power_sensor(hass, info["device_id"])
         candidates.append(info)
+    return _sorted(candidates)
+
+
+def _sorted(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         candidates,
         key=lambda c: (
@@ -162,3 +188,101 @@ def async_candidates(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, Any]]:
             (c["name"] or c["stat"]).casefold(),
         ),
     )
+
+
+async def async_external_statistics(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+    """Return external statistics with a sum in an energy unit, by ID.
+
+    External statistics (e.g. from energy supplier portals) belong to no
+    entity; their ID contains a colon. Without a recorder there are none.
+    """
+    if "recorder" not in hass.config.components:
+        return {}
+    statistics = await async_list_statistic_ids(hass, statistic_type="sum")
+    return {
+        meta["statistic_id"]: meta
+        for meta in statistics
+        if not valid_entity_id(meta["statistic_id"])
+        and meta.get("statistics_unit_of_measurement") in ENERGY_UNITS
+    }
+
+
+@callback
+def async_external_candidates(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    external: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return external energy statistics that are not used yet."""
+    used = used_stats(prefs)
+    return _sorted(
+        [
+            async_stat_info(hass, stat, external) | {"power": None, "external": True}
+            for stat in external
+            if stat not in used
+        ]
+    )
+
+
+@callback
+def async_integral_sources(hass: HomeAssistant) -> set[str]:
+    """Return the sensors that already feed an integral helper."""
+    return {
+        str(entry.options.get("source"))
+        for entry in hass.config_entries.async_entries(INTEGRATION_DOMAIN)
+        if entry.options.get("source")
+    }
+
+
+def _has_meter(hass: HomeAssistant, device_id: str | None) -> bool:
+    """Return True if a device already has an energy meter."""
+    if device_id is None:
+        return False
+    for entry in er.async_entries_for_device(er.async_get(hass), device_id):
+        state = hass.states.get(entry.entity_id)
+        if (
+            state is not None
+            and state.attributes.get(ATTR_DEVICE_CLASS) == SensorDeviceClass.ENERGY
+            and state.attributes.get(ATTR_STATE_CLASS) in METER_STATE_CLASSES
+        ):
+            return True
+    return False
+
+
+@callback
+def async_power_candidates(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, Any]]:
+    """Return power sensors that have no energy meter yet.
+
+    Left out: sensors used anywhere in the preferences, sensors of a device
+    that has an energy meter, and sensors that already feed an integral helper.
+    """
+    used = used_stats(prefs) | async_integral_sources(hass)
+    registry = er.async_get(hass)
+    candidates = []
+    for state in hass.states.async_all("sensor"):
+        if (
+            state.entity_id in used
+            or state.attributes.get(ATTR_DEVICE_CLASS) != SensorDeviceClass.POWER
+            or state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) not in POWER_UNITS
+        ):
+            continue
+        entry = registry.async_get(state.entity_id)
+        if _has_meter(hass, entry.device_id if entry else None):
+            continue
+        candidates.append(async_stat_info(hass, state.entity_id))
+    return _sorted(candidates)
+
+
+@callback
+def async_mark_created(
+    hass: HomeAssistant,
+    infos: Collection[dict[str, Any]],
+    created_entries: Collection[str],
+) -> None:
+    """Flag statistics whose entity belongs to a helper created by the panel."""
+    registry = er.async_get(hass)
+    for info in infos:
+        entry = registry.async_get(info["entity_id"]) if info["entity_id"] else None
+        info["created_helper"] = (
+            entry is not None and entry.config_entry_id in created_entries
+        )

@@ -189,6 +189,34 @@ async def sensors(hass: HomeAssistant) -> None:
     _meter(hass, "sensor.energy_today", state_class="measurement")
     _meter(hass, "sensor.water_meter", device_class="water", unit="m³")
 
+    # Power-only sensors: the UPS has no meter; the PoE port already feeds an
+    # integral helper.
+    ups = devices.async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={("test", "ups")},
+        name="UPS",
+    )
+    _meter(
+        hass,
+        "sensor.ups_power",
+        device_class="power",
+        unit="W",
+        state_class="measurement",
+        device_id=ups.id,
+        name="UPS power",
+        state="42",
+    )
+    _meter(
+        hass,
+        "sensor.poe_power",
+        device_class="power",
+        unit="W",
+        state_class="measurement",
+    )
+    MockConfigEntry(
+        domain="integration", title="PoE energy", options={"source": "sensor.poe_power"}
+    ).add_to_hass(hass)
+
 
 @pytest.fixture
 def config_entry() -> MockConfigEntry:

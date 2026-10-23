@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from homeassistant.config_entries import ConfigEntry
 
 from .backups import BackupStore
+from .created_helpers import CreatedHelpers
 
 
 @dataclass
@@ -19,6 +20,7 @@ class EnergyFlowMapperData:
     """
 
     backups: BackupStore
+    helpers: CreatedHelpers
     supported: bool
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 

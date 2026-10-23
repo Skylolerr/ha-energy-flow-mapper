@@ -6,10 +6,12 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.data_entry_flow import FlowResultType
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.energy_flow_mapper import energy_access
+from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
 
 from .conftest import ENERGY_PREFS
@@ -405,3 +407,184 @@ async def test_unsupported(
     loaded_entry.runtime_data.supported = False
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
     assert response["error"]["translation_key"] == "unsupported_energy_api"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_lists_power_candidates(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The snapshot lists power-only sensors; nothing is a created helper."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    assert [c["stat"] for c in result["power_candidates"]] == ["sensor.ups_power"]
+    assert all(c["created_helper"] is False for c in result["candidates"])
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_save_sources(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Sources are assigned and removed; grid prices stay."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[
+            {"type": "assign_source", "role": "import", "stat": "sensor.attic_energy"},
+            {"type": "unassign_source", "stat": "sensor.solar_energy"},
+            {
+                "type": "assign_source",
+                "role": "battery",
+                "stat": "sensor.printer_energy",
+                "stat_to": "sensor.grid_import",
+            },
+        ],
+    )
+    assert response["success"], response
+    sources = (await energy_access.async_get_prefs(hass))["energy_sources"]
+    grid = sources[0]
+    assert grid["stat_energy_from"] == "sensor.attic_energy"
+    assert grid["number_energy_price"] == 0.3
+    assert grid["number_energy_price_export"] == 0.08
+    assert [s["type"] for s in sources] == ["grid", "battery", "battery"]
+    assert sources[2]["stat_energy_to"] == "sensor.grid_import"
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/backups")
+    (backup,) = response["result"]["backups"]
+    assert backup["summary"] == {"source_added": 3, "source_removed": 2}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_sensor_cannot_be_source_twice(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A statistic used by two sources is refused."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[
+            {
+                "type": "assign_source",
+                "role": "production",
+                "stat": "sensor.grid_export",
+            },
+        ],
+    )
+    assert response["error"]["translation_key"] == "invalid_changes"
+    issues = response["error"]["translation_placeholders"]["issues"]
+    assert "duplicate_source" in issues
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_unassign_unknown_source(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Removing a statistic that is no source fails."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[{"type": "unassign_source", "stat": "sensor.nope"}],
+    )
+    assert response["error"]["translation_key"] == "unknown_source"
+
+
+async def test_create_integral(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A real integral helper is created and remembered."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.ups_power",
+        name=" UPS energy ",
+    )
+    assert response["success"], response
+    entity_id = response["result"]["entity_id"]
+    assert response["result"]["stat_rate"] == "sensor.ups_power"
+    entries = hass.config_entries.async_entries("integration")
+    helper = next(e for e in entries if e.options.get("source") == "sensor.ups_power")
+    assert helper.title == "UPS energy"
+    assert helper.options["method"] == "left"
+    assert helper.options["unit_prefix"] == "k"
+    assert loaded_entry.runtime_data.helpers.entries() == [helper.entry_id]
+    await hass.async_block_till_done()
+    assert hass.states.get(entity_id) is not None
+
+    # The power sensor is no longer offered; the new meter is labelled.
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    assert result["power_candidates"] == []
+    created = [c for c in result["candidates"] if c["stat"] == entity_id]
+    assert all(c["created_helper"] for c in created)
+
+
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "power", ["sensor.poe_power", "sensor.printer_power", "sensor.nope"]
+)
+async def test_create_integral_refuses_other_sensors(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, power: str
+) -> None:
+    """Integrated, metered and unknown sensors are refused."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id=power,
+        name="x",
+    )
+    assert response["error"]["translation_key"] == "not_a_power_candidate"
+    assert response["error"]["translation_placeholders"] == {"entity_id": power}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_create_integral_flow_failure(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A flow that does not create an entry is reported."""
+
+    async def no_entry(flow_id: str, user_input: Any) -> dict[str, Any]:
+        return {"type": FlowResultType.FORM}
+
+    monkeypatch.setattr(hass.config_entries.flow, "async_configure", no_entry)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.ups_power",
+        name="",
+    )
+    assert response["error"]["translation_key"] == "integral_failed"
+
+
+async def test_create_integral_without_entity(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An entry without entity is reported and not remembered."""
+    monkeypatch.setattr(
+        integral_module.er,
+        "async_entries_for_config_entry",
+        lambda registry, entry_id: [],
+    )
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.ups_power",
+        name="x",
+    )
+    assert response["error"]["translation_key"] == "integral_failed"
+    assert loaded_entry.runtime_data.helpers.entries() == []

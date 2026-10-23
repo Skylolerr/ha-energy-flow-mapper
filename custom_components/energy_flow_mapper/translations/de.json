@@ -37,6 +37,15 @@
     },
     "rejected_by_home_assistant": {
       "message": "Home Assistant hat die Energie-Einstellungen abgelehnt: {error}"
+    },
+    "unknown_source": {
+      "message": "{stat} ist keine Quelle im Energie-Dashboard."
+    },
+    "not_a_power_candidate": {
+      "message": "{entity_id} ist kein Leistungssensor ohne Energiezähler."
+    },
+    "integral_failed": {
+      "message": "Der Helfer für den Energiezähler konnte nicht angelegt werden."
     }
   },
   "issues": {

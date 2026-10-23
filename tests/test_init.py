@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper.const import (
     DOMAIN,
+    HELPERS_STORAGE_KEY,
     ISSUE_UNSUPPORTED_ENERGY_API,
     STORAGE_KEY,
 )
@@ -29,7 +30,9 @@ async def test_setup_unload_and_remove(
     assert loaded_entry.runtime_data.backups.entries() == []
 
     await loaded_entry.runtime_data.backups.async_add({}, None, None, {})
+    await loaded_entry.runtime_data.helpers.async_add("helper")
     assert STORAGE_KEY in hass_storage
+    assert HELPERS_STORAGE_KEY in hass_storage
 
     assert await hass.config_entries.async_unload(loaded_entry.entry_id)
     assert loaded_entry.state is ConfigEntryState.NOT_LOADED
@@ -37,6 +40,7 @@ async def test_setup_unload_and_remove(
     await hass.config_entries.async_remove(loaded_entry.entry_id)
     await hass.async_block_till_done()
     assert STORAGE_KEY not in hass_storage
+    assert HELPERS_STORAGE_KEY not in hass_storage
     assert "energy" in hass_storage
 
 

@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper.candidates import (
     ENERGY_UNITS,
     async_candidates,
+    async_external_candidates,
+    async_external_statistics,
+    async_integral_sources,
+    async_mark_created,
+    async_power_candidates,
     async_stat_info,
     async_stat_units,
     async_stats_info,
@@ -140,3 +148,107 @@ async def test_candidates_exclude_sources_and_devices(hass: HomeAssistant) -> No
     assert "sensor.energy_today" not in stats
     assert "sensor.water_meter" not in stats
     assert "sensor.main_power" not in stats
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_power_candidates(hass: HomeAssistant) -> None:
+    """Power sensors without meter, not used and not integrated yet."""
+    candidates = async_power_candidates(hass, ENERGY_PREFS)
+    assert [c["stat"] for c in candidates] == ["sensor.ups_power"]
+    assert candidates[0]["name"] == "UPS power"
+    assert candidates[0]["device_name"] == "UPS"
+    assert async_integral_sources(hass) == {"sensor.poe_power"}
+
+    # A power sensor that belongs to no device is offered too.
+    hass.states.async_set(
+        "sensor.loose_power",
+        "5",
+        {"device_class": "power", "unit_of_measurement": "kW"},
+    )
+    stats = [c["stat"] for c in async_power_candidates(hass, ENERGY_PREFS)]
+    assert stats == ["sensor.loose_power", "sensor.ups_power"]
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_power_candidate_used_as_rate(hass: HomeAssistant) -> None:
+    """A power sensor already used as stat_rate is not offered."""
+    prefs = deepcopy(ENERGY_PREFS)
+    prefs["device_consumption"].append(
+        {"stat_consumption": "sensor.x", "stat_rate": "sensor.ups_power"}
+    )
+    assert async_power_candidates(hass, prefs) == []
+
+
+EXTERNAL = [
+    {
+        "statistic_id": "portal:import",
+        "name": "Portal import",
+        "statistics_unit_of_measurement": "kWh",
+    },
+    {
+        "statistic_id": "portal:gas",
+        "name": "Portal gas",
+        "statistics_unit_of_measurement": "m³",
+    },
+    {
+        "statistic_id": "sensor.main_energy",
+        "name": None,
+        "statistics_unit_of_measurement": "kWh",
+    },
+    {
+        "statistic_id": "portal:used",
+        "name": None,
+        "statistics_unit_of_measurement": "Wh",
+    },
+]
+
+
+async def test_external_statistics(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """External energy statistics come from the recorder, if it is loaded."""
+    assert await async_external_statistics(hass) == {}
+
+    async def fake_list(hass: HomeAssistant, **kwargs: Any) -> list[dict[str, Any]]:
+        assert kwargs == {"statistic_type": "sum"}
+        return EXTERNAL
+
+    monkeypatch.setattr(candidates_module, "async_list_statistic_ids", fake_list)
+    hass.config.components.add("recorder")
+    external = await async_external_statistics(hass)
+    assert list(external) == ["portal:import", "portal:used"]
+
+    prefs = deepcopy(ENERGY_PREFS)
+    prefs["device_consumption"].append({"stat_consumption": "portal:used"})
+    candidates = async_external_candidates(hass, prefs, external)
+    assert [c["stat"] for c in candidates] == ["portal:import"]
+    assert candidates[0]["name"] == "Portal import"
+    assert candidates[0]["unit"] == "kWh"
+    assert candidates[0]["external"] is True
+    assert candidates[0]["entity_id"] is None
+
+    info = async_stats_info(hass, prefs, external)
+    assert info["portal:used"]["unit"] == "Wh"
+    assert info["portal:used"]["device_class"] == "energy"
+
+
+async def test_mark_created(hass: HomeAssistant) -> None:
+    """Entities of helpers created by the panel are flagged."""
+    helper = MockConfigEntry(domain="integration", entry_id="helper")
+    helper.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "integration",
+        "ups_energy",
+        suggested_object_id="ups_energy",
+        config_entry=helper,
+    )
+    infos = [
+        async_stat_info(hass, "sensor.ups_energy"),
+        async_stat_info(hass, "portal:x"),
+        async_stat_info(hass, "sensor.unknown"),
+    ]
+    async_mark_created(hass, infos, ["helper"])
+    assert [i["created_helper"] for i in infos] == [True, False, False]
+    async_mark_created(hass, infos, [])
+    assert infos[0]["created_helper"] is False

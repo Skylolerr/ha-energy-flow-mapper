@@ -20,12 +20,18 @@ from . import energy_access
 from .candidates import (
     ENERGY_UNITS,
     async_candidates,
+    async_external_candidates,
+    async_external_statistics,
+    async_mark_created,
+    async_power_candidates,
     async_stat_units,
     async_stats_info,
 )
 from .const import DOMAIN
 from .hierarchy import (
     KEY_DEVICES,
+    KEY_SOURCES,
+    AssignRole,
     ChangeError,
     ChangeType,
     Prefs,
@@ -37,14 +43,17 @@ from .hierarchy import (
     summarize,
     validate,
 )
+from .integral import async_create_integral
 from .models import EnergyFlowMapperData
 
 ATTR_BASE_HASH = "base_hash"
 ATTR_CHANGES = "changes"
 ATTR_BACKUP_ID = "backup_id"
+ATTR_POWER_ENTITY_ID = "power_entity_id"
+ATTR_NAME = "name"
 
-# Keys the panel may change in this phase.
-EDITABLE_KEYS = (KEY_DEVICES,)
+# Keys the panel may change; water devices follow in phase 4.
+EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES)
 
 _OPTIONAL_TEXT = vol.Any(str, None)
 CHANGE_SCHEMA = cv.key_value_schemas(
@@ -79,6 +88,20 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("stat"): str,
             }
         ),
+        ChangeType.ASSIGN_SOURCE.value: vol.Schema(
+            {
+                vol.Required("type"): ChangeType.ASSIGN_SOURCE.value,
+                vol.Required("role"): vol.In([role.value for role in AssignRole]),
+                vol.Required("stat"): str,
+                vol.Optional("stat_to"): str,
+            }
+        ),
+        ChangeType.UNASSIGN_SOURCE.value: vol.Schema(
+            {
+                vol.Required("type"): ChangeType.UNASSIGN_SOURCE.value,
+                vol.Required("stat"): str,
+            }
+        ),
     },
 )
 
@@ -91,6 +114,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_save)
     async_register_command(hass, websocket_backups)
     async_register_command(hass, websocket_restore)
+    async_register_command(hass, websocket_create_integral)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -141,16 +165,28 @@ def _changed_keys(old: Prefs, new: Prefs) -> list[str]:
 async def websocket_get(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return the preferences with metadata, issues and unused energy sensors."""
-    _runtime(hass)
+    """Return the preferences with metadata, issues and unused sensors.
+
+    `candidates` are unused energy meters and external statistics,
+    `power_candidates` power sensors without an energy meter.
+    """
+    runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
+    external = await async_external_statistics(hass)
+    stats = async_stats_info(hass, prefs, external)
+    candidates = async_candidates(hass, prefs) + async_external_candidates(
+        hass, prefs, external
+    )
+    created = runtime.helpers.entries()
+    async_mark_created(hass, [*stats.values(), *candidates], created)
     connection.send_result(
         msg["id"],
         {
             "prefs": prefs,
             "hash": prefs_hash(prefs),
-            "stats": async_stats_info(hass, prefs),
-            "candidates": async_candidates(hass, prefs),
+            "stats": stats,
+            "candidates": candidates,
+            "power_candidates": async_power_candidates(hass, prefs),
             "issues": [issue.as_dict() for issue in _issues(hass, prefs)],
         },
     )
@@ -293,3 +329,32 @@ async def websocket_restore(
             connection, runtime, prefs, update, {"restored": 1}
         )
     connection.send_result(msg["id"], result)
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/create_integral",
+        vol.Required(ATTR_POWER_ENTITY_ID): str,
+        vol.Required(ATTR_NAME): str,
+    }
+)
+@require_admin
+@async_response
+async def websocket_create_integral(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Create an integral helper for a power sensor without energy meter.
+
+    The helper is created at once, not on save; the panel then adds its
+    energy sensor to the draft.
+    """
+    runtime = _runtime(hass)
+    power = msg[ATTR_POWER_ENTITY_ID]
+    prefs = await energy_access.async_get_prefs(hass)
+    if power not in {c["stat"] for c in async_power_candidates(hass, prefs)}:
+        raise _error("not_a_power_candidate", entity_id=power)
+    entry_id, entity_id = await async_create_integral(
+        hass, power, msg[ATTR_NAME].strip() or power
+    )
+    await runtime.helpers.async_add(entry_id)
+    connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": power})

@@ -10,6 +10,7 @@ from homeassistant.helpers.typing import ConfigType
 from . import energy_access
 from .backups import BackupStore
 from .const import DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API, LOGGER
+from .created_helpers import CreatedHelpers
 from .frontend import (
     async_register_panel,
     async_register_static_path,
@@ -51,7 +52,11 @@ async def async_setup_entry(
         )
     backups = BackupStore(hass)
     await backups.async_load()
-    entry.runtime_data = EnergyFlowMapperData(backups=backups, supported=supported)
+    helpers = CreatedHelpers(hass)
+    await helpers.async_load()
+    entry.runtime_data = EnergyFlowMapperData(
+        backups=backups, helpers=helpers, supported=supported
+    )
     await async_register_panel(hass)
     return True
 
@@ -67,6 +72,7 @@ async def async_unload_entry(
 async def async_remove_entry(
     hass: HomeAssistant, entry: EnergyFlowMapperConfigEntry
 ) -> None:
-    """Delete the backups; the energy preferences stay untouched."""
+    """Delete the stores; energy preferences and created helpers stay."""
     await BackupStore(hass).async_remove()
+    await CreatedHelpers(hass).async_remove()
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API)
