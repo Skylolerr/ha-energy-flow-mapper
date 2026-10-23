@@ -1,0 +1,14 @@
+{
+  "domain": "energy_flow_mapper",
+  "name": "Energy Flow Mapper",
+  "codeowners": ["@Skylolerr"],
+  "config_flow": true,
+  "dependencies": ["energy"],
+  "documentation": "https://github.com/Skylolerr/ha-energy-flow-mapper",
+  "integration_type": "service",
+  "iot_class": "calculated",
+  "issue_tracker": "https://github.com/Skylolerr/ha-energy-flow-mapper/issues",
+  "requirements": [],
+  "single_config_entry": true,
+  "version": "0.1.0"
+}

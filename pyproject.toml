@@ -1,0 +1,48 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+addopts = "--cov=custom_components.energy_flow_mapper --cov-report=term-missing --cov-fail-under=90"
+
+[tool.coverage.run]
+branch = true
+source = ["custom_components.energy_flow_mapper"]
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "A", "ASYNC", "B", "BLE", "C4", "D", "DTZ", "E", "F", "FBT", "G", "I", "ICN",
+    "INP", "ISC", "LOG", "N", "PERF", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE",
+    "RUF", "S", "SIM", "SLF", "T20", "TC", "TID", "TRY", "UP", "W",
+]
+ignore = [
+    "D202",    # blank line after function docstring
+    "D203",    # incompatible with D211
+    "D213",    # incompatible with D212
+    "PLR2004", # magic values
+    "TC001",   # runtime imports used only in annotations are fine
+    "TC002",
+    "TC003",
+    "TRY003",  # long messages in exceptions
+]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/**" = ["INP001"]
+"tests/**" = ["S101", "SLF001", "PLR0913", "PLR0917", "FBT001", "D103", "INP001"]
+
+[tool.ruff.lint.pydocstyle]
+convention = "pep257"
+
+[tool.mypy]
+python_version = "3.14"
+strict = true
+warn_unreachable = true
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_untyped_calls = false
