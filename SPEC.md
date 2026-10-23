@@ -134,6 +134,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "domain": "energy_flow_mapper",
   "name": "Energy Flow Mapper",
   "after_dependencies": ["recorder"],
+  "categories": ["energy"],
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
   "single_config_entry": true,

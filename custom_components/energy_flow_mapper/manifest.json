@@ -2,6 +2,7 @@
   "domain": "energy_flow_mapper",
   "name": "Energy Flow Mapper",
   "after_dependencies": ["recorder"],
+  "categories": ["energy"],
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
   "dependencies": ["energy", "frontend", "http", "panel_custom"],
