@@ -1,7 +1,8 @@
 """Render the brand icon of Energy Flow Mapper.
 
-An orange app tile with white Sankey ribbons: one source splits into three
-flows of different width, like the panel's diagram. The tile works on light
+A blue app tile in Home Assistant colours with white Sankey ribbons: one
+orange source splits into three flows of different width, like the panel's
+diagram. The tile works on light
 and dark backgrounds, so there is no separate dark icon. Run with the dev
 venv (needs Pillow and NumPy):
 
@@ -20,14 +21,15 @@ BRAND = (
 )
 S = 2048  # supersampled canvas, scaled down at the end
 
-TILE_FROM, TILE_TO = (255, 145, 0), (232, 62, 48)  # warm energy gradient
+TILE_FROM, TILE_TO = (0, 188, 212), (13, 71, 161)  # Home Assistant blues
 TILE_RADIUS = 0.225  # relative to the size, like an app icon
+SOURCE_COLOR = (255, 183, 77)  # energy orange
 
 SOURCE = (0.355, 0.2, 0.645, 0.285)  # source pill: x0, y0, x1, y1
 TARGET_Y = (0.715, 0.8)
 TARGET_CENTERS = (0.235, 0.5, 0.765)
 SHARES = (0.5, 0.3, 0.2)  # how much each flow takes
-ALPHAS = (255, 222, 190)  # bigger flows are brighter
+ALPHAS = (255, 225, 195)  # bigger flows are brighter
 GAP = 0.022  # space between the flows
 SEPARATION = 0.03  # space between the flows and the pills
 TARGET_EXTRA = 0.06  # target pills are a bit wider than their flow
@@ -94,14 +96,19 @@ def render() -> Image.Image:
             fill=alpha,
         )
         left += width + GAP
-    draw.rounded_rectangle(
+    white = Image.new("RGBA", (S, S), (255, 255, 255, 0))
+    white.putalpha(marks)
+    image.alpha_composite(white)
+
+    source = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(source).rounded_rectangle(
         [round(x0 * S), round(y0 * S), round(x1 * S), round(y1 * S)],
         radius=round((y1 - y0) / 2 * S),
         fill=255,
     )
-    white = Image.new("RGBA", (S, S), (255, 255, 255, 0))
-    white.putalpha(marks)
-    image.alpha_composite(white)
+    orange = Image.new("RGBA", (S, S), (*SOURCE_COLOR, 0))
+    orange.putalpha(source)
+    image.alpha_composite(orange)
     return image
 
 
