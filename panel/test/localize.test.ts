@@ -23,6 +23,8 @@ describe("localize", () => {
     expect(localize(hass("de-CH"), "home")).toBe("Zuhause");
     expect(localize(hass("en"), "home")).toBe("Home");
     expect(localize(hass("xx"), "home")).toBe("Home");
+    expect(localize(hass("fr-CH"), "home")).toBe("Maison");
+    expect(localize(hass("it"), "home")).toBe("Casa");
   });
 
   it("falls back to the page language", () => {

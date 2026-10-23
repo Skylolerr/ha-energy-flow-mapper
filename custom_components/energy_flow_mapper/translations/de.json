@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Energy Flow Mapper",
-        "description": "Fügt ein Admin-Panel hinzu, um die Konfiguration des Energie-Dashboards als Baum anzuzeigen und zu bearbeiten. Die Einrichtung ändert deine Energie-Einstellungen nicht."
+        "description": "Fügt ein Admin-Panel hinzu, um die Konfiguration des Energie-Dashboards als Diagramm anzuzeigen und zu bearbeiten. Die Einrichtung ändert deine Energie-Einstellungen nicht."
       }
     },
     "abort": {

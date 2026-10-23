@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Flow Mapper",
+        "description": "Aggiunge un pannello di amministrazione per visualizzare e modificare la configurazione della dashboard energia come diagramma. La configurazione non modifica le tue impostazioni energetiche."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Energy Flow Mapper è già configurato."
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Flow Mapper non è caricato."
+    },
+    "unsupported_energy_api": {
+      "message": "Le impostazioni energetiche di questa versione di Home Assistant non sono supportate da Energy Flow Mapper."
+    },
+    "conflict": {
+      "message": "Le impostazioni energetiche sono state modificate altrove nel frattempo. Ricarica e riprova."
+    },
+    "invalid_changes": {
+      "message": "Le modifiche non possono essere salvate: {issues}."
+    },
+    "device_exists": {
+      "message": "{stat} è già nella dashboard energia."
+    },
+    "unknown_device": {
+      "message": "{stat} non è un dispositivo della dashboard energia."
+    },
+    "unknown_change": {
+      "message": "Modifica sconosciuta per {stat}."
+    },
+    "backup_not_found": {
+      "message": "Nessun backup trovato con l’ID {backup_id}."
+    },
+    "rejected_by_home_assistant": {
+      "message": "Home Assistant ha rifiutato le impostazioni energetiche: {error}"
+    },
+    "unknown_source": {
+      "message": "{stat} non è una fonte della dashboard energia."
+    },
+    "not_a_power_candidate": {
+      "message": "{entity_id} non è un sensore di potenza senza contatore di energia."
+    },
+    "integral_failed": {
+      "message": "Non è stato possibile creare l’aiutante del contatore di energia."
+    }
+  },
+  "issues": {
+    "unsupported_energy_api": {
+      "title": "Energy Flow Mapper non supporta questa versione di Home Assistant",
+      "description": "Le impostazioni energetiche di questa versione di Home Assistant non corrispondono a quanto si aspetta Energy Flow Mapper. Per proteggere le tue impostazioni, l’editor è disattivato. Aggiorna Energy Flow Mapper oppure segnala il problema se non è disponibile un aggiornamento."
+    }
+  }
+}

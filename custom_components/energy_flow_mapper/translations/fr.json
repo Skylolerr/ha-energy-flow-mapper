@@ -1,0 +1,57 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Energy Flow Mapper",
+        "description": "Ajoute un panneau d’administration pour afficher et modifier la configuration du tableau de bord énergie sous forme de diagramme. La configuration ne modifie pas tes réglages d’énergie."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Energy Flow Mapper est déjà configuré."
+    }
+  },
+  "exceptions": {
+    "not_loaded": {
+      "message": "Energy Flow Mapper n’est pas chargé."
+    },
+    "unsupported_energy_api": {
+      "message": "Les réglages d’énergie de cette version de Home Assistant ne sont pas pris en charge par Energy Flow Mapper."
+    },
+    "conflict": {
+      "message": "Les réglages d’énergie ont été modifiés ailleurs entre-temps. Recharge et réessaie."
+    },
+    "invalid_changes": {
+      "message": "Les modifications ne peuvent pas être enregistrées : {issues}."
+    },
+    "device_exists": {
+      "message": "{stat} est déjà dans le tableau de bord énergie."
+    },
+    "unknown_device": {
+      "message": "{stat} n’est pas un appareil du tableau de bord énergie."
+    },
+    "unknown_change": {
+      "message": "Modification inconnue pour {stat}."
+    },
+    "backup_not_found": {
+      "message": "Aucune sauvegarde trouvée avec l’ID {backup_id}."
+    },
+    "rejected_by_home_assistant": {
+      "message": "Home Assistant a refusé les réglages d’énergie : {error}"
+    },
+    "unknown_source": {
+      "message": "{stat} n’est pas une source du tableau de bord énergie."
+    },
+    "not_a_power_candidate": {
+      "message": "{entity_id} n’est pas un capteur de puissance sans compteur d’énergie."
+    },
+    "integral_failed": {
+      "message": "L’entrée d’aide du compteur d’énergie n’a pas pu être créée."
+    }
+  },
+  "issues": {
+    "unsupported_energy_api": {
+      "title": "Energy Flow Mapper ne prend pas en charge cette version de Home Assistant",
+      "description": "Les réglages d’énergie de cette version de Home Assistant ne correspondent pas à ce qu’Energy Flow Mapper attend. Pour protéger tes réglages, l’éditeur est désactivé. Mets à jour Energy Flow Mapper ou signale le problème si aucune mise à jour n’est disponible."
+    }
+  }
+}

@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "Energy Flow Mapper",
-        "description": "Adds an admin panel to view and edit the energy dashboard configuration as a tree. Your energy settings are not changed by the setup."
+        "description": "Adds an admin panel to view and edit the energy dashboard configuration as a diagram. Your energy settings are not changed by the setup."
       }
     },
     "abort": {
