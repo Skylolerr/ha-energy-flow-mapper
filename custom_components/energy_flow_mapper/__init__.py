@@ -10,6 +10,11 @@ from homeassistant.helpers.typing import ConfigType
 from . import energy_access
 from .backups import BackupStore
 from .const import DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API, LOGGER
+from .frontend import (
+    async_register_panel,
+    async_register_static_path,
+    async_unregister_panel,
+)
 from .models import EnergyFlowMapperConfigEntry, EnergyFlowMapperData
 from .websocket import async_setup_websocket
 
@@ -17,8 +22,9 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the WebSocket commands (once per start)."""
+    """Register the WebSocket commands and serve the panel (once per start)."""
     async_setup_websocket(hass)
+    await async_register_static_path(hass)
     return True
 
 
@@ -46,13 +52,15 @@ async def async_setup_entry(
     backups = BackupStore(hass)
     await backups.async_load()
     entry.runtime_data = EnergyFlowMapperData(backups=backups, supported=supported)
+    await async_register_panel(hass)
     return True
 
 
 async def async_unload_entry(
     hass: HomeAssistant, entry: EnergyFlowMapperConfigEntry
 ) -> bool:
-    """Unload the integration; backups are always saved immediately."""
+    """Remove the panel; backups are always saved immediately."""
+    async_unregister_panel(hass)
     return True
 
 

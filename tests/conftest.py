@@ -15,6 +15,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_flow_mapper.const import DOMAIN
@@ -82,13 +83,17 @@ def auto_enable_custom_integrations(
 
 
 @pytest.fixture(autouse=True)
-def energy_loaded(hass: HomeAssistant) -> None:
-    """Mark the energy integration as loaded.
+async def dependencies_loaded(hass: HomeAssistant) -> None:
+    """Prepare the dependencies of the integration.
 
     Energy Flow Mapper only needs the energy manager, which works without the
-    integration being set up; this avoids starting a recorder in every test.
+    energy integration being set up; this avoids starting a recorder in every
+    test. The real frontend needs the `home-assistant-frontend` package, so it
+    is marked as loaded too; panels still register. HTTP is set up for real
+    (the test plugin never binds a port).
     """
-    hass.config.components.add("energy")
+    hass.config.components.update({"energy", "frontend", "panel_custom"})
+    assert await async_setup_component(hass, "http", {})
 
 
 @pytest.fixture

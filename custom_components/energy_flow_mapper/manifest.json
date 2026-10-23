@@ -3,7 +3,7 @@
   "name": "Energy Flow Mapper",
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
-  "dependencies": ["energy"],
+  "dependencies": ["energy", "frontend", "http", "panel_custom"],
   "documentation": "https://github.com/Skylolerr/ha-energy-flow-mapper",
   "integration_type": "service",
   "iot_class": "calculated",
