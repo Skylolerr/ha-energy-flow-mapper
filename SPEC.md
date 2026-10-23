@@ -104,6 +104,7 @@ ha-energy-flow-mapper/
 │   ├── hierarchy.py           # Reine Funktionen: Baum bauen, Prüfungen, Änderungen anwenden, Diff, Plausibilität – ohne HA-Imports
 │   ├── candidates.py          # Freie Sensoren und Statistiken ermitteln
 │   ├── integral.py            # Integral-Helfer für Leistungssensoren anlegen
+│   ├── energy_stats.py        # Energie pro Zeitraum aus der Recorder-Statistik
 │   ├── created_helpers.py     # Store: welche Helfer das Panel angelegt hat
 │   ├── energy_access.py       # Einzige Stelle, die die HA-Energie-Konfiguration liest/schreibt
 │   ├── backups.py             # Store mit Sicherungen
@@ -203,7 +204,9 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 - **Ungültige Ziele** (eigene Unterknoten, sich selbst) werden beim Ziehen gar nicht erst angeboten.
 - **Entwurf:** Änderungen sammeln sich lokal und werden erst mit «Speichern» geschrieben. Vor dem Speichern zeigt ein Dialog die Liste der Änderungen.
 - **Quellen:** In Phase 2 nur zur Anzeige, mit Link zu den Energie-Einstellungen von HA. Ab Phase 3 bearbeitbar (§8).
-- **Live-Werte:** Leistung (aus `stat_rate`, falls gesetzt) direkt aus `hass.states`. Ab Phase 3 Energie im Zeitraum (Heute / 7 Tage / 30 Tage) über `recorder/statistics_during_period`.
+- **Live-Werte:** Leistung (aus `stat_rate`, falls gesetzt) direkt aus `hass.states`.
+- **Zeitraum (Phase 3):** Umschalter «Jetzt / Heute / 7 Tage / 30 Tage» über dem Diagramm. «Jetzt» zeigt die Leistung, die anderen die Energie im Zeitraum (kWh, unter 1 kWh in Wh). Blöcke, «Nicht erfasst», «Zuhause» und die Pfeildicke folgen dem gewählten Wert; die Details zeigen beides. Die Werte liefert `energy_flow_mapper/energy` (§12) für den Entwurf. Zeiträume beginnen um Mitternacht (lokal): Heute aus den 5-Minuten-Statistiken, 7 Tage aus Stunden-, 30 Tage aus Tagesstatistiken (bis zur letzten vollen Stunde).
+- **Plausibilität (Phase 3):** Im Zeitraum markiert ein Warn-Symbol Geräte, deren untergeordnete Geräte mehr verbraucht haben (§9).
 - **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein gestrichelter Block «Nicht erfasst» mit `eigener Wert − Summe Kinder` (Leistung live, ab Phase 3 auch Energie im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
 
 ---
@@ -297,6 +300,7 @@ Alle Befehle nur für Admins.
 | `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
+| `energy_flow_mapper/energy` (Phase 3) | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (kWh pro Statistik, `null` ohne Daten), `untracked`, `issues` (Plausibilität) |
 | `energy_flow_mapper/create_integral` (Phase 3) | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
@@ -358,7 +362,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
-3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: Quellen zuweisen, Integral-Helfer und externe Statistiken umgesetzt)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, Pre-Release, Installation über HACS «Custom Repository» verifizieren.
+3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: Quellen zuweisen, Integral-Helfer, externe Statistiken sowie Energie im Zeitraum mit Plausibilitäts-Warnung umgesetzt)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, Pre-Release, Installation über HACS «Custom Repository» verifizieren.
 4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter.
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback, danach PR an `hacs/default`.
 

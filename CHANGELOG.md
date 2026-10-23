@@ -26,3 +26,6 @@ breaking changes; they are marked as **Breaking**.
 - Power sensors without an energy meter: "Create meter" adds an ordinary integral
   helper and puts its meter into the draft; helpers created this way are labelled.
 - External energy statistics (e.g. from supplier portals) appear as free sensors.
+- Period switch (now, today, 7 days, 30 days): blocks, untracked consumption and
+  arrows show the energy of the period; a warning marks devices whose devices used
+  clearly more than they did (more than 5 % and 0.1 kWh).
