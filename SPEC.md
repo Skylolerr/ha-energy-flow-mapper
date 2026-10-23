@@ -134,7 +134,6 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "domain": "energy_flow_mapper",
   "name": "Energy Flow Mapper",
   "after_dependencies": ["recorder"],
-  "categories": ["energy"],
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
   "single_config_entry": true,
@@ -333,7 +332,7 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 ## 14. CI / Release
 
-- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren.
+- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren. Die HACS-Warnung «manifest has no categories» bleibt vorerst: Das Hassfest-Image der Action kennt den Manifest-Schlüssel `categories` noch nicht (Stand 2026-10-23). Sobald es ihn kennt, `"categories": ["energy"]` ergänzen.
 - **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version, damit Änderungen am Energie-Format früh auffallen.
 - **`scripts/release.sh`:** erstellt den Release erst, wenn main sauber und gepusht ist, der CHANGELOG-Abschnitt existiert und Validate/Tests für den Commit grün sind; die Release-Notes sind der CHANGELOG-Abschnitt.
 - **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat, hängt ein ZIP an.
@@ -364,7 +363,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
-3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: alles umgesetzt bis auf die Schritte des Maintainers; Logo freigegeben, README mit Screenshots, Repo-Beschreibung und Topics gesetzt, `hacs/action` eingebaut (läuft ab dem Öffentlich-Schalten). Offen: Repo öffentlich, CI grün inkl. HACS, Release, HACS-Installation testen.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
+3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: Repo öffentlich, CI grün inkl. HACS (alle 10 Checks). Offen: Release, HACS-Installation testen, danach PR an `hacs/default`.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
 4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter.
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
