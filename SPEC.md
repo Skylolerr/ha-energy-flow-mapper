@@ -104,6 +104,7 @@ ha-energy-flow-mapper/
 │   ├── candidates.py          # Freie Sensoren und Statistiken ermitteln
 │   ├── energy_access.py       # Einzige Stelle, die die HA-Energie-Konfiguration liest/schreibt
 │   ├── backups.py             # Store mit Sicherungen
+│   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Schreib-Lock)
 │   ├── websocket.py           # energy_flow_mapper/*
 │   ├── diagnostics.py
 │   ├── strings.json
@@ -130,7 +131,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "codeowners": ["@Skylolerr"],
   "config_flow": true,
   "single_config_entry": true,
-  "dependencies": ["http", "frontend", "panel_custom", "energy", "recorder"],
+  "dependencies": ["energy", "frontend", "http", "panel_custom"],
   "documentation": "https://github.com/Skylolerr/ha-energy-flow-mapper",
   "integration_type": "service",
   "iot_class": "calculated",
@@ -139,6 +140,8 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "version": "0.1.0"
 }
 ```
+
+In Phase 1 ist nur `energy` eingetragen; `frontend`, `http` und `panel_custom` kommen mit dem Panel in Phase 2. `recorder` kommt über `energy` mit.
 
 ### hacs.json
 
