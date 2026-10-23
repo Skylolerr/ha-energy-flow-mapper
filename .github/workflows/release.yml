@@ -20,6 +20,13 @@ jobs:
             echo "::error::Tag ${GITHUB_REF_NAME} does not match manifest version v${version}"
             exit 1
           fi
+      - name: CHANGELOG must have a section for the version
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if ! grep -q "^## \[${version}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md has no section '## [${version}]'"
+            exit 1
+          fi
       - name: Build ZIP
         run: |
           cd custom_components/energy_flow_mapper
