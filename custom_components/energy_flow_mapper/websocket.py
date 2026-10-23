@@ -15,6 +15,7 @@ from homeassistant.components.websocket_api.decorators import (
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
+from homeassistant.util import dt as dt_util
 
 from . import energy_access
 from .candidates import (
@@ -28,19 +29,25 @@ from .candidates import (
     async_stats_info,
 )
 from .const import DOMAIN
+from .energy_stats import PERIODS, async_energy, period_range
 from .hierarchy import (
     KEY_DEVICES,
     KEY_SOURCES,
+    STAT,
     AssignRole,
     ChangeError,
     ChangeType,
     Prefs,
     Severity,
     apply_changes,
+    build_tree,
     diff,
     has_errors,
+    plausibility,
     prefs_hash,
+    source_energy_stats,
     summarize,
+    untracked,
     validate,
 )
 from .integral import async_create_integral
@@ -51,6 +58,7 @@ ATTR_CHANGES = "changes"
 ATTR_BACKUP_ID = "backup_id"
 ATTR_POWER_ENTITY_ID = "power_entity_id"
 ATTR_NAME = "name"
+ATTR_PERIOD = "period"
 
 # Keys the panel may change; water devices follow in phase 4.
 EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES)
@@ -115,6 +123,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_backups)
     async_register_command(hass, websocket_restore)
     async_register_command(hass, websocket_create_integral)
+    async_register_command(hass, websocket_energy)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -358,3 +367,49 @@ async def websocket_create_integral(
     )
     await runtime.helpers.async_add(entry_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": power})
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/energy",
+        vol.Required(ATTR_PERIOD): vol.In(list(PERIODS)),
+        vol.Inclusive(ATTR_BASE_HASH, "draft"): str,
+        vol.Inclusive(ATTR_CHANGES, "draft"): [CHANGE_SCHEMA],
+    }
+)
+@require_admin
+@async_response
+async def websocket_energy(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the energy of devices and sources in a period.
+
+    With a draft (`base_hash` and `changes`), untracked energy and warnings
+    follow the draft's tree. Warnings flag devices whose children used clearly
+    more energy than they did.
+    """
+    _runtime(hass)
+    if ATTR_CHANGES in msg:
+        prefs = _apply(
+            await _async_current(hass, msg[ATTR_BASE_HASH]), msg[ATTR_CHANGES]
+        )
+    else:
+        prefs = await energy_access.async_get_prefs(hass)
+    devices = prefs.get(KEY_DEVICES, [])
+    stats = [device[STAT] for device in devices]
+    stats += sorted(source_energy_stats(prefs.get(KEY_SOURCES, [])) - set(stats))
+    now = dt_util.now()
+    energy = await async_energy(hass, stats, msg[ATTR_PERIOD], now)
+    roots = build_tree(devices)
+    start, end = period_range(msg[ATTR_PERIOD], now)
+    connection.send_result(
+        msg["id"],
+        {
+            "period": msg[ATTR_PERIOD],
+            "start": start.isoformat(),
+            "end": end.isoformat(),
+            "energy": energy,
+            "untracked": untracked(roots, energy),
+            "issues": [issue.as_dict() for issue in plausibility(roots, energy)],
+        },
+    )

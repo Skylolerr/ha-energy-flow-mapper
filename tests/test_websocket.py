@@ -12,6 +12,7 @@ from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper import integral as integral_module
+from custom_components.energy_flow_mapper import websocket as websocket_module
 from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
 
 from .conftest import ENERGY_PREFS
@@ -588,3 +589,111 @@ async def test_create_integral_without_entity(
     )
     assert response["error"]["translation_key"] == "integral_failed"
     assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+@pytest.fixture
+def energy_values(monkeypatch: pytest.MonkeyPatch) -> dict[str, float | None]:
+    """Fake the energy per statistic returned for any period."""
+    values: dict[str, float | None] = {
+        "sensor.main_energy": 10.0,
+        "sensor.kitchen_energy": 8.0,
+        "sensor.coffee_energy": 9.0,
+        "sensor.grinder_energy": 1.0,
+        "sensor.garage_energy": None,
+        "sensor.grid_import": 12.0,
+    }
+    calls: list[Any] = []
+
+    async def fake(
+        hass: HomeAssistant, stats: list[str], period: str, now: Any
+    ) -> dict[str, float | None]:
+        calls.append((stats, period))
+        return {stat: values.get(stat) for stat in stats}
+
+    monkeypatch.setattr(websocket_module, "async_energy", fake)
+    values["_calls"] = calls  # type: ignore[assignment]
+    return values
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Energy, untracked energy and warnings of the saved tree."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    assert response["success"], response
+    result = response["result"]
+    assert result["period"] == "week"
+    assert result["start"] < result["end"]
+    assert result["energy"]["sensor.main_energy"] == 10.0
+    assert result["energy"]["sensor.grid_import"] == 12.0
+    assert result["energy"]["sensor.battery_in"] is None
+    assert result["untracked"] == {
+        "sensor.main_energy": 2.0,
+        "sensor.kitchen_energy": -1.0,
+        "sensor.coffee_energy": 8.0,
+    }
+    # The kitchen's coffee machine used more than the kitchen itself.
+    assert result["issues"] == [
+        {
+            "code": "children_exceed_parent",
+            "severity": "warning",
+            "stat": "sensor.kitchen_energy",
+            "details": {"parent": 8.0, "children": 9.0, "excess": 1.0},
+        }
+    ]
+    stats, period = energy_values["_calls"][0]
+    assert period == "week"
+    assert stats[:5] == [
+        "sensor.main_energy",
+        "sensor.kitchen_energy",
+        "sensor.coffee_energy",
+        "sensor.grinder_energy",
+        "sensor.garage_energy",
+    ]
+    assert "sensor.solar_energy" in stats
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_of_a_draft(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """With a draft, the tree of the draft is used."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/energy",
+        period="today",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[{"type": "move", "stat": "sensor.coffee_energy", "parent": None}],
+    )
+    result = response["result"]
+    assert result["issues"] == []
+    assert "sensor.kitchen_energy" not in result["untracked"]
+    assert result["untracked"]["sensor.coffee_energy"] == 8.0
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_errors(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Unknown periods and a draft without hash are refused; conflicts too."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="year")
+    assert response["error"]["code"] == "invalid_format"
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/energy", period="today", changes=[]
+    )
+    assert response["error"]["code"] == "invalid_format"
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/energy",
+        period="today",
+        base_hash="old",
+        changes=[],
+    )
+    assert response["error"]["translation_key"] == "conflict"
