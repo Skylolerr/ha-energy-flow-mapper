@@ -1,6 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { EnergyFlowMapperPanel, errorText, PANEL_TAG, TOAST_MS } from "../src/energy-flow-mapper-panel";
+import {
+  EnergyFlowMapperPanel,
+  errorText,
+  MAX_ZOOM,
+  MIN_ZOOM,
+  PANEL_TAG,
+  TOAST_MS,
+} from "../src/energy-flow-mapper-panel";
 import type {
   BackupEntry,
   Change,
@@ -182,10 +189,28 @@ describe("loading", () => {
     // The own name wins over the entity name.
     expect(node(el, "sensor.tv").textContent).toContain("TV");
     expect(node(el, "sensor.tv").textContent).not.toContain("backlight");
-    // Sonos is nested under the server; 40 W are not tracked individually.
-    const nested = server.parentElement!.querySelector('ul .node[data-stat="sensor.sonos"]');
-    expect(nested).not.toBeNull();
+    // Arrows: Home to the top-level devices, the server to the Sonos amp.
+    const edges = [...root(el).querySelectorAll<SVGGElement>(".edge")].map(
+      (e) => `${e.dataset.from}>${e.dataset.to}`,
+    );
+    expect(edges).toEqual(
+      expect.arrayContaining([
+        "source:0>home",
+        "home>source:1",
+        "home>sensor.server",
+        "sensor.server>sensor.sonos",
+        "sensor.server>untracked:sensor.server",
+        "home>sensor.tv",
+      ]),
+    );
+    // 40 W of the server are not tracked individually.
     expect(root(el).querySelector(".untracked")!.textContent).toContain("40 W");
+    // Missing sources are placeholders; Home sums the top-level devices.
+    const placeholders = [...root(el).querySelectorAll(".placeholder")].map((b) =>
+      b.textContent!.trim(),
+    );
+    expect(placeholders).toEqual(["+ Solar production", "+ Battery"]);
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("50 W measured");
     expect(text(el)).toContain("3D printer");
     expect(text(el)).toContain("Attic");
   });
@@ -494,5 +519,144 @@ describe("texts", () => {
     expect(
       el._issueText({ code: "not_energy_unit", severity: "warning", stat: "x", details: { unit: "W" } }),
     ).toBe("Unit W is not an energy unit");
+  });
+});
+
+describe("diagram", () => {
+  function sized(el: EnergyFlowMapperPanel, width: number, height: number): HTMLElement {
+    const viewport = root(el).querySelector<HTMLElement>(".viewport")!;
+    Object.defineProperty(viewport, "clientWidth", { value: width, configurable: true });
+    Object.defineProperty(viewport, "clientHeight", { value: height, configurable: true });
+    viewport.getBoundingClientRect = () => ({ left: 0, top: 0 }) as DOMRect;
+    return viewport;
+  }
+
+  function pointer(type: string, id: number, x: number, y: number): PointerEvent {
+    return Object.assign(new Event(type, { bubbles: true }), {
+      pointerId: id,
+      clientX: x,
+      clientY: y,
+    }) as unknown as PointerEvent;
+  }
+
+  it("fits the diagram into the viewport and zooms with the buttons", async () => {
+    const el = await mount(mockHass());
+    sized(el, 400, 300);
+    expect(el.fit()).toBe(true);
+    const { width, height } = el.diagramLayout();
+    const k = Math.min(400 / width, 300 / height);
+    expect(el._zoom.k).toBeCloseTo(k);
+    expect(el._zoom.x).toBeCloseTo((400 - width * k) / 2);
+    buttonWith(el, "+").click();
+    expect(el._zoom.k).toBeCloseTo(k * 1.25);
+    buttonWith(el, "−").click();
+    expect(el._zoom.k).toBeCloseTo(k);
+    el._zoom = { x: 5, y: 5, k: 2 };
+    buttonWith(el, "Fit").click();
+    expect(el._zoom.k).toBeCloseTo(k);
+  });
+
+  it("does not fit before the viewport has a size", async () => {
+    const el = await mount(mockHass());
+    expect(el.fit()).toBe(false);
+  });
+
+  it("zooms around a point within the limits", async () => {
+    const el = await mount(mockHass());
+    el._zoom = { x: 0, y: 0, k: 1 };
+    el.zoomAt(100, 50, 2);
+    expect(el._zoom).toEqual({ x: -100, y: -50, k: 2 });
+    el.zoomAt(0, 0, 100);
+    expect(el._zoom.k).toBe(MAX_ZOOM);
+    el.zoomAt(0, 0, 0.0001);
+    expect(el._zoom.k).toBe(MIN_ZOOM);
+  });
+
+  it("zooms with the wheel and pans and pinches with pointers", async () => {
+    const el = await mount(mockHass());
+    const viewport = sized(el, 400, 300);
+    el._zoom = { x: 0, y: 0, k: 1 };
+    const wheel = Object.assign(new Event("wheel", { cancelable: true }), {
+      deltaY: -100,
+      clientX: 0,
+      clientY: 0,
+    });
+    viewport.dispatchEvent(wheel);
+    expect(wheel.defaultPrevented).toBe(true);
+    expect(el._zoom.k).toBeGreaterThan(1);
+
+    el._zoom = { x: 0, y: 0, k: 1 };
+    viewport.dispatchEvent(pointer("pointerdown", 1, 10, 10));
+    viewport.dispatchEvent(pointer("pointermove", 1, 30, 25));
+    expect(el._zoom).toEqual({ x: 20, y: 15, k: 1 });
+
+    // A second finger: spreading them doubles the zoom.
+    viewport.dispatchEvent(pointer("pointerdown", 2, 50, 25));
+    viewport.dispatchEvent(pointer("pointermove", 2, 70, 25));
+    expect(el._zoom.k).toBeCloseTo(2);
+    viewport.dispatchEvent(pointer("pointerup", 1, 30, 25));
+    viewport.dispatchEvent(pointer("pointercancel", 2, 70, 25));
+    const before = { ...el._zoom };
+    viewport.dispatchEvent(pointer("pointermove", 1, 90, 90));
+    expect(el._zoom).toEqual(before);
+  });
+
+  it("does not pan when a block is pressed", async () => {
+    const el = await mount(mockHass());
+    sized(el, 400, 300);
+    el._zoom = { x: 0, y: 0, k: 1 };
+    node(el, "sensor.server").dispatchEvent(pointer("pointerdown", 1, 10, 10));
+    root(el).querySelector(".viewport")!.dispatchEvent(pointer("pointermove", 1, 50, 50));
+    expect(el._zoom).toEqual({ x: 0, y: 0, k: 1 });
+  });
+
+  it("collapses a device with children", async () => {
+    const el = await mount(mockHass());
+    node(el, "sensor.server").querySelector<HTMLButtonElement>("button.toggle")!.click();
+    await settle(el);
+    expect(root(el).querySelector('.node[data-stat="sensor.sonos"]')).toBeNull();
+    expect(root(el).querySelector(".untracked")).toBeNull();
+    node(el, "sensor.server").querySelector<HTMLButtonElement>("button.toggle")!.click();
+    await settle(el);
+    expect(node(el, "sensor.sonos")).not.toBeNull();
+  });
+
+  it("opens the energy settings from a source block", async () => {
+    const el = await mount(mockHass());
+    const navigated = vi.fn();
+    window.addEventListener("location-changed", navigated);
+    root(el).querySelector<HTMLButtonElement>(".placeholder")!.click();
+    expect(location.pathname).toBe("/config/energy");
+    expect(navigated).toHaveBeenCalled();
+    window.removeEventListener("location-changed", navigated);
+  });
+
+  it("draws power-scaled, dashed and coloured edges", async () => {
+    const el = await mount(mockHass());
+    const path = (from: string, to: string) =>
+      root(el).querySelector(`.edge[data-from="${from}"][data-to="${to}"] path`)!;
+    // The server has the largest power: the widest stroke.
+    expect(path("home", "sensor.server").getAttribute("stroke-width")).toBe("8");
+    // The TV has no power sensor: thin and dashed.
+    expect(path("home", "sensor.tv").getAttribute("stroke-dasharray")).toBe("4 4");
+    expect(path("source:0", "home").getAttribute("stroke")).toContain("grid-consumption");
+    expect(path("home", "source:1").getAttribute("stroke")).toContain("grid-return");
+  });
+});
+
+describe("hidden list view", () => {
+  it("still renders the indented tree", async () => {
+    const el = await mount(mockHass());
+    el._view = "list";
+    await settle(el);
+    expect(root(el).querySelector(".viewport")).toBeNull();
+    const server = node(el, "sensor.server");
+    const nested = server.parentElement!.querySelector('ul .node[data-stat="sensor.sonos"]');
+    expect(nested).not.toBeNull();
+    expect(root(el).querySelector("li.untracked")!.textContent).toContain("40 W");
+    expect(text(el)).toContain("Grid import");
+    server.querySelector<HTMLButtonElement>("button.toggle")!.click();
+    await settle(el);
+    expect(root(el).querySelector('.node[data-stat="sensor.sonos"]')).toBeNull();
   });
 });

@@ -1,4 +1,4 @@
-import { css, html, LitElement, nothing, type PropertyValues, type TemplateResult } from "lit";
+import { css, html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 
 import {
   applyChanges,
@@ -12,6 +12,15 @@ import {
   untracked,
 } from "./draft";
 import { icon } from "./icons";
+import {
+  arrowHead,
+  type Block,
+  type Edge,
+  edgePath,
+  HOME_ID,
+  layout,
+  strokeWidth,
+} from "./layout";
 import {
   formatDateTime,
   formatNumber,
@@ -38,6 +47,25 @@ export const PANEL_TAG = "energy-flow-mapper-panel";
 export const DOMAIN = "energy_flow_mapper";
 export const TOAST_MS = 4000;
 const HOME = "__home__";
+export const MIN_ZOOM = 0.2;
+export const MAX_ZOOM = 2.5;
+
+interface Zoom {
+  x: number;
+  y: number;
+  k: number;
+}
+
+/** CSS colour of a source edge or block by its role. */
+const SOURCE_COLORS: Record<string, string> = {
+  import: "var(--energy-grid-consumption-color, #488fc2)",
+  export: "var(--energy-grid-return-color, #8353d1)",
+  production: "var(--energy-solar-color, #ff9800)",
+  battery: "var(--energy-battery-out-color, #4db6ac)",
+  discharge: "var(--energy-battery-out-color, #4db6ac)",
+  charge: "var(--energy-battery-in-color, #f06292)",
+  consumption: "var(--energy-gas-color, #8e021b)",
+};
 
 type Dragged = { kind: "device" | "candidate"; stat: string };
 
@@ -86,6 +114,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _busy: { state: true },
     _toast: { state: true },
     _renameValue: { state: true },
+    _view: { state: true },
+    _zoom: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -106,10 +136,15 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _busy: boolean;
   declare _toast: string | null;
   declare _renameValue: string;
+  /** "list" is the former indented tree; it is kept but not offered in the UI. */
+  declare _view: "diagram" | "list";
+  declare _zoom: Zoom;
 
   private _loading = false;
   private _validateRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
+  private _fitted = false;
+  private _pointers = new Map<number, { x: number; y: number }>();
 
   constructor() {
     super();
@@ -127,6 +162,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._busy = false;
     this._toast = null;
     this._renameValue = "";
+    this._view = "diagram";
+    this._zoom = { x: 0, y: 0, k: 1 };
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -390,6 +427,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- rendering ------------------------------------------------------------
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (!this._fitted && this._snapshot && this._view === "diagram") {
+      this._fitted = this.fit();
+    }
     if (!changed.has("_dialog")) {
       return;
     }
@@ -464,11 +504,365 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`
       <div class="content ${this.narrow ? "narrow" : ""}">
         ${this.narrow ? nothing : html`<aside class="column">${this._renderCandidates()}</aside>`}
-        <main class="column main">${this._renderSources()} ${this._renderTree()}</main>
+        <main class="column main">
+          ${this._view === "list"
+            ? html`${this._renderSources()} ${this._renderTree()}`
+            : this._renderDiagram()}
+        </main>
         ${this.narrow ? nothing : html`<aside class="column">${this._renderDetails()}</aside>`}
       </div>
     `;
   }
+
+  // --- diagram --------------------------------------------------------------
+
+  private _powerMap(devices: Device[]): Map<string, number | null> {
+    return new Map(
+      devices.map((d) => [d.stat_consumption, this.hass ? powerInWatts(this.hass, d.stat_rate) : null]),
+    );
+  }
+
+  /** The diagram layout of the current draft. */
+  diagramLayout() {
+    const devices = this.draft;
+    const roots = buildTree(devices);
+    const power = this._powerMap(devices);
+    return layout(
+      roots,
+      sourceRows(this._snapshot?.prefs.energy_sources ?? []),
+      power,
+      untracked(roots, power),
+      this._collapsed,
+    );
+  }
+
+  private _viewport(): HTMLElement | null {
+    return this.renderRoot.querySelector<HTMLElement>(".viewport");
+  }
+
+  /** Fit the whole diagram into the viewport; false while it has no size yet. */
+  fit(): boolean {
+    const viewport = this._viewport();
+    const width = viewport?.clientWidth ?? 0;
+    const height = viewport?.clientHeight ?? 0;
+    if (!width || !height) {
+      return false;
+    }
+    const { width: w, height: h } = this.diagramLayout();
+    const k = Math.min(1, Math.max(MIN_ZOOM, Math.min(width / w, height / h)));
+    this._zoom = { k, x: (width - w * k) / 2, y: Math.max(0, (height - h * k) / 2) };
+    return true;
+  }
+
+  /** Zoom by `factor`, keeping the point (px, py) of the viewport in place. */
+  zoomAt(px: number, py: number, factor: number): void {
+    const { x, y, k } = this._zoom;
+    const next = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k * factor));
+    const ratio = next / k;
+    this._zoom = { k: next, x: px - (px - x) * ratio, y: py - (py - y) * ratio };
+  }
+
+  private _zoomCenter(factor: number): void {
+    const viewport = this._viewport();
+    this.zoomAt((viewport?.clientWidth ?? 0) / 2, (viewport?.clientHeight ?? 0) / 2, factor);
+  }
+
+  private _local(event: PointerEvent | WheelEvent): { x: number; y: number } {
+    const rect = this._viewport()?.getBoundingClientRect();
+    return { x: event.clientX - (rect?.left ?? 0), y: event.clientY - (rect?.top ?? 0) };
+  }
+
+  _onWheel(event: WheelEvent): void {
+    event.preventDefault();
+    const { x, y } = this._local(event);
+    this.zoomAt(x, y, Math.exp(-event.deltaY * 0.0015));
+  }
+
+  _onPointerDown(event: PointerEvent): void {
+    if ((event.target as Element).closest?.(".block, button, a")) {
+      return;
+    }
+    (event.currentTarget as Element | null)?.setPointerCapture?.(event.pointerId);
+    this._pointers.set(event.pointerId, this._local(event));
+  }
+
+  /** One pointer pans; two pointers pinch-zoom around their midpoint. */
+  _onPointerMove(event: PointerEvent): void {
+    const previous = this._pointers.get(event.pointerId);
+    if (!previous) {
+      return;
+    }
+    const before = [...this._pointers.values()];
+    const current = this._local(event);
+    this._pointers.set(event.pointerId, current);
+    if (this._pointers.size === 1) {
+      this._zoom = {
+        ...this._zoom,
+        x: this._zoom.x + current.x - previous.x,
+        y: this._zoom.y + current.y - previous.y,
+      };
+      return;
+    }
+    const after = [...this._pointers.values()];
+    const distance = (points: { x: number; y: number }[]) =>
+      Math.hypot(points[0].x - points[1].x, points[0].y - points[1].y);
+    const middle = (points: { x: number; y: number }[]) => ({
+      x: (points[0].x + points[1].x) / 2,
+      y: (points[0].y + points[1].y) / 2,
+    });
+    const [m0, m1] = [middle(before), middle(after)];
+    this._zoom = { ...this._zoom, x: this._zoom.x + m1.x - m0.x, y: this._zoom.y + m1.y - m0.y };
+    if (distance(before) > 0) {
+      this.zoomAt(m1.x, m1.y, distance(after) / distance(before));
+    }
+  }
+
+  _onPointerUp(event: PointerEvent): void {
+    this._pointers.delete(event.pointerId);
+  }
+
+  private _renderDiagram(): TemplateResult {
+    const devices = this.draft;
+    const result = this.diagramLayout();
+    const blocks = new Map(result.blocks.map((b) => [b.id, b]));
+    const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
+    const power = this._powerMap(devices);
+    const rest = untracked(buildTree(devices), power);
+    const known = buildTree(devices)
+      .map((n) => power.get(n.stat))
+      .filter((v): v is number => v != null);
+    const measured = known.length ? known.reduce((a, b) => a + b, 0) : null;
+    const { x, y, k } = this._zoom;
+    return html`
+      <section class="card diagram-card">
+        <div class="card-header">
+          <h2>${this._t("diagram")}</h2>
+          <div class="toolbar">
+            <button
+              class="icon"
+              aria-label=${this._t("zoom_out")}
+              title=${this._t("zoom_out")}
+              @click=${() => this._zoomCenter(1 / 1.25)}
+            >
+              −
+            </button>
+            <button
+              class="icon"
+              aria-label=${this._t("zoom_in")}
+              title=${this._t("zoom_in")}
+              @click=${() => this._zoomCenter(1.25)}
+            >
+              +
+            </button>
+            <button @click=${() => this.fit()}>${this._t("fit")}</button>
+          </div>
+        </div>
+        <p class="hint">${this._t("devices_hint")} ${this._t("zoom_hint")}</p>
+        <div
+          class="viewport"
+          @wheel=${(e: WheelEvent) => this._onWheel(e)}
+          @pointerdown=${(e: PointerEvent) => this._onPointerDown(e)}
+          @pointermove=${(e: PointerEvent) => this._onPointerMove(e)}
+          @pointerup=${(e: PointerEvent) => this._onPointerUp(e)}
+          @pointercancel=${(e: PointerEvent) => this._onPointerUp(e)}
+        >
+          <div
+            class="canvas"
+            style="width:${result.width}px;height:${result.height}px;transform:translate(${x}px, ${y}px) scale(${k})"
+          >
+            <svg class="edges" width=${result.width} height=${result.height} aria-hidden="true">
+              ${result.edges.map((edge) => this._renderEdge(edge, blocks, maxPower))}
+            </svg>
+            ${result.blocks.map((block) => this._renderBlock(block, devices, measured, rest))}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  private _edgeColor(edge: Edge, blocks: Map<string, Block>): string {
+    if (edge.kind === "untracked") {
+      return "var(--secondary-text-color)";
+    }
+    if (edge.kind === "source") {
+      const source = blocks.get(edge.from === HOME_ID ? edge.to : edge.from);
+      return SOURCE_COLORS[source?.role ?? ""] ?? "var(--secondary-text-color)";
+    }
+    return "var(--primary-color)";
+  }
+
+  private _renderEdge(edge: Edge, blocks: Map<string, Block>, maxPower: number) {
+    const from = blocks.get(edge.from);
+    const to = blocks.get(edge.to);
+    if (!from || !to) {
+      return nothing;
+    }
+    const color = this._edgeColor(edge, blocks);
+    const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null);
+    return svg`<g class="edge edge-${edge.kind}" data-from=${edge.from} data-to=${edge.to}>
+      <path
+        d=${edgePath(from, to)}
+        fill="none"
+        stroke=${color}
+        stroke-width=${strokeWidth(edge.power, maxPower)}
+        stroke-dasharray=${dashed ? "4 4" : "none"}
+        stroke-linecap="round"
+      ></path>
+      <polygon points=${arrowHead(from, to)} fill=${color}></polygon>
+    </g>`;
+  }
+
+  private _blockStyle(block: Block): string {
+    return `left:${block.x}px;top:${block.y}px;width:${block.w}px;height:${block.h}px`;
+  }
+
+  private _renderBlock(
+    block: Block,
+    devices: Device[],
+    measured: number | null,
+    rest: Map<string, number | null>,
+  ): TemplateResult {
+    const style = this._blockStyle(block);
+    switch (block.kind) {
+      case "home": {
+        const drop = this._dragHandlers(HOME);
+        return html`<div
+          class="block home ${this._dropTarget === HOME ? "drop" : ""}"
+          style=${style}
+          @dragover=${drop.over}
+          @dragleave=${drop.leave}
+          @drop=${drop.drop}
+        >
+          ${icon("home")}
+          <div class="block-text">
+            <span class="node-name">${this._t("home")}</span>
+            ${measured === null
+              ? nothing
+              : html`<span class="sub"
+                  >${this._t("home_measured", { power: formatPower(this.hass, measured) })}</span
+                >`}
+          </div>
+        </div>`;
+      }
+      case "source":
+      case "placeholder": {
+        const role = block.role ?? "import";
+        const label =
+          role === "consumption"
+            ? this._t(`role_${block.source?.type ?? "gas"}` as StringKey)
+            : this._t(`role_${role}` as StringKey);
+        return html`<button
+          class="block source ${block.kind}"
+          style="${style};--source-color:${SOURCE_COLORS[role] ?? "var(--divider-color)"}"
+          title=${this._t("sources_hint")}
+          @click=${() => navigate("/config/energy")}
+        >
+          <div class="block-text">
+            <span class="node-name">${block.kind === "placeholder" ? `+ ${label}` : label}</span>
+            ${block.stat
+              ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
+              : nothing}
+          </div>
+        </button>`;
+      }
+      case "untracked": {
+        const value = rest.get(block.stat!);
+        return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
+          <div class="block-text">
+            <span class="node-name">${this._t("untracked")}</span>
+            <span class="sub">${value == null ? this._t("none") : formatPower(this.hass, value)}</span>
+          </div>
+        </div>`;
+      }
+      default:
+        return this._renderDeviceBlock(block, devices);
+    }
+  }
+
+  private _renderDeviceBlock(block: Block, devices: Device[]): TemplateResult {
+    const stat = block.stat!;
+    const node = block.node!;
+    const name = this._name(stat, devices);
+    const issues = this._issuesFor(stat);
+    const hasError = issues.some((i) => i.severity === "error") || node.problem !== null;
+    const handlers = this._dragHandlers(stat);
+    const device = devices.find((d) => d.stat_consumption === stat);
+    const watts = this.hass ? powerInWatts(this.hass, device?.stat_rate) : null;
+    const info =
+      this._snapshot?.stats[stat] ?? this._snapshot?.candidates.find((c) => c.stat === stat);
+    const sub = [watts === null ? null : formatPower(this.hass, watts), info?.area_name]
+      .filter(Boolean)
+      .join(" · ");
+    const collapsed = this._collapsed.has(stat);
+    return html`<div
+      class="block device node ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
+      stat
+        ? "drop"
+        : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""}"
+      style=${this._blockStyle(block)}
+      draggable="true"
+      data-stat=${stat}
+      @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "device", stat })}
+      @dragend=${() => {
+        this._dragged = null;
+        this._dropTarget = null;
+      }}
+      @dragover=${handlers.over}
+      @dragleave=${handlers.leave}
+      @drop=${handlers.drop}
+      @click=${() => {
+        this._selected = stat;
+        if (this.narrow) {
+          this._dialog = { kind: "details" };
+        }
+      }}
+    >
+      ${node.children.length
+        ? html`<button
+            class="icon toggle"
+            aria-label=${name}
+            aria-expanded=${String(!collapsed)}
+            @click=${(e: Event) => {
+              e.stopPropagation();
+              this._toggle(stat);
+            }}
+          >
+            ${collapsed ? "▸" : "▾"}
+          </button>`
+        : nothing}
+      <div class="block-text">
+        <span class="node-name" title=${name}>${name}</span>
+        ${sub ? html`<span class="sub">${sub}</span>` : nothing}
+      </div>
+      ${issues.length || node.problem
+        ? html`<span class="badge" title=${issues.map((i) => this._issueText(i)).join("\n")}
+            >!</span
+          >`
+        : nothing}
+      <button
+        class="icon"
+        aria-label=${this._t("actions", { name })}
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          this._dialog = { kind: "actions", stat };
+        }}
+      >
+        ${icon("dots")}
+      </button>
+    </div>`;
+  }
+
+  private _toggle(stat: string): void {
+    const next = new Set(this._collapsed);
+    if (next.has(stat)) {
+      next.delete(stat);
+    } else {
+      next.add(stat);
+    }
+    this._collapsed = next;
+  }
+
+  // --- list (hidden, kept for later use) --------------------------------------
 
   private _renderSources(): TemplateResult {
     const rows = sourceRows(this._snapshot?.prefs.energy_sources ?? []);
@@ -1282,6 +1676,116 @@ export class EnergyFlowMapperPanel extends LitElement {
     dd {
       margin: 0;
       overflow-wrap: anywhere;
+    }
+    .diagram-card {
+      padding-bottom: 0;
+      overflow: hidden;
+    }
+    .toolbar {
+      display: flex;
+      gap: 4px;
+    }
+    .viewport {
+      position: relative;
+      overflow: hidden;
+      height: calc(100vh - 250px);
+      min-height: 360px;
+      margin: 8px -16px 0;
+      border-top: 1px solid var(--divider-color);
+      touch-action: none;
+      cursor: grab;
+      background-image: radial-gradient(var(--divider-color) 1px, transparent 1px);
+      background-size: 20px 20px;
+    }
+    .narrow .viewport {
+      height: calc(100vh - 230px);
+    }
+    .canvas {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform-origin: 0 0;
+    }
+    .edges {
+      position: absolute;
+      left: 0;
+      top: 0;
+      overflow: visible;
+      pointer-events: none;
+    }
+    .block {
+      position: absolute;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 4px 6px 10px;
+      border-radius: 10px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, var(--primary-background-color));
+      color: var(--primary-text-color);
+      font-size: 14px;
+      text-align: left;
+    }
+    .block-text {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-self: stretch;
+      flex: 1;
+      min-width: 0;
+    }
+    .block .node-name {
+      flex: none;
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      line-height: 1.25;
+      font-size: 13px;
+    }
+    .block .sub {
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .block.device {
+      cursor: grab;
+      border-left: 4px solid var(--primary-color);
+    }
+    .block.device.selected {
+      background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
+    }
+    .block.home {
+      font-weight: 500;
+      border-width: 2px;
+    }
+    .block.source {
+      border-left: 4px solid var(--source-color);
+      padding-right: 10px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      justify-content: flex-start;
+    }
+    .block.placeholder {
+      border: 1px dashed var(--source-color);
+      background: transparent;
+      color: var(--secondary-text-color);
+    }
+    .block.untracked {
+      border-style: dashed;
+      background: transparent;
+      color: var(--secondary-text-color);
+      font-style: italic;
+    }
+    .block .toggle {
+      width: auto;
+      padding: 2px 4px;
+    }
+    .block.has-error {
+      border-color: var(--error-color);
     }
     .footer {
       position: fixed;
