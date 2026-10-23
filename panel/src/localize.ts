@@ -76,6 +76,14 @@ export function formatPower(hass: HomeAssistant | undefined, watts: number): str
     : `${formatNumber(hass, watts)} W`;
 }
 
+/** Format energy in kWh, switching to Wh below 1 kWh. */
+export function formatEnergy(hass: HomeAssistant | undefined, kwh: number): string {
+  if (Math.abs(kwh) < 1) {
+    return `${formatNumber(hass, kwh * 1000)} Wh`;
+  }
+  return `${formatNumber(hass, kwh, Math.abs(kwh) < 100 ? 2 : 0)} kWh`;
+}
+
 /** Format an ISO timestamp as local date and time. */
 export function formatDateTime(hass: HomeAssistant | undefined, iso: string): string {
   try {

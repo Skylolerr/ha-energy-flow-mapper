@@ -116,7 +116,7 @@ function mockHass(language = "en"): Mock {
       if (response instanceof Error || (response as { translation_key?: string })?.translation_key) {
         throw response;
       }
-      return structuredClone(response);
+      return response instanceof Promise ? response : structuredClone(response);
     }) as unknown as HomeAssistant["callWS"],
   };
   return mock;
@@ -921,5 +921,116 @@ describe("power-only sensors and external statistics", () => {
     node(el, "sensor.server").click();
     await settle(el);
     expect(text(el)).toContain("Helper Created by Energy Flow Mapper");
+  });
+});
+
+describe("energy in a period", () => {
+  function energyResponse(msg: { period: string }) {
+    return {
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      energy: { "sensor.server": 12.5, "sensor.sonos": 14, "sensor.tv": 0.42 },
+      untracked: { "sensor.server": -1.5 },
+      issues: [
+        {
+          code: "children_exceed_parent",
+          severity: "warning",
+          stat: "sensor.server",
+          details: { parent: 12.5, children: 14, excess: 1.5 },
+        },
+      ],
+    };
+  }
+
+  it("switches to kWh, shows untracked energy and the warning", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/energy"] = energyResponse;
+    const el = await mount(mock);
+    expect(root(el).querySelector('.periods button[data-period="now"]')!.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    root(el).querySelector<HTMLButtonElement>('.periods button[data-period="week"]')!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/energy")).toEqual({
+      type: "energy_flow_mapper/energy",
+      period: "week",
+    });
+    expect(node(el, "sensor.server").textContent).toContain("12.5 kWh");
+    expect(node(el, "sensor.tv").textContent).toContain("420 Wh");
+    expect(root(el).querySelector(".untracked")!.textContent).toContain("-1.5 kWh");
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("12.92 kWh measured");
+    // The warning marks the server; the details show the energy.
+    expect(node(el, "sensor.server").querySelector(".badge")!.getAttribute("title")).toBe(
+      "Its devices use more than this device",
+    );
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(text(el)).toContain("Energy in period 12.5 kWh");
+    expect(text(el)).toContain("Power now 50 W");
+    // Arrow width follows the energy: the Sonos amp has the most.
+    const path = root(el).querySelector('.edge[data-from="sensor.server"][data-to="sensor.sonos"] path')!;
+    expect(path.getAttribute("stroke-width")).toBe("8");
+
+    root(el).querySelector<HTMLButtonElement>('.periods button[data-period="now"]')!.click();
+    await settle(el);
+    expect(node(el, "sensor.server").textContent).toContain("50 W");
+    expect(node(el, "sensor.server").querySelector(".badge")).toBeNull();
+  });
+
+  it("asks for the draft's energy and shows a loading hint", async () => {
+    const mock = mockHass();
+    let resolve: (value: unknown) => void = () => undefined;
+    mock.responses["energy_flow_mapper/energy"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    el._change({ type: "remove", stat: "sensor.tv" });
+    el.setPeriod("today");
+    await settle(el);
+    expect(text(el)).toContain("Loading consumption");
+    expect(lastCall(mock, "energy_flow_mapper/energy")).toMatchObject({
+      period: "today",
+      base_hash: "hash-1",
+      changes: [{ type: "remove", stat: "sensor.tv" }],
+    });
+    resolve(energyResponse({ period: "today" }));
+    await settle(el);
+    expect(text(el)).not.toContain("Loading consumption");
+  });
+
+  it("ignores outdated answers", async () => {
+    const mock = mockHass();
+    const pending: ((value: unknown) => void)[] = [];
+    mock.responses["energy_flow_mapper/energy"] = () => new Promise((r) => pending.push(r));
+    const el = await mount(mock);
+    el.setPeriod("week");
+    el.setPeriod("month");
+    await settle(el);
+    pending[1](energyResponse({ period: "month" }));
+    pending[0](energyResponse({ period: "week" }));
+    await settle(el);
+    expect(el._energy?.period).toBe("month");
+  });
+
+  it("reports errors of the current request only", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/energy"] = { translation_key: "not_loaded" };
+    const el = await mount(mock);
+    el.setPeriod("today");
+    await settle(el);
+    expect(text(el)).toContain("not loaded");
+    expect(el._energy).toBeNull();
+  });
+
+  it("refreshes after saving and discarding", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/energy"] = energyResponse;
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const before = mock.calls.filter((c) => c.type === "energy_flow_mapper/energy").length;
+    el._change({ type: "remove", stat: "sensor.tv" });
+    el._discard();
+    await settle(el);
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/energy").length).toBe(before + 2);
   });
 });

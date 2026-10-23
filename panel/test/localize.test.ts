@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { formatNumber, formatPower, hasKey, LANGUAGES, localize } from "../src/localize";
+import { formatEnergy, formatNumber, formatPower, hasKey, LANGUAGES, localize } from "../src/localize";
 import { de } from "../src/translations/de";
 import { en } from "../src/translations/en";
 import type { HomeAssistant } from "../src/types";
@@ -61,6 +61,13 @@ describe("formatting", () => {
     expect(formatNumber(hass("en", "none"), 1240)).toBe("1240");
     expect(formatNumber(hass("en"), 1.234, 2)).toBe("1.23");
     expect(formatNumber(hass("en", "comma_decimal"), 1240)).toBe("1,240");
+  });
+
+  it("formats energy in Wh and kWh", () => {
+    expect(formatEnergy(hass("en"), 0.4204)).toBe("420 Wh");
+    expect(formatEnergy(hass("en"), 12.345)).toBe("12.35 kWh");
+    expect(formatEnergy(hass("en"), 1234.5)).toBe("1,235 kWh");
+    expect(formatEnergy(hass("en"), -1.5)).toBe("-1.5 kWh");
   });
 
   it("formats power in W and kW", () => {

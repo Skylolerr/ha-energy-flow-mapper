@@ -24,6 +24,7 @@ import {
 } from "./layout";
 import {
   formatDateTime,
+  formatEnergy,
   formatNumber,
   formatPower,
   hasKey,
@@ -37,8 +38,10 @@ import type {
   Change,
   Device,
   DiffEntry,
+  EnergyResult,
   HomeAssistant,
   Issue,
+  Period,
   SaveResult,
   Snapshot,
   Source,
@@ -146,6 +149,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _renameValue: { state: true },
     _view: { state: true },
     _zoom: { state: true },
+    _period: { state: true },
+    _energy: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -169,9 +174,13 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** "list" is the former indented tree; it is kept but not offered in the UI. */
   declare _view: "diagram" | "list";
   declare _zoom: Zoom;
+  declare _period: Period;
+  /** Energy of the current period and draft; null for "now" or while loading. */
+  declare _energy: EnergyResult | null;
 
   private _loading = false;
   private _validateRequest = 0;
+  private _energyRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   private _pointers = new Map<number, { x: number; y: number }>();
@@ -196,6 +205,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._renameValue = "";
     this._view = "diagram";
     this._zoom = { x: 0, y: 0, k: 1 };
+    this._period = "now";
+    this._energy = null;
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -223,7 +234,53 @@ export class EnergyFlowMapperPanel extends LitElement {
     } finally {
       this._loading = false;
     }
-    await this._validate();
+    await Promise.all([this._validate(), this._loadEnergy()]);
+  }
+
+  /** Show live power ("now") or the energy of a period. */
+  setPeriod(period: Period): void {
+    this._period = period;
+    this._energy = null;
+    void this._loadEnergy();
+  }
+
+  /** Fetch the energy of the period for the draft; outdated answers are ignored. */
+  async _loadEnergy(): Promise<void> {
+    const request = ++this._energyRequest;
+    if (!this.hass || !this._snapshot || this._period === "now") {
+      this._energy = null;
+      return;
+    }
+    try {
+      const result = await this.hass.callWS<EnergyResult>({
+        type: `${DOMAIN}/energy`,
+        period: this._period,
+        ...(this._changes.length
+          ? { base_hash: this._snapshot.hash, changes: this._changes }
+          : {}),
+      });
+      if (request === this._energyRequest) {
+        this._energy = result;
+      }
+    } catch (err) {
+      if (request === this._energyRequest) {
+        await this._handleError(err);
+      }
+    }
+  }
+
+  /** Values shown in the diagram: power in W, or energy in kWh for a period. */
+  _values(devices: Device[]): Map<string, number | null> {
+    if (this._period === "now") {
+      return this._powerMap(devices);
+    }
+    const energy = this._energy?.energy ?? {};
+    return new Map(devices.map((d) => [d.stat_consumption, energy[d.stat_consumption] ?? null]));
+  }
+
+  /** Format a value of `_values` for the current period. */
+  _formatValue(value: number): string {
+    return this._period === "now" ? formatPower(this.hass, value) : formatEnergy(this.hass, value);
   }
 
   /** The device list with the draft applied. */
@@ -252,7 +309,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   private _issues(): Issue[] {
-    return this._validation?.issues ?? this._snapshot?.issues ?? [];
+    const base = this._validation?.issues ?? this._snapshot?.issues ?? [];
+    return this._period === "now" ? base : [...base, ...(this._energy?.issues ?? [])];
   }
 
   private _issuesFor(stat: string): Issue[] {
@@ -262,6 +320,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   _change(change: Change): void {
     this._changes = [...this._changes, change];
     void this._validate();
+    void this._loadEnergy();
   }
 
   /** Ask the backend to check the draft; outdated answers are ignored. */
@@ -298,6 +357,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   _discard(): void {
     this._changes = [];
     this._validation = null;
+    void this._loadEnergy();
   }
 
   async _openConfirm(): Promise<void> {
@@ -676,12 +736,12 @@ export class EnergyFlowMapperPanel extends LitElement {
   diagramLayout() {
     const devices = this.draft;
     const roots = buildTree(devices);
-    const power = this._powerMap(devices);
+    const values = this._values(devices);
     return layout(
       roots,
       sourceRows(this.draftSources),
-      power,
-      untracked(roots, power),
+      values,
+      untracked(roots, values),
       this._collapsed,
     );
   }
@@ -777,7 +837,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const result = this.diagramLayout();
     const blocks = new Map(result.blocks.map((b) => [b.id, b]));
     const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
-    const power = this._powerMap(devices);
+    const power = this._values(devices);
     const rest = untracked(buildTree(devices), power);
     const known = buildTree(devices)
       .map((n) => power.get(n.stat))
@@ -788,6 +848,18 @@ export class EnergyFlowMapperPanel extends LitElement {
       <section class="card diagram-card">
         <div class="card-header">
           <h2>${this._t("diagram")}</h2>
+          <div class="periods" role="group" aria-label=${this._t("period_label")}>
+            ${(["now", "today", "week", "month"] as const).map(
+              (period) => html`<button
+                class=${this._period === period ? "active" : ""}
+                aria-pressed=${String(this._period === period)}
+                data-period=${period}
+                @click=${() => this.setPeriod(period)}
+              >
+                ${this._t(`period_${period}`)}
+              </button>`,
+            )}
+          </div>
           <div class="toolbar">
             <button
               class="icon"
@@ -808,7 +880,12 @@ export class EnergyFlowMapperPanel extends LitElement {
             <button @click=${() => this.fit()}>${this._t("fit")}</button>
           </div>
         </div>
-        <p class="hint">${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}</p>
+        <p class="hint">
+          ${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}
+          ${this._period !== "now" && this._energy === null
+            ? html`<span class="loading">${this._t("energy_loading")}</span>`
+            : nothing}
+        </p>
         <div
           class="viewport ${this._dragged ? "dragging" : ""}"
           @wheel=${(e: WheelEvent) => this._onWheel(e)}
@@ -893,7 +970,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             ${measured === null
               ? nothing
               : html`<span class="sub"
-                  >${this._t("home_measured", { power: formatPower(this.hass, measured) })}</span
+                  >${this._t("home_measured", { power: this._formatValue(measured) })}</span
                 >`}
           </div>
         </div>`;
@@ -941,7 +1018,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
           <div class="block-text">
             <span class="node-name">${this._t("untracked")}</span>
-            <span class="sub">${value == null ? this._t("none") : formatPower(this.hass, value)}</span>
+            <span class="sub">${value == null ? this._t("none") : this._formatValue(value)}</span>
           </div>
         </div>`;
       }
@@ -958,10 +1035,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     const hasError = issues.some((i) => i.severity === "error") || node.problem !== null;
     const handlers = this._dragHandlers(stat);
     const device = devices.find((d) => d.stat_consumption === stat);
-    const watts = this.hass ? powerInWatts(this.hass, device?.stat_rate) : null;
+    const value = device ? (this._values([device]).get(stat) ?? null) : null;
     const info =
       this._snapshot?.stats[stat] ?? this._snapshot?.candidates.find((c) => c.stat === stat);
-    const sub = [watts === null ? null : formatPower(this.hass, watts), info?.area_name]
+    const sub = [value === null ? null : this._formatValue(value), info?.area_name]
       .filter(Boolean)
       .join(" · ");
     const collapsed = this._collapsed.has(stat);
@@ -1280,10 +1357,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     const info = this._snapshot?.stats[stat] ?? this._snapshot?.candidates.find((c) => c.stat === stat);
     const watts = this.hass ? powerInWatts(this.hass, device.stat_rate) : null;
     const roots = buildTree(devices);
-    const power = new Map<string, number | null>(
-      devices.map((d) => [d.stat_consumption, this.hass ? powerInWatts(this.hass, d.stat_rate) : null]),
-    );
-    const rest = untracked(roots, power).get(stat);
+    const values = this._values(devices);
+    const rest = untracked(roots, values).get(stat);
+    const energy = this._period === "now" ? undefined : (values.get(stat) ?? null);
     const issues = this._issuesFor(stat);
     const row = (label: StringKey, value: string | null | undefined) =>
       html`<dt>${this._t(label)}</dt>
@@ -1295,9 +1371,12 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${row("detail_statistic", stat)} ${row("detail_power_sensor", device.stat_rate)}
           ${row("detail_device", info?.device_name)} ${row("detail_area", info?.area_name)}
           ${row("detail_power", watts === null ? null : formatPower(this.hass, watts))}
+          ${energy !== undefined
+            ? row("detail_energy", energy === null ? null : formatEnergy(this.hass, energy))
+            : nothing}
           ${info?.created_helper ? row("detail_helper", this._t("created_by")) : nothing}
           ${rest !== undefined
-            ? row("detail_untracked", rest === null ? null : formatPower(this.hass, rest))
+            ? row("detail_untracked", rest === null ? null : this._formatValue(rest))
             : nothing}
         </dl>
         ${issues.length
@@ -1996,6 +2075,33 @@ export class EnergyFlowMapperPanel extends LitElement {
     .toolbar {
       display: flex;
       gap: 4px;
+    }
+    .diagram-card .card-header {
+      flex-wrap: wrap;
+    }
+    .periods {
+      display: flex;
+      margin-left: auto;
+    }
+    .periods button {
+      border-radius: 0;
+      margin-left: -1px;
+      padding: 4px 10px;
+      color: var(--primary-text-color);
+    }
+    .periods button:first-child {
+      border-radius: 8px 0 0 8px;
+    }
+    .periods button:last-child {
+      border-radius: 0 8px 8px 0;
+    }
+    .periods button.active {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+      color: var(--text-primary-color, #fff);
+    }
+    .hint .loading {
+      font-style: italic;
     }
     .toolbar button.icon {
       font-size: 18px;

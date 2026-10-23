@@ -147,3 +147,16 @@ export interface WSError {
   message?: string;
   translation_key?: string;
 }
+
+/** "now" shows live power; the others energy in a period. */
+export type Period = "now" | "today" | "week" | "month";
+
+/** Result of `energy_flow_mapper/energy`; values in kWh. */
+export interface EnergyResult {
+  period: Exclude<Period, "now">;
+  start: string;
+  end: string;
+  energy: Record<string, number | null>;
+  untracked: Record<string, number | null>;
+  issues: Issue[];
+}
