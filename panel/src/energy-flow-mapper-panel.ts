@@ -396,7 +396,43 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
     }
+    if (dragged.kind === "device" && this._view === "diagram") {
+      this._setDragImage(event);
+    }
     this._dragged = dragged;
+  }
+
+  /**
+   * Browsers draw the drag image at the block's unzoomed size, which looks
+   * huge in a zoomed-out diagram. Use a copy scaled like the diagram instead.
+   */
+  _setDragImage(event: DragEvent): void {
+    const block = event.currentTarget as HTMLElement | null;
+    const transfer = event.dataTransfer;
+    if (!block || !transfer?.setDragImage) {
+      return;
+    }
+    const { k } = this._zoom;
+    const width = block.offsetWidth * k;
+    const height = block.offsetHeight * k;
+    const ghost = document.createElement("div");
+    ghost.className = "drag-ghost";
+    ghost.style.cssText = `position:fixed;left:0;top:-${Math.ceil(height) + 100}px;width:${width}px;height:${height}px;overflow:hidden;pointer-events:none`;
+    const copy = block.cloneNode(true) as HTMLElement;
+    copy.style.left = "0";
+    copy.style.top = "0";
+    copy.style.transform = `scale(${k})`;
+    copy.style.transformOrigin = "0 0";
+    ghost.append(copy);
+    this.renderRoot.append(ghost);
+    const rect = block.getBoundingClientRect();
+    transfer.setDragImage(
+      ghost,
+      Math.min(width, Math.max(0, event.clientX - rect.left)),
+      Math.min(height, Math.max(0, event.clientY - rect.top)),
+    );
+    // The browser takes its snapshot synchronously; the copy can go right after.
+    setTimeout(() => ghost.remove(), 0);
   }
 
   _addCandidate(stat: string, parent: string | null): void {

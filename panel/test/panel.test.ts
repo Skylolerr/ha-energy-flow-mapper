@@ -660,3 +660,46 @@ describe("hidden list view", () => {
     expect(root(el).querySelector('.node[data-stat="sensor.sonos"]')).toBeNull();
   });
 });
+
+describe("dragging in the diagram", () => {
+  it("uses a drag image scaled like the diagram", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const el = await mount(mockHass());
+    el._zoom = { x: 0, y: 0, k: 0.5 };
+    await settle(el);
+    const block = node(el, "sensor.tv");
+    Object.defineProperty(block, "offsetWidth", { value: 220, configurable: true });
+    Object.defineProperty(block, "offsetHeight", { value: 72, configurable: true });
+    block.getBoundingClientRect = () => ({ left: 100, top: 50 }) as DOMRect;
+    const dataTransfer = { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: "" };
+    block.dispatchEvent(
+      Object.assign(new Event("dragstart", { bubbles: true }), {
+        dataTransfer,
+        clientX: 120,
+        clientY: 60,
+      }),
+    );
+    expect(dataTransfer.setDragImage).toHaveBeenCalledTimes(1);
+    const [ghost, x, y] = dataTransfer.setDragImage.mock.calls[0];
+    expect(ghost.style.width).toBe("110px");
+    expect(ghost.style.height).toBe("36px");
+    expect((ghost.firstElementChild as HTMLElement).style.transform).toBe("scale(0.5)");
+    expect([x, y]).toEqual([20, 10]);
+    expect(root(el).querySelector(".drag-ghost")).not.toBeNull();
+    vi.advanceTimersByTime(1);
+    expect(root(el).querySelector(".drag-ghost")).toBeNull();
+  });
+
+  it("keeps the default drag image for free sensors and without support", async () => {
+    const el = await mount(mockHass());
+    const candidate = root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.printer"]')!;
+    const dataTransfer = { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: "" };
+    candidate.dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer }));
+    expect(dataTransfer.setDragImage).not.toHaveBeenCalled();
+    const plain = { setData: vi.fn(), effectAllowed: "" };
+    node(el, "sensor.tv").dispatchEvent(
+      Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: plain }),
+    );
+    expect(el._dragged).toEqual({ kind: "device", stat: "sensor.tv" });
+  });
+});
