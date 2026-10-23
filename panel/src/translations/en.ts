@@ -108,7 +108,7 @@ export const en = {
   summary_removed: "{count} removed",
   summary_moved: "{count} moved",
   summary_renamed: "{count} renamed",
-  summary_rate: "{count} power sensor changed",
+  summary_rate: "{count} with new power sensor",
   summary_restored: "Restored a backup",
   error_conflict:
     "The energy settings were changed elsewhere in the meantime. They were reloaded; check your changes and save again.",
@@ -141,5 +141,13 @@ export const en = {
   error_unknown_source: "This sensor is not a source in the energy dashboard.",
   error_not_a_power_candidate: "This sensor is not a power sensor without an energy meter.",
   error_integral_failed: "The energy meter helper could not be created.",
+  confirm_rejected: "Home Assistant does not accept these settings:",
+  source_last_meter: "This is the last meter of this grid connection. Removing it removes the connection with its prices.",
+  error_invalid_changes: "The draft has errors and was not saved.",
+  error_device_exists: "This device is already in the energy dashboard.",
+  error_unknown_device: "A device of your draft is no longer in the energy dashboard. Discard the draft and try again.",
+  error_unknown_change: "This change is not supported.",
+  error_backup_not_found: "This backup no longer exists.",
+  error_rejected_by_home_assistant: "Home Assistant rejected the settings: {error}",
   error_unknown: "Error: {message}",
 };

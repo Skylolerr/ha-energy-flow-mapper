@@ -72,7 +72,7 @@ export function applyChanges(devices: Device[], changes: Change[]): Device[] {
       setOptional(result[index], "included_in_stat", change.parent);
     } else if (change.type === "rename") {
       setOptional(result[index], "name", change.name);
-    } else {
+    } else if (change.type === "remove") {
       const [removed] = result.splice(index, 1);
       for (const other of result) {
         if (other.included_in_stat === change.stat) {
@@ -266,10 +266,14 @@ export function sourceRows(sources: Source[]): SourceRow[] {
 
 const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
 
+/** Source types the panel may change; gas and water are only shown. */
+const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery"];
+
 /**
  * Apply the source changes of a draft to a copy, like hierarchy.py: grid
- * import/export replace the meter of the first grid connection (keeping its
- * prices), solar and battery add a source. Changes that do not fit are skipped.
+ * import/export replace the meter given as `replace`, or else that of the
+ * first grid connection (keeping its prices), solar and battery add a source.
+ * Changes that do not fit are skipped.
  */
 export function applySourceChanges(sources: Source[], changes: Change[]): Source[] {
   const result: Source[] = structuredClone(sources);
@@ -277,8 +281,12 @@ export function applySourceChanges(sources: Source[], changes: Change[]): Source
     if (change.type === "assign_source") {
       if (change.role === "import" || change.role === "export") {
         const key = change.role === "import" ? "stat_energy_from" : "stat_energy_to";
-        let grid = result.find((s) => s.type === "grid");
+        const grids = result.filter((s) => s.type === "grid");
+        let grid = change.replace ? grids.find((s) => s[key] === change.replace) : grids[0];
         if (grid === undefined) {
+          if (change.replace) {
+            continue;
+          }
           grid = structuredClone(NEW_GRID);
           result.push(grid);
         }
@@ -293,7 +301,9 @@ export function applySourceChanges(sources: Source[], changes: Change[]): Source
         result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
       }
     } else if (change.type === "unassign_source") {
-      const index = result.findIndex((s) => ENERGY_KEYS.some((k) => s[k] === change.stat));
+      const index = result.findIndex(
+        (s) => EDITABLE_SOURCE_TYPES.includes(s.type) && ENERGY_KEYS.some((k) => s[k] === change.stat),
+      );
       if (index === -1) {
         continue;
       }

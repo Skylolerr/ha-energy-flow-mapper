@@ -93,7 +93,7 @@ type Dialog =
   | { kind: "details" }
   | { kind: "menu" }
   | { kind: "source"; role: string; label: string; stat: string | null }
-  | { kind: "assign"; role: AssignRole }
+  | { kind: "assign"; role: AssignRole; replace?: string | null }
   | { kind: "battery"; discharge: string }
   | { kind: "integral"; stat: string };
 
@@ -121,7 +121,10 @@ export function errorText(hass: HomeAssistant | undefined, err: unknown): string
   const error = (err ?? {}) as WSError;
   const key = `error_${error.translation_key ?? ""}`;
   if (error.translation_key && hasKey(key)) {
-    return localize(hass, key);
+    const placeholders = Object.fromEntries(
+      Object.entries(error.translation_placeholders ?? {}).map(([k, v]) => [k, String(v)]),
+    );
+    return localize(hass, key, placeholders);
   }
   return localize(hass, "error_unknown", { message: error.message ?? String(err) });
 }
@@ -474,7 +477,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     if (target.startsWith(SOURCE_TARGET)) {
-      this._assign(target.split(":")[1] as AssignRole, dragged.stat);
+      // `src:<assign role>:<block id>`; a block with a meter gets it replaced.
+      const rest = target.slice(SOURCE_TARGET.length);
+      const separator = rest.indexOf(":");
+      const blockId = rest.slice(separator + 1);
+      const block = this.diagramLayout().blocks.find((b) => b.id === blockId && b.kind === "source");
+      this._assign(rest.slice(0, separator) as AssignRole, dragged.stat, block?.stat ?? null);
       return;
     }
     const parent = target === HOME ? null : target;
@@ -566,14 +574,19 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._selected = stat;
   }
 
-  /** Assign a free sensor to a source role; a battery asks for its second meter. */
-  _assign(role: AssignRole, stat: string): void {
+  /**
+   * Assign a free sensor to a source role; a battery asks for its second
+   * meter. `replace` names the grid meter it replaces, so that the right grid
+   * connection changes when there are several.
+   */
+  _assign(role: AssignRole, stat: string, replace: string | null = null): void {
     if (role === "battery") {
       this._dialog = { kind: "battery", discharge: stat };
       return;
     }
     this._dialog = null;
-    this._change({ type: "assign_source", role, stat });
+    const grid = role === "import" || role === "export";
+    this._change({ type: "assign_source", role, stat, ...(grid && replace ? { replace } : {}) });
   }
 
   /** Statistics used by the draft's devices and sources. */
@@ -622,10 +635,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Free sensors that are not added in the draft yet. */
-  _freeCandidates(): Candidate[] {
+  /** Free sensors that are not added in the draft yet, matching `search`. */
+  _freeCandidates(search: string = this._search): Candidate[] {
     const used = this._usedInDraft();
-    const search = this._search.trim().toLowerCase();
+    search = search.trim().toLowerCase();
     return (this._snapshot?.candidates ?? []).filter(
       (c) =>
         !used.has(c.stat) &&
@@ -1458,7 +1471,8 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** A list of free sensors to pick from, for source dialogs. */
   private _sensorList(exclude: string[], pick: (stat: string) => void): TemplateResult {
-    const sensors = this._freeCandidates().filter((c) => !exclude.includes(c.stat));
+    // Dialogs list all free sensors; the search box only filters its own column.
+    const sensors = this._freeCandidates("").filter((c) => !exclude.includes(c.stat));
     if (sensors.length === 0) {
       return html`<p class="empty">${this._t("no_candidates")}</p>`;
     }
@@ -1628,6 +1642,10 @@ export class EnergyFlowMapperPanel extends LitElement {
           </ul>
           ${errors.length ? html`<p>${this._t("confirm_errors")}</p>${issueList(errors)}` : nothing}
           ${warnings.length ? html`<p>${this._t("confirm_warnings")}</p>${issueList(warnings)}` : nothing}
+          ${result.rejected
+            ? html`<p>${this._t("confirm_rejected")}</p>
+                <p class="rejected">${result.rejected}</p>`
+            : nothing}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
             <button
@@ -1682,16 +1700,30 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>`;
       }
       case "source": {
+        // Gas and water are only shown: no assign role, nothing to change.
         const assign = assignRole(dialog.role);
+        const grid = assign === "import" || assign === "export";
+        const source = this.draftSources.find(
+          (s) => s.stat_energy_from === dialog.stat || s.stat_energy_to === dialog.stat,
+        );
+        const lastMeter =
+          source?.type === "grid" &&
+          !(source.stat_energy_from && source.stat_energy_to) &&
+          !source.stat_rate &&
+          !source.power_config;
         return html`<h2>${dialog.label}</h2>
           ${dialog.stat ? html`<p>${this._name(dialog.stat)}</p>` : nothing}
+          ${dialog.stat && assign && lastMeter ? html`<p class="hint">${this._t("source_last_meter")}</p>` : nothing}
           <div class="dialog-actions column-actions">
             ${assign
-              ? html`<button @click=${() => (this._dialog = { kind: "assign", role: assign })}>
+              ? html`<button
+                  @click=${() =>
+                    (this._dialog = { kind: "assign", role: assign, replace: grid ? dialog.stat : null })}
+                >
                   ${this._t(dialog.stat && assign !== "production" && assign !== "battery" ? "source_replace" : "source_assign")}
                 </button>`
               : nothing}
-            ${dialog.stat
+            ${dialog.stat && assign
               ? html`<button
                   class="danger"
                   @click=${() => {
@@ -1716,7 +1748,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "assign":
         return html`<h2>${this._t("assign_title", { role: this._roleLabel(dialog.role) })}</h2>
           <p class="hint">${this._t("assign_hint")}</p>
-          ${this._sensorList([], (stat) => this._assign(dialog.role, stat))}
+          ${this._sensorList([], (stat) => this._assign(dialog.role, stat, dialog.replace ?? null))}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
           </div>`;
@@ -2058,7 +2090,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       flex: 1;
       min-width: 0;
     }
-    .candidate-text .node-name,
+    /* Names wrap in narrow columns; the line below them is cut. */
+    .candidate-text .node-name {
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
     .candidate-text .sub {
       white-space: nowrap;
       overflow: hidden;
@@ -2066,7 +2102,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     dl {
       display: grid;
-      grid-template-columns: auto 1fr;
+      /* Long labels wrap instead of squeezing the values to one letter. */
+      grid-template-columns: fit-content(45%) minmax(0, 1fr);
       gap: 4px 12px;
       margin: 12px 0 0;
       font-size: 14px;
@@ -2280,6 +2317,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .footer span {
       flex: 1;
+    }
+    dialog label {
+      display: block;
+      margin-top: 12px;
+    }
+    .rejected {
+      color: var(--error-color);
+      overflow-wrap: anywhere;
     }
     dialog {
       border: none;

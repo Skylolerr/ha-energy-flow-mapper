@@ -116,6 +116,14 @@ describe("applyChanges", () => {
     expect(buildTree(result).map((n) => n.stat)).toEqual(["kitchen", "office", "garage"]);
   });
 
+  it("leaves devices alone on source changes", () => {
+    const result = applyChanges(deep(), [
+      { type: "unassign_source", stat: "main" },
+      { type: "assign_source", role: "import", stat: "main" },
+    ]);
+    expect(result).toEqual(deep());
+  });
+
   it("skips changes that do not fit", () => {
     const result = applyChanges(deep(), [
       { type: "add", stat: "main" },
@@ -269,6 +277,23 @@ describe("applySourceChanges", () => {
       { type: "unassign_source", stat: "unknown" },
     ]);
     expect(result).toEqual([{ ...grid, stat_energy_from: null, stat_energy_to: "exp" }]);
+  });
+
+  it("replaces the meter of the given grid connection", () => {
+    const second = { type: "grid", stat_energy_from: "b", number_energy_price: 0.2 };
+    const result = applySourceChanges(
+      [grid, second],
+      [
+        { type: "assign_source", role: "import", stat: "c", replace: "b" },
+        { type: "assign_source", role: "export", stat: "d", replace: "nope" },
+      ],
+    );
+    expect(result).toEqual([grid, { ...second, stat_energy_from: "c" }]);
+  });
+
+  it("keeps gas and water sources", () => {
+    const gas = { type: "gas", stat_energy_from: "g" };
+    expect(applySourceChanges([gas], [{ type: "unassign_source", stat: "g" }])).toEqual([gas]);
   });
 
   it("ignores device changes", () => {

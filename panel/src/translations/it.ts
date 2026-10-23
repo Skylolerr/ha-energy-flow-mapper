@@ -110,7 +110,7 @@ export const it: Translations = {
   summary_removed: "{count} rimossi",
   summary_moved: "{count} spostati",
   summary_renamed: "{count} rinominati",
-  summary_rate: "{count} sensori di potenza modificati",
+  summary_rate: "{count} con nuovo sensore di potenza",
   summary_restored: "Backup ripristinato",
   error_conflict:
     "Le impostazioni energetiche sono state modificate altrove nel frattempo. Sono state ricaricate; controlla le modifiche e salva di nuovo.",
@@ -143,5 +143,13 @@ export const it: Translations = {
   error_unknown_source: "Questo sensore non è una fonte nella dashboard energia.",
   error_not_a_power_candidate: "Questo sensore non è un sensore di potenza senza contatore di energia.",
   error_integral_failed: "Non è stato possibile creare l’aiutante del contatore di energia.",
+  confirm_rejected: "Home Assistant non accetta queste impostazioni:",
+  source_last_meter: "È l’ultimo contatore di questo allacciamento alla rete. Rimuoverlo rimuove l’allacciamento con i suoi prezzi.",
+  error_invalid_changes: "La bozza contiene errori e non è stata salvata.",
+  error_device_exists: "Questo dispositivo è già nella dashboard energia.",
+  error_unknown_device: "Un dispositivo della tua bozza non è più nella dashboard energia. Annulla la bozza e riprova.",
+  error_unknown_change: "Questa modifica non è supportata.",
+  error_backup_not_found: "Questo backup non esiste più.",
+  error_rejected_by_home_assistant: "Home Assistant ha rifiutato le impostazioni: {error}",
   error_unknown: "Errore: {message}",
 };

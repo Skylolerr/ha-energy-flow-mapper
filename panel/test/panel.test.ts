@@ -390,6 +390,24 @@ describe("saving", () => {
     expect(dialog.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
   });
 
+  it("shows what Home Assistant rejects", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/validate"] = {
+      valid: false,
+      issues: [],
+      rejected: "Entity or number price is not supported for external statistics",
+      diff: [],
+    };
+    const el = await mount(mock);
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    await el._openConfirm();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Home Assistant does not accept these settings");
+    expect(dialog.querySelector(".rejected")!.textContent).toContain("external statistics");
+    expect(dialog.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
+  });
+
   it("reloads after a conflict and keeps the draft", async () => {
     const mock = mockHass();
     const el = await mount(mock);
@@ -469,7 +487,7 @@ describe("backups", () => {
     const el = await mount(mock);
     await el._restore(backup);
     await settle(el);
-    expect(text(el)).toContain("Error:");
+    expect(text(el)).toContain("This backup no longer exists.");
   });
 });
 
@@ -502,6 +520,13 @@ describe("texts", () => {
     expect(errorText(hass, { translation_key: "conflict" })).toContain("an anderer Stelle");
     expect(errorText(hass, { translation_key: "nope", message: "Boom" })).toBe("Fehler: Boom");
     expect(errorText(hass, new Error("x"))).toBe("Fehler: x");
+    expect(
+      errorText(hass, {
+        translation_key: "rejected_by_home_assistant",
+        translation_placeholders: { error: "kaputt" },
+      }),
+    ).toBe("Home Assistant hat die Einstellungen abgelehnt: kaputt");
+    expect(errorText(hass, { translation_key: "unknown_device" })).toContain("Verwirf den Entwurf");
   });
 
   it("describes diff entries", async () => {
@@ -829,14 +854,49 @@ describe("sources", () => {
     await settle(el);
     root(el).querySelector<HTMLButtonElement>('button.target[data-target="portal:import"]')!.click();
     await settle(el);
-    expect(el._changes).toEqual([{ type: "assign_source", role: "export", stat: "portal:import" }]);
+    expect(el._changes).toEqual([
+      { type: "assign_source", role: "export", stat: "portal:import", replace: "sensor.export" },
+    ]);
 
     root(el).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
     await settle(el);
+    expect(text(el)).not.toContain("last meter");
     buttonWith(el, "Remove as source").click();
     await settle(el);
     expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.import" });
     expect(root(el).querySelector('.block.placeholder[data-role="import"]')).not.toBeNull();
+
+    // The export meter is now the last one: removing it removes the connection.
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="export"]')!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("last meter of this grid connection");
+  });
+
+  it("replaces the meter of the grid connection it was dropped on", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources = [
+      { type: "grid", stat_energy_from: "sensor.import", stat_energy_to: null },
+      { type: "grid", stat_energy_from: "sensor.import2", stat_energy_to: null },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    const imports = root(el).querySelectorAll<HTMLElement>('.block.source[data-role="import"]');
+    const candidate = root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.attic"]')!;
+    drag(candidate, imports[1]);
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "assign_source", role: "import", stat: "sensor.attic", replace: "sensor.import2" },
+    ]);
+    expect(el.draftSources.map((s) => s.stat_energy_from)).toEqual(["sensor.import", "sensor.attic"]);
+  });
+
+  it("lists all free sensors in the source dialog, whatever the search", async () => {
+    const el = await mount(mockHass());
+    el._search = "nothing matches this";
+    root(el).querySelector<HTMLButtonElement>('.block.placeholder[data-role="production"]')!.click();
+    await settle(el);
+    expect(root(el).querySelector('dialog button.target[data-target="sensor.printer"]')).not.toBeNull();
   });
 
   it("offers assigning on solar and battery blocks and nothing on gas", async () => {
@@ -856,6 +916,7 @@ describe("sources", () => {
     const dialog = root(el).querySelector("dialog")!.textContent!;
     expect(dialog).toContain("Gas");
     expect(dialog).not.toContain("Assign sensor");
+    expect(dialog).not.toContain("Remove as source");
   });
 
   it("describes source changes", async () => {

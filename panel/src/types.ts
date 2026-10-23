@@ -107,7 +107,14 @@ export type Change =
   | { type: "move"; stat: string; parent: string | null }
   | { type: "rename"; stat: string; name: string | null }
   | { type: "remove"; stat: string }
-  | { type: "assign_source"; role: AssignRole; stat: string; stat_to?: string }
+  | {
+      type: "assign_source";
+      role: AssignRole;
+      stat: string;
+      stat_to?: string;
+      /** Grid meter to replace; without it, the first grid connection is used. */
+      replace?: string | null;
+    }
   | { type: "unassign_source"; stat: string };
 
 /** Source roles a free sensor can be assigned to. */
@@ -125,6 +132,8 @@ export interface DiffEntry {
 export interface ValidateResult {
   valid: boolean;
   issues: Issue[];
+  /** Home Assistant's own (English) message when its schemas reject the draft. */
+  rejected?: string | null;
   diff: DiffEntry[];
 }
 
@@ -146,6 +155,7 @@ export interface WSError {
   code?: string;
   message?: string;
   translation_key?: string;
+  translation_placeholders?: Record<string, unknown> | null;
 }
 
 /** "now" shows live power; the others energy in a period. */

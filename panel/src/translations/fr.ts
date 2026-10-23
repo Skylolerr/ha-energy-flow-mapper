@@ -110,7 +110,7 @@ export const fr: Translations = {
   summary_removed: "{count} retiré(s)",
   summary_moved: "{count} déplacé(s)",
   summary_renamed: "{count} renommé(s)",
-  summary_rate: "{count} capteur(s) de puissance modifié(s)",
+  summary_rate: "{count} avec nouveau capteur de puissance",
   summary_restored: "Sauvegarde restaurée",
   error_conflict:
     "Les réglages d’énergie ont été modifiés ailleurs entre-temps. Ils ont été rechargés ; vérifie tes modifications et enregistre à nouveau.",
@@ -143,5 +143,13 @@ export const fr: Translations = {
   error_unknown_source: "Ce capteur n’est pas une source du tableau de bord énergie.",
   error_not_a_power_candidate: "Ce capteur n’est pas un capteur de puissance sans compteur d’énergie.",
   error_integral_failed: "L’entrée d’aide du compteur d’énergie n’a pas pu être créée.",
+  confirm_rejected: "Home Assistant n’accepte pas ces réglages :",
+  source_last_meter: "C’est le dernier compteur de ce raccordement au réseau. Le retirer retire le raccordement avec ses prix.",
+  error_invalid_changes: "Le brouillon contient des erreurs et n’a pas été enregistré.",
+  error_device_exists: "Cet appareil est déjà dans le tableau de bord énergie.",
+  error_unknown_device: "Un appareil de ton brouillon n’est plus dans le tableau de bord énergie. Abandonne le brouillon et réessaie.",
+  error_unknown_change: "Cette modification n’est pas prise en charge.",
+  error_backup_not_found: "Cette sauvegarde n’existe plus.",
+  error_rejected_by_home_assistant: "Home Assistant a refusé les réglages : {error}",
   error_unknown: "Erreur : {message}",
 };
