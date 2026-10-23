@@ -53,6 +53,7 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Externe Statistiken als freie Sensoren | Phase 3, vor v0.1.0 |
 | Integral-Helfer für Leistungssensoren | Phase 3, vor v0.1.0 |
 | Wasser-Hierarchie | Phase 4, nach v0.1.0 |
+| Gas- und Wasser-Quellen bearbeiten | Phase 4, nach v0.1.0 (Wunsch des Maintainers vom 2026-10-23); bis dahin nur Anzeige |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
 | Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** mehr verbrauchen als das übergeordnete |
 | Sicherungen | die letzten **20** |
@@ -235,11 +236,12 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 
 ## 8. Quellen zuweisen (Phase 3)
 
-- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen). Gas und Wasser werden nur angezeigt.
+- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen). Gas und Wasser werden in v0.1.0 nur angezeigt; bearbeitbar ab Phase 4 (siehe unten).
 - **Netz:** Gibt es schon einen Netz-Eintrag, wird nur `stat_energy_from` bzw. `stat_energy_to` ersetzt. Alle anderen Felder (Preise, Vergütung, `power_config`, `cost_adjustment_day`, unbekannte Felder) bleiben unverändert. Gibt es noch keinen, wird einer ohne Kosten angelegt (`stat_cost` und Preise `null`, `cost_adjustment_day: 0`).
 - **Solar:** neuer Eintrag pro Sensor, `config_entry_solar_forecast: null`.
 - **Batterie:** Laden und Entladen werden als Paar zugewiesen. Ein Eintrag wird erst gespeichert, wenn beide gesetzt sind.
 - Eine Quelle entfernen entfernt nur den Sensor bzw. den Eintrag, nie andere Quellen.
+- **Gas und Wasser (Phase 4):** zuweisen, ersetzen und entfernen wie beim Netz: Beim Ersetzen wird nur `stat_energy_from` getauscht, Preise und Kosten-Felder (`stat_cost`, `entity_energy_price`, `number_energy_price`, `stat_rate`, unbekannte Felder) bleiben. Neue Einträge ohne Kosten. Die Einheit muss passen (Gas: Volumen oder Energie, Wasser: Volumen); das prüfen HAs Schemas und eine eigene Warnung. Mehrere Gas- bzw. Wasser-Quellen bleiben möglich; `replace` wählt wie beim Netz den richtigen Eintrag.
 - Ein Sensor kann nicht gleichzeitig Quelle und Gerät sein; das Panel bietet das nicht an, das Backend prüft es.
 - Preise und Kosten bearbeitet der Editor nicht, dafür verlinkt er auf die Energie-Einstellungen von HA.
 - **Bedienung:** Freien Sensor auf einen Quellen-Block ziehen (Netz-Bezug/Einspeisung ersetzen den Zähler, Solar und Batterie fügen eine Quelle hinzu). Antippen eines Platzhalters öffnet die Auswahl der freien Sensoren; Antippen einer Quelle bietet «Sensor ersetzen/zuweisen», «Als Quelle entfernen» und «Energie-Einstellungen». Bei der Batterie fragt ein zweiter Schritt nach dem Zähler fürs Laden.
@@ -364,7 +366,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
 3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: Repo öffentlich, CI grün inkl. HACS (alle 10 Checks). Offen: Release, HACS-Installation testen, danach PR an `hacs/default`.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
-4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter.
+4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Gas- und Wasser-Quellen zuweisen, ersetzen und entfernen (§8).
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.

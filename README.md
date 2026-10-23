@@ -129,7 +129,8 @@ Good to know:
 - A device can be included in **one** other device only (a Home Assistant rule).
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.
-- Water devices are shown in a later version; gas and water sources are shown only.
+- Gas and water sources are shown only. Editing them and the water device hierarchy are
+  planned for 0.2.0.
 - Dragging works with a mouse and with a long press on phones; the ⋮ menu offers the
   same actions.
 
