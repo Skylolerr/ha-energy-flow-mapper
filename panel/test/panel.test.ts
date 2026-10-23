@@ -590,6 +590,26 @@ describe("diagram", () => {
     expect(el._zoom.k).toBeCloseTo(k);
   });
 
+  it("stays fitted while the viewport resizes, until the user zooms", async () => {
+    const el = await mount(mockHass());
+    sized(el, 400, 300);
+    el._onViewportResize();
+    const small = el._zoom.k;
+    sized(el, 800, 600);
+    el._onViewportResize();
+    expect(el._zoom.k).toBeGreaterThan(small);
+
+    buttonWith(el, "+").click();
+    const zoomed = el._zoom;
+    sized(el, 400, 300);
+    el._onViewportResize();
+    expect(el._zoom).toEqual(zoomed);
+
+    buttonWith(el, "Fit").click();
+    expect(el._autoFit).toBe(true);
+    expect(el._zoom.k).toBeCloseTo(small);
+  });
+
   it("does not fit before the viewport has a size", async () => {
     const el = await mount(mockHass());
     expect(el.fit()).toBe(false);
@@ -1024,7 +1044,7 @@ describe("energy in a period", () => {
     expect(node(el, "sensor.server").textContent).toContain("12.5 kWh");
     expect(node(el, "sensor.tv").textContent).toContain("420 Wh");
     expect(root(el).querySelector(".untracked")!.textContent).toContain("-1.5 kWh");
-    expect(root(el).querySelector(".block.home")!.textContent).toContain("12.92 kWh measured");
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("12.9 kWh measured");
     // The warning marks the server; the details show the energy.
     expect(node(el, "sensor.server").querySelector(".badge")!.getAttribute("title")).toBe(
       "Its devices use more than this device",

@@ -67,7 +67,8 @@ describe("formatting", () => {
 
   it("formats energy in Wh and kWh", () => {
     expect(formatEnergy(hass("en"), 0.4204)).toBe("420 Wh");
-    expect(formatEnergy(hass("en"), 12.345)).toBe("12.35 kWh");
+    expect(formatEnergy(hass("en"), 12.345)).toBe("12.3 kWh");
+    expect(formatEnergy(hass("en"), 1.234)).toBe("1.23 kWh");
     expect(formatEnergy(hass("en"), 1234.5)).toBe("1,235 kWh");
     expect(formatEnergy(hass("en"), -1.5)).toBe("-1.5 kWh");
   });

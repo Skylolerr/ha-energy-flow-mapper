@@ -56,7 +56,7 @@ export const PANEL_TAG = "energy-flow-mapper-panel";
 export const DOMAIN = "energy_flow_mapper";
 export const TOAST_MS = 4000;
 const HOME = "__home__";
-export const MIN_ZOOM = 0.2;
+export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 2.5;
 /** Minimum scale and lift (px above the finger) of the drag image on touch. */
 export const TOUCH_DRAG_SCALE = 0.8;
@@ -188,6 +188,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _energyRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
+  /** The diagram follows the viewport size until the user zooms or pans. */
+  _autoFit = true;
+  private _resizeObserver?: ResizeObserver;
+  private _observed: Element | null = null;
   private _pointers = new Map<number, { x: number; y: number }>();
   /** Pointer type of the last press, to tell touch drags from mouse drags. */
   _pointerType = "mouse";
@@ -448,6 +452,28 @@ export class EnergyFlowMapperPanel extends LitElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     clearTimeout(this._toastTimer);
+    this._resizeObserver?.disconnect();
+    this._observed = null;
+  }
+
+  /** Keep the diagram fitted while its viewport changes size (window, layout). */
+  _onViewportResize(): void {
+    if (this._autoFit) {
+      this.fit();
+    }
+  }
+
+  private _observeViewport(): void {
+    const viewport = this._viewport();
+    if (viewport === this._observed || typeof ResizeObserver === "undefined") {
+      return;
+    }
+    this._resizeObserver ??= new ResizeObserver(() => this._onViewportResize());
+    this._resizeObserver.disconnect();
+    if (viewport) {
+      this._resizeObserver.observe(viewport);
+    }
+    this._observed = viewport;
   }
 
   // --- drag and drop --------------------------------------------------------
@@ -655,6 +681,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (!this._fitted && this._snapshot && this._view === "diagram") {
       this._fitted = this.fit();
     }
+    this._observeViewport();
     if (!changed.has("_dialog")) {
       return;
     }
@@ -728,13 +755,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     return html`
       <div class="content ${this.narrow ? "narrow" : ""}">
-        ${this.narrow ? nothing : html`<aside class="column">${this._renderCandidates()}</aside>`}
+        ${this.narrow ? nothing : html`<aside class="column free">${this._renderCandidates()}</aside>`}
         <main class="column main">
           ${this._view === "list"
             ? html`${this._renderSources()} ${this._renderTree()}`
             : this._renderDiagram()}
         </main>
-        ${this.narrow ? nothing : html`<aside class="column">${this._renderDetails()}</aside>`}
+        ${this.narrow ? nothing : html`<aside class="column details">${this._renderDetails()}</aside>`}
       </div>
     `;
   }
@@ -788,6 +815,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   private _zoomCenter(factor: number): void {
+    this._autoFit = false;
     const viewport = this._viewport();
     this.zoomAt((viewport?.clientWidth ?? 0) / 2, (viewport?.clientHeight ?? 0) / 2, factor);
   }
@@ -799,6 +827,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   _onWheel(event: WheelEvent): void {
     event.preventDefault();
+    this._autoFit = false;
     const { x, y } = this._local(event);
     this.zoomAt(x, y, Math.exp(-event.deltaY * 0.0015));
   }
@@ -818,6 +847,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (!previous) {
       return;
     }
+    this._autoFit = false;
     const before = [...this._pointers.values()];
     const current = this._local(event);
     this._pointers.set(event.pointerId, current);
@@ -892,7 +922,14 @@ export class EnergyFlowMapperPanel extends LitElement {
             >
               +
             </button>
-            <button @click=${() => this.fit()}>${this._t("fit")}</button>
+            <button
+              @click=${() => {
+                this._autoFit = true;
+                this.fit();
+              }}
+            >
+              ${this._t("fit")}
+            </button>
           </div>
         </div>
         <p class="hint">
@@ -1825,13 +1862,14 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   static override styles = css`
     :host {
-      display: block;
+      display: flex;
+      flex-direction: column;
       min-height: 100vh;
       background: var(--primary-background-color);
       color: var(--primary-text-color);
       font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
-      padding-bottom: 72px;
       box-sizing: border-box;
+      container: panel / inline-size;
     }
     .header {
       display: flex;
@@ -1912,14 +1950,35 @@ export class EnergyFlowMapperPanel extends LitElement {
       text-decoration: underline;
     }
     .content {
+      flex: 1;
       display: grid;
       grid-template-columns: minmax(240px, 1fr) minmax(360px, 3fr) minmax(240px, 1fr);
+      grid-template-areas: "free main details";
       gap: 16px;
       padding: 16px;
       align-items: start;
     }
+    .content > .free {
+      grid-area: free;
+    }
+    .content > .main {
+      grid-area: main;
+    }
+    .content > .details {
+      grid-area: details;
+    }
+    /* Not enough room for three columns: details go below the free sensors. */
+    @container panel (max-width: 960px) {
+      .content {
+        grid-template-columns: minmax(220px, 1fr) minmax(0, 2.5fr);
+        grid-template-areas:
+          "free main"
+          "details main";
+      }
+    }
     .content.narrow {
       grid-template-columns: 1fr;
+      grid-template-areas: "main";
       padding: 8px;
       gap: 8px;
     }
@@ -2301,10 +2360,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     .block.has-error {
       border-color: var(--error-color);
     }
+    /* Sticks to the bottom of the panel, next to (not under) the sidebar. */
     .footer {
-      position: fixed;
-      left: var(--mdc-drawer-width, 0);
-      right: 0;
+      position: sticky;
       bottom: 0;
       display: flex;
       align-items: center;
