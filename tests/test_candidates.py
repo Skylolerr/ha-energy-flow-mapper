@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -252,3 +253,42 @@ async def test_mark_created(hass: HomeAssistant) -> None:
     assert [i["created_helper"] for i in infos] == [True, False, False]
     async_mark_created(hass, infos, [])
     assert infos[0]["created_helper"] is False
+
+
+async def test_names_follow_home_assistant_naming(hass: HomeAssistant) -> None:
+    """Device name plus entity name, a user-set name wins, state not needed."""
+    config_entry = MockConfigEntry(domain="test")
+    config_entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={("test", "plug")},
+        name="IKEA plug",
+    )
+    dr.async_get(hass).async_update_device(device.id, name_by_user="Plug Server")
+    registry = er.async_get(hass)
+    for unique_id, original_name in (("sum", "Total"), ("main", None)):
+        registry.async_get_or_create(
+            "sensor",
+            "test",
+            unique_id,
+            suggested_object_id=f"plug_{unique_id}",
+            device_id=device.id,
+            has_entity_name=True,
+            original_name=original_name,
+        )
+    renamed = registry.async_get_or_create(
+        "sensor",
+        "test",
+        "renamed",
+        suggested_object_id="plug_renamed",
+        device_id=device.id,
+        has_entity_name=True,
+        original_name="Total",
+    )
+    registry.async_update_entity(renamed.entity_id, name="My meter")
+    # A stale friendly name in the state does not matter.
+    hass.states.async_set("sensor.plug_sum", "1", {"friendly_name": "Total"})
+
+    assert async_stat_info(hass, "sensor.plug_sum")["name"] == "Plug Server Total"
+    assert async_stat_info(hass, "sensor.plug_main")["name"] == "Plug Server"
+    assert async_stat_info(hass, "sensor.plug_renamed")["name"] == "My meter"

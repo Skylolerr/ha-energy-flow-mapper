@@ -42,6 +42,26 @@ def _device_class(hass: HomeAssistant, entity_id: str) -> str | None:
     return entry.device_class or entry.original_device_class
 
 
+def _entity_name(entry: er.RegistryEntry | None, device_name: str | None) -> str | None:
+    """Return the full name of an entity the way Home Assistant builds it.
+
+    A name set by the user is the full name; otherwise entities with
+    `has_entity_name` combine the device name and their own name. This does
+    not depend on the state, which may not be there yet after a restart.
+    """
+    if entry is None:
+        return None
+    if entry.name:
+        return entry.name
+    if entry.has_entity_name and device_name:
+        return (
+            f"{device_name} {entry.original_name}"
+            if entry.original_name
+            else device_name
+        )
+    return entry.original_name
+
+
 @callback
 def async_stat_info(
     hass: HomeAssistant,
@@ -78,19 +98,20 @@ def async_stat_info(
     entry = er.async_get(hass).async_get(stat)
     info["entity_id"] = stat
     info["device_class"] = _device_class(hass, stat)
-    if state is not None:
-        info["name"] = state.attributes.get(ATTR_FRIENDLY_NAME)
-        info["unit"] = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-    if entry is not None:
-        info["name"] = info["name"] or entry.name or entry.original_name
-        info["unit"] = info["unit"] or entry.unit_of_measurement
-
     device = None
     if entry is not None and entry.device_id:
         device = dr.async_get(hass).async_get(entry.device_id)
     if device is not None:
         info["device_id"] = device.id
         info["device_name"] = device.name_by_user or device.name
+
+    if state is not None:
+        info["unit"] = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+    if entry is not None:
+        info["unit"] = info["unit"] or entry.unit_of_measurement
+    info["name"] = _entity_name(entry, info["device_name"]) or (
+        state.attributes.get(ATTR_FRIENDLY_NAME) if state is not None else None
+    )
 
     area_id = (entry.area_id if entry else None) or (device.area_id if device else None)
     area = ar.async_get(hass).async_get_area(area_id) if area_id else None
