@@ -16,7 +16,10 @@ yet.
 > **Beta.** Breaking changes are possible before 1.0. Every save keeps a backup of your
 > previous energy settings, so you can always go back.
 
-<!-- TODO screenshot: diagram "Now", light and dark (docs/images/diagram.png) -->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/diagram-dark.png">
+  <img alt="The Energy Flow Mapper panel: sources at the top, Home in the middle, devices below, with free sensors on the left and details of the selected device on the right" src="docs/images/diagram-light.png">
+</picture>
 
 ## Features
 
@@ -41,8 +44,21 @@ yet.
   backup; "Undo last save" and "Backups" restore an earlier state.
 - **English, German, French and Italian**, light and dark theme, phone layout.
 
-<!-- TODO screenshot: diagram "30 days" with untracked consumption (docs/images/period.png) -->
-<!-- TODO screenshot: phone (docs/images/phone.png) -->
+## Screenshots
+
+| | |
+|---|---|
+| ![30 days with consumption not tracked individually and a plausibility warning](docs/images/period.png) | ![Dragging the coffee machine onto Office, with the possible targets highlighted](docs/images/drag.png) |
+| *30 days:* energy per device, consumption not tracked individually and a warning | *Drag and drop:* the possible targets are highlighted |
+| ![The list of changes shown before saving](docs/images/save.png) | ![The list of backups with restore buttons](docs/images/backups.png) |
+| *Saving:* every change is listed before anything is written | *Backups:* restore an earlier state |
+
+<p>
+  <img alt="The panel on a phone, dark theme" src="docs/images/phone-dark.png" width="260">
+  <img alt="The panel on a phone, light theme, 7 days" src="docs/images/phone-light.png" width="260">
+</p>
+
+The screenshots show a demo household.
 
 ## Requirements
 
