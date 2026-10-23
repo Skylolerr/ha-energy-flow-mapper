@@ -1,15 +1,15 @@
-"""Render the brand icons of Energy Flow Mapper (draft design).
+"""Render the brand icon of Energy Flow Mapper.
 
-A source block at the top feeds three device blocks through arrows whose
-width shows how much energy flows, like the panel's diagram. Transparent
-background. Run with the dev venv (needs Pillow and NumPy):
+An orange app tile with white Sankey ribbons: one source splits into three
+flows of different width, like the panel's diagram. The tile works on light
+and dark backgrounds, so there is no separate dark icon. Run with the dev
+venv (needs Pillow and NumPy):
 
     python scripts/make_brand_icons.py
 """
 
 from __future__ import annotations
 
-from itertools import pairwise
 from pathlib import Path
 
 import numpy as np
@@ -18,112 +18,103 @@ from PIL import Image, ImageDraw
 BRAND = (
     Path(__file__).parent.parent / "custom_components" / "energy_flow_mapper" / "brand"
 )
-SIZE = 2048  # supersampled canvas, scaled down at the end
+S = 2048  # supersampled canvas, scaled down at the end
 
-SOURCE = (255, 152, 0)  # energy orange, like the solar colour of HA
-FLOW = (3, 169, 244)  # HA primary blue
-DEVICES = [(3, 169, 244), (41, 182, 246), (79, 195, 247)]
-OUTLINE = {"light": (33, 33, 33, 255), "dark": (240, 240, 240, 255)}
+TILE_FROM, TILE_TO = (255, 145, 0), (232, 62, 48)  # warm energy gradient
+TILE_RADIUS = 0.225  # relative to the size, like an app icon
 
-TOP = (0.30, 0.06, 0.70, 0.30)  # x0, y0, x1, y1 relative to the size
-CHILD_Y = (0.70, 0.94)
-CHILD_X = [(0.03, 0.31), (0.36, 0.64), (0.69, 0.97)]
-WIDTHS = [0.085, 0.05, 0.025]  # arrow widths: much, some, little energy
-RADIUS = 0.06
-
-
-def px(value: float) -> int:
-    """Convert a relative coordinate to canvas pixels."""
-    return round(value * SIZE)
+SOURCE = (0.355, 0.2, 0.645, 0.285)  # source pill: x0, y0, x1, y1
+TARGET_Y = (0.715, 0.8)
+TARGET_CENTERS = (0.235, 0.5, 0.765)
+SHARES = (0.5, 0.3, 0.2)  # how much each flow takes
+ALPHAS = (255, 222, 190)  # bigger flows are brighter
+GAP = 0.022  # space between the flows
+SEPARATION = 0.03  # space between the flows and the pills
+TARGET_EXTRA = 0.06  # target pills are a bit wider than their flow
 
 
-def bezier(
-    p0: tuple[float, float], p3: tuple[float, float], steps: int = 160
-) -> np.ndarray:
-    """Vertical-tangent cubic curve between two points (like the panel)."""
+def gradient(c0: tuple[int, int, int], c1: tuple[int, int, int]) -> Image.Image:
+    """Diagonal gradient from the top right to the bottom left."""
+    y, x = np.mgrid[0:S, 0:S]
+    t = ((S - x) + y) / (2 * S)
+    rgb = (
+        np.array(c0, float) + (np.array(c1, float) - np.array(c0, float)) * t[..., None]
+    )
+    return Image.fromarray(rgb.astype(np.uint8), "RGB").convert("RGBA")
+
+
+def bezier(p0: tuple[float, float], p3: tuple[float, float]) -> np.ndarray:
+    """Vertical-tangent cubic curve, like the connectors of the panel."""
     mid = (p0[1] + p3[1]) / 2
     p1, p2 = (p0[0], mid), (p3[0], mid)
-    t = np.linspace(0, 1, steps)[:, None]
+    t = np.linspace(0, 1, 240)[:, None]
     points = (
         (1 - t) ** 3 * np.array(p0)
         + 3 * (1 - t) ** 2 * t * np.array(p1)
         + 3 * (1 - t) * t**2 * np.array(p2)
         + t**3 * np.array(p3)
     )
-    return points * SIZE
+    return points * S
 
 
-def draw_arrow(
-    draw: ImageDraw.ImageDraw,
-    start: tuple[float, float],
-    end: tuple[float, float],
-    width: float,
-) -> None:
-    """Draw a curved arrow whose head grows with its width."""
-    half = max(width * 0.9, 0.035)
-    length = half * 1.15
-    tip_y = end[1]
-    base = (end[0], tip_y - length)
-    points = bezier(start, base)
-    line = px(width)
-    for (x0, y0), (x1, y1) in pairwise(points):
-        draw.line([(x0, y0), (x1, y1)], fill=FLOW, width=line)
-        draw.ellipse(
-            [x0 - line / 2, y0 - line / 2, x0 + line / 2, y0 + line / 2], fill=FLOW
-        )
-    draw.polygon(
-        [
-            (px(end[0] - half), px(base[1] + 0.004)),
-            (px(end[0] + half), px(base[1] + 0.004)),
-            (px(end[0]), px(tip_y)),
-        ],
-        fill=FLOW,
+def render() -> Image.Image:
+    """Render the icon on a transparent square canvas."""
+    tile = Image.new("L", (S, S), 0)
+    ImageDraw.Draw(tile).rounded_rectangle(
+        [0, 0, S - 1, S - 1], radius=round(TILE_RADIUS * S), fill=255
     )
+    image = Image.new("RGBA", (S, S), (0, 0, 0, 0))
+    image.paste(gradient(TILE_FROM, TILE_TO), (0, 0), tile)
 
-
-def render(variant: str) -> Image.Image:
-    """Render the icon for the light or dark variant."""
-    image = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(image)
-    outline = OUTLINE[variant]
-    stroke = px(0.018)
-
-    top_bottom = TOP[3]
-    for (x0, x1), width in zip(CHILD_X, WIDTHS, strict=True):
-        draw_arrow(
-            draw,
-            ((TOP[0] + TOP[2]) / 2, top_bottom),
-            ((x0 + x1) / 2, CHILD_Y[0] - 0.012),
-            width,
+    marks = Image.new("L", (S, S), 0)
+    draw = ImageDraw.Draw(marks)
+    x0, y0, x1, y1 = SOURCE
+    available = (x1 - x0) - GAP * (len(SHARES) - 1)
+    left = x0
+    for share, center, alpha in zip(SHARES, TARGET_CENTERS, ALPHAS, strict=True):
+        width = available * share
+        top = y1 + SEPARATION
+        bottom = TARGET_Y[0] - SEPARATION
+        outline = np.concatenate(
+            [
+                bezier((left, top), (center - width / 2, bottom)),
+                bezier((left + width, top), (center + width / 2, bottom))[::-1],
+            ]
         )
-
-    draw.rounded_rectangle(
-        [px(TOP[0]), px(TOP[1]), px(TOP[2]), px(TOP[3])],
-        radius=px(RADIUS),
-        fill=SOURCE,
-        outline=outline,
-        width=stroke,
-    )
-    for (x0, x1), color in zip(CHILD_X, DEVICES, strict=True):
+        draw.polygon([tuple(p) for p in outline], fill=alpha)
+        half = width / 2 + TARGET_EXTRA / 2
         draw.rounded_rectangle(
-            [px(x0), px(CHILD_Y[0]), px(x1), px(CHILD_Y[1])],
-            radius=px(RADIUS),
-            fill=color,
-            outline=outline,
-            width=stroke,
+            [
+                round((center - half) * S),
+                round(TARGET_Y[0] * S),
+                round((center + half) * S),
+                round(TARGET_Y[1] * S),
+            ],
+            radius=round((TARGET_Y[1] - TARGET_Y[0]) / 2 * S),
+            fill=alpha,
         )
+        left += width + GAP
+    draw.rounded_rectangle(
+        [round(x0 * S), round(y0 * S), round(x1 * S), round(y1 * S)],
+        radius=round((y1 - y0) / 2 * S),
+        fill=255,
+    )
+    white = Image.new("RGBA", (S, S), (255, 255, 255, 0))
+    white.putalpha(marks)
+    image.alpha_composite(white)
     return image
 
 
 def main() -> None:
-    """Write all icon sizes into the brand folder."""
+    """Write both icon sizes into the brand folder."""
     BRAND.mkdir(parents=True, exist_ok=True)
-    for variant, prefix in (("light", ""), ("dark", "dark_")):
-        image = render(variant)
-        for name, size in ((f"{prefix}icon.png", 256), (f"{prefix}icon@2x.png", 512)):
-            image.resize((size, size), Image.Resampling.LANCZOS).save(
-                BRAND / name, optimize=True
-            )
+    image = render()
+    for name, size in (("icon.png", 256), ("icon@2x.png", 512)):
+        image.resize((size, size), Image.Resampling.LANCZOS).save(
+            BRAND / name, optimize=True
+        )
+    for name in ("dark_icon.png", "dark_icon@2x.png"):
+        (BRAND / name).unlink(missing_ok=True)
     print(f"Icons written to {BRAND}")  # noqa: T201
 
 
