@@ -7,6 +7,8 @@ import {
   MIN_ZOOM,
   PANEL_TAG,
   TOAST_MS,
+  TOUCH_DRAG_LIFT,
+  TOUCH_DRAG_SCALE,
 } from "../src/energy-flow-mapper-panel";
 import type {
   BackupEntry,
@@ -701,5 +703,57 @@ describe("dragging in the diagram", () => {
       Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: plain }),
     );
     expect(el._dragged).toEqual({ kind: "device", stat: "sensor.tv" });
+  });
+});
+
+describe("drag feedback", () => {
+  function startDrag(el: EnergyFlowMapperPanel, stat: string, extra: Record<string, unknown> = {}) {
+    const block = node(el, stat);
+    Object.defineProperty(block, "offsetWidth", { value: 220, configurable: true });
+    Object.defineProperty(block, "offsetHeight", { value: 72, configurable: true });
+    block.getBoundingClientRect = () => ({ left: 0, top: 0 }) as DOMRect;
+    const dataTransfer = { setData: vi.fn(), setDragImage: vi.fn(), effectAllowed: "" };
+    block.dispatchEvent(
+      Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer, ...extra }),
+    );
+    return dataTransfer;
+  }
+
+  it("lifts a larger drag image above the finger on touch", async () => {
+    const el = await mount(mockHass());
+    el._zoom = { x: 0, y: 0, k: 0.3 };
+    await settle(el);
+    const press = Object.assign(new Event("pointerdown", { bubbles: true }), {
+      pointerId: 1,
+      pointerType: "touch",
+      clientX: 0,
+      clientY: 0,
+    });
+    node(el, "sensor.tv").dispatchEvent(press);
+    expect(el._pointerType).toBe("touch");
+    const transfer = startDrag(el, "sensor.tv");
+    const [ghost, x, y] = transfer.setDragImage.mock.calls[0];
+    expect(ghost.style.width).toBe(`${220 * TOUCH_DRAG_SCALE}px`);
+    expect(x).toBeCloseTo((220 * TOUCH_DRAG_SCALE) / 2);
+    expect(y).toBeCloseTo(72 * TOUCH_DRAG_SCALE + TOUCH_DRAG_LIFT);
+  });
+
+  it("marks the dragged block, valid targets and the target under the pointer", async () => {
+    const el = await mount(mockHass());
+    startDrag(el, "sensor.server");
+    await settle(el);
+    expect(root(el).querySelector(".viewport")!.classList.contains("dragging")).toBe(true);
+    expect(node(el, "sensor.server").classList.contains("dragged")).toBe(true);
+    // The server cannot go below its own child or stay where it is.
+    expect(node(el, "sensor.sonos").classList.contains("can-drop")).toBe(false);
+    expect(root(el).querySelector(".block.home")!.classList.contains("can-drop")).toBe(false);
+    expect(node(el, "sensor.tv").classList.contains("can-drop")).toBe(true);
+    node(el, "sensor.tv").dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    await settle(el);
+    expect(node(el, "sensor.tv").classList.contains("drop")).toBe(true);
+    node(el, "sensor.server").dispatchEvent(new Event("dragend", { bubbles: true }));
+    await settle(el);
+    expect(root(el).querySelector(".viewport")!.classList.contains("dragging")).toBe(false);
+    expect(root(el).querySelector(".can-drop, .dragged, .drop")).toBeNull();
   });
 });

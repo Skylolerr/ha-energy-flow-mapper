@@ -49,6 +49,9 @@ export const TOAST_MS = 4000;
 const HOME = "__home__";
 export const MIN_ZOOM = 0.2;
 export const MAX_ZOOM = 2.5;
+/** Minimum scale and lift (px above the finger) of the drag image on touch. */
+export const TOUCH_DRAG_SCALE = 0.8;
+export const TOUCH_DRAG_LIFT = 48;
 
 interface Zoom {
   x: number;
@@ -145,6 +148,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   private _pointers = new Map<number, { x: number; y: number }>();
+  /** Pointer type of the last press, to tell touch drags from mouse drags. */
+  _pointerType = "mouse";
 
   constructor() {
     super();
@@ -412,7 +417,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (!block || !transfer?.setDragImage) {
       return;
     }
-    const { k } = this._zoom;
+    // On touch the finger covers the image: show it a bit larger and above it.
+    const touch = this._pointerType === "touch" || this._pointerType === "pen";
+    const k = touch ? Math.max(this._zoom.k, TOUCH_DRAG_SCALE) : this._zoom.k;
     const width = block.offsetWidth * k;
     const height = block.offsetHeight * k;
     const ghost = document.createElement("div");
@@ -426,11 +433,15 @@ export class EnergyFlowMapperPanel extends LitElement {
     ghost.append(copy);
     this.renderRoot.append(ghost);
     const rect = block.getBoundingClientRect();
-    transfer.setDragImage(
-      ghost,
-      Math.min(width, Math.max(0, event.clientX - rect.left)),
-      Math.min(height, Math.max(0, event.clientY - rect.top)),
-    );
+    if (touch) {
+      transfer.setDragImage(ghost, width / 2, height + TOUCH_DRAG_LIFT);
+    } else {
+      transfer.setDragImage(
+        ghost,
+        Math.min(width, Math.max(0, event.clientX - rect.left)),
+        Math.min(height, Math.max(0, event.clientY - rect.top)),
+      );
+    }
     // The browser takes its snapshot synchronously; the copy can go right after.
     setTimeout(() => ghost.remove(), 0);
   }
@@ -615,6 +626,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   _onPointerDown(event: PointerEvent): void {
+    this._pointerType = event.pointerType || "mouse";
     if ((event.target as Element).closest?.(".block, button, a")) {
       return;
     }
@@ -695,7 +707,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         </div>
         <p class="hint">${this._t("devices_hint")} ${this._t("zoom_hint")}</p>
         <div
-          class="viewport"
+          class="viewport ${this._dragged ? "dragging" : ""}"
           @wheel=${(e: WheelEvent) => this._onWheel(e)}
           @pointerdown=${(e: PointerEvent) => this._onPointerDown(e)}
           @pointermove=${(e: PointerEvent) => this._onPointerMove(e)}
@@ -763,7 +775,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "home": {
         const drop = this._dragHandlers(HOME);
         return html`<div
-          class="block home ${this._dropTarget === HOME ? "drop" : ""}"
+          class="block home ${this._dropTarget === HOME ? "drop" : ""} ${this._dragged &&
+          this._canDrop(HOME)
+            ? "can-drop"
+            : ""}"
           style=${style}
           @dragover=${drop.over}
           @dragleave=${drop.leave}
@@ -834,7 +849,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       class="block device node ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
       stat
         ? "drop"
-        : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""}"
+        : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""} ${this._dragged?.stat ===
+      stat
+        ? "dragged"
+        : this._dragged && this._canDrop(stat)
+          ? "can-drop"
+          : ""}"
       style=${this._blockStyle(block)}
       draggable="true"
       data-stat=${stat}
@@ -1851,6 +1871,23 @@ export class EnergyFlowMapperPanel extends LitElement {
       width: auto;
       padding: 2px 4px;
       color: var(--primary-text-color);
+    }
+    .dragging .block.device:not(.can-drop):not(.dragged),
+    .dragging .block.home:not(.can-drop) {
+      opacity: 0.45;
+    }
+    .block.can-drop {
+      outline: 2px dashed var(--primary-color);
+      outline-offset: 3px;
+    }
+    .block.drop {
+      outline: 3px solid var(--primary-color);
+      outline-offset: 3px;
+      background: color-mix(in srgb, var(--primary-color) 35%, var(--block-bg));
+    }
+    .block.dragged {
+      opacity: 0.35;
+      border-style: dashed;
     }
     .block.has-error {
       border-color: var(--error-color);
