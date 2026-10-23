@@ -102,6 +102,7 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("role"): vol.In([role.value for role in AssignRole]),
                 vol.Required("stat"): str,
                 vol.Optional("stat_to"): str,
+                vol.Optional("replace"): _OPTIONAL_TEXT,
             }
         ),
         ChangeType.UNASSIGN_SOURCE.value: vol.Schema(
@@ -213,16 +214,24 @@ async def websocket_get(
 async def websocket_validate(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Check a draft without saving it."""
+    """Check a draft without saving it.
+
+    Besides the hierarchy checks, the changed lists go through Home
+    Assistant's own schemas; `rejected` holds its (English) message.
+    """
     _runtime(hass)
     prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
     new = _apply(prefs, msg[ATTR_CHANGES])
     issues = _issues(hass, new)
+    rejected = energy_access.schema_error(
+        {key: new[key] for key in _changed_keys(prefs, new)}
+    )
     connection.send_result(
         msg["id"],
         {
-            "valid": not has_errors(issues),
+            "valid": not has_errors(issues) and rejected is None,
             "issues": [issue.as_dict() for issue in issues],
+            "rejected": rejected,
             "diff": diff(prefs, new),
         },
     )
@@ -235,7 +244,15 @@ async def _async_write_with_backup(
     update: dict[str, list[Any]],
     summary: dict[str, int],
 ) -> dict[str, Any]:
-    """Back up the old content of the updated keys, then write."""
+    """Back up the old content of the updated keys, then write.
+
+    The lists are checked before the backup is stored. Storing the backup
+    waits for the disk, so the preferences are compared with `old` again right
+    before the write; a change made elsewhere meanwhile is a conflict. Once
+    the write has started, the backup is kept even if it fails, because Home
+    Assistant may already use the new settings.
+    """
+    energy_access.validate(update)
     backup_id = await runtime.backups.async_add(
         {key: old[key] for key in update},
         connection.user.id,
@@ -243,10 +260,12 @@ async def _async_write_with_backup(
         summary,
     )
     try:
-        await energy_access.async_write(connection.hass, update)
-    except Exception:
+        await energy_access.async_write(
+            connection.hass, update, expected_hash=prefs_hash(old)
+        )
+    except energy_access.PrefsChangedError as err:
         await runtime.backups.async_discard(backup_id)
-        raise
+        raise _error("conflict") from err
     prefs = await energy_access.async_get_prefs(connection.hass)
     return {"hash": prefs_hash(prefs), ATTR_BACKUP_ID: backup_id}
 

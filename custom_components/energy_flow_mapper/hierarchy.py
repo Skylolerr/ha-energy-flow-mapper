@@ -40,6 +40,9 @@ SOURCE_ROLES: dict[str, dict[str, str]] = {
     "water": {FROM: "consumption"},
 }
 
+# Source types the panel may change; gas and water are only shown.
+EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery")
+
 # A grid connection without costs, as the energy settings page creates it.
 NEW_GRID: dict[str, Any] = {
     "type": "grid",
@@ -341,16 +344,23 @@ def _index(devices: Sequence[Device], stat: str) -> int | None:
 def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> None:
     """Assign a statistic to a source role.
 
-    Grid import and export replace the meter of the first grid connection and
-    keep its prices; without a grid connection, one without costs is created.
-    Solar and battery always add a new source; a battery needs both meters.
+    Grid import and export replace the meter given as `replace`, or else that
+    of the first grid connection, and keep the connection's prices; without a
+    grid connection, one without costs is created. Solar and battery always
+    add a new source; a battery needs both meters.
     """
     role = change.get("role")
     stat = change["stat"]
     if role in (AssignRole.IMPORT, AssignRole.EXPORT):
         key = FROM if role == AssignRole.IMPORT else TO
-        grid = next((s for s in sources if s.get("type") == "grid"), None)
-        if grid is None:
+        grids = [s for s in sources if s.get("type") == "grid"]
+        if replace := change.get("replace"):
+            grid = next((s for s in grids if s.get(key) == replace), None)
+            if grid is None:
+                raise ChangeError("unknown_source", replace)
+        elif grids:
+            grid = grids[0]
+        else:
             grid = deepcopy(NEW_GRID)
             sources.append(grid)
         grid[key] = stat
@@ -368,9 +378,12 @@ def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
     """Remove a statistic from the sources.
 
     A grid connection only loses that meter (it is removed once nothing is
-    left); any other source is removed as a whole.
+    left); solar and battery sources are removed as a whole. Gas and water
+    sources are only shown, so they cannot be removed here.
     """
     for index, source in enumerate(sources):
+        if source.get("type") not in EDITABLE_SOURCE_TYPES:
+            continue
         for key in SOURCE_ENERGY_KEYS:
             if source.get(key) != stat:
                 continue

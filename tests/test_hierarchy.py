@@ -530,6 +530,40 @@ def test_assign_grid_keeps_prices_and_power() -> None:
     assert old["energy_sources"] == [GRID_WITH_PRICES]
 
 
+def test_assign_grid_replaces_the_given_meter() -> None:
+    """With two grid connections, `replace` picks the one to change."""
+    second = NEW_GRID | {"stat_energy_from": "sensor.b", "number_energy_price": 0.2}
+    old = prefs(energy_sources=[deepcopy(GRID_WITH_PRICES), deepcopy(second)])
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "assign_source",
+                "role": "import",
+                "stat": "sensor.c",
+                "replace": "sensor.b",
+            }
+        ],
+    )
+    assert new["energy_sources"] == [
+        GRID_WITH_PRICES,
+        second | {"stat_energy_from": "sensor.c"},
+    ]
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            old,
+            [
+                {
+                    "type": "assign_source",
+                    "role": "export",
+                    "stat": "sensor.c",
+                    "replace": "sensor.b",
+                }
+            ],
+        )
+    assert (err.value.code, err.value.stat) == ("unknown_source", "sensor.b")
+
+
 def test_assign_grid_creates_connection_without_costs() -> None:
     new = apply_changes(
         prefs(), [{"type": "assign_source", "role": "export", "stat": "sensor.export"}]
@@ -620,6 +654,21 @@ def test_unassign_sources() -> None:
     with pytest.raises(ChangeError) as err:
         apply_changes(prefs(), [{"type": "unassign_source", "stat": "sensor.nope"}])
     assert err.value.code == "unknown_source"
+
+
+def test_gas_and_water_sources_cannot_be_unassigned() -> None:
+    """Gas and water are only shown; removing them is refused."""
+    sources = [
+        {"type": "gas", "stat_energy_from": "sensor.gas", "stat_cost": "sensor.cost"},
+        {"type": "water", "stat_energy_from": "sensor.water"},
+    ]
+    for stat in ("sensor.gas", "sensor.water"):
+        with pytest.raises(ChangeError) as err:
+            apply_changes(
+                prefs(energy_sources=deepcopy(sources)),
+                [{"type": "unassign_source", "stat": stat}],
+            )
+        assert err.value.code == "unknown_source"
 
 
 def test_validate_duplicate_source() -> None:

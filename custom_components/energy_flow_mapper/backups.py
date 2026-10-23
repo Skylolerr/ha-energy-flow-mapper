@@ -36,6 +36,8 @@ class BackupStore:
         """Create the store; call async_load before use."""
         self._store: Store[BackupData] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
         self._backups: list[Backup] = []
+        # Backups dropped by the last async_add, returned by async_discard.
+        self._dropped: list[Backup] = []
 
     async def async_load(self) -> None:
         """Load the backups from disk."""
@@ -69,13 +71,22 @@ class BackupStore:
             "summary": summary,
             "data": data,
         }
-        self._backups = [*self._backups, backup][-MAX_BACKUPS:]
+        backups = [*self._backups, backup]
+        self._dropped = backups[:-MAX_BACKUPS]
+        self._backups = backups[-MAX_BACKUPS:]
         await self._async_save()
         return backup["id"]
 
     async def async_discard(self, backup_id: str) -> None:
-        """Remove a backup whose write did not happen."""
-        self._backups = [b for b in self._backups if b["id"] != backup_id]
+        """Remove a backup whose write did not happen.
+
+        The backups that adding it dropped beyond the limit come back.
+        """
+        self._backups = [
+            *self._dropped,
+            *(b for b in self._backups if b["id"] != backup_id),
+        ]
+        self._dropped = []
         await self._async_save()
 
     async def async_remove(self) -> None:

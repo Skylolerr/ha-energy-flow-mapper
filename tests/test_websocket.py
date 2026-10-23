@@ -221,18 +221,18 @@ async def test_save_without_effect(
 
 
 @pytest.mark.usefixtures("loaded_entry")
-async def test_failed_write_drops_backup(
+async def test_failed_write_keeps_backup(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """If Home Assistant rejects the write, no backup is left behind."""
+    """A write that fails once started keeps its backup; it may have happened."""
     base_hash = await current_hash(hass_ws_client, hass)
 
-    async def reject(hass: HomeAssistant, update: Any) -> None:
+    async def fail(hass: HomeAssistant, update: Any, expected_hash: str) -> None:
         raise energy_access.unsupported_error()
 
-    monkeypatch.setattr(energy_access, "async_write", reject)
+    monkeypatch.setattr(energy_access, "async_write", fail)
     response = await send(
         hass_ws_client,
         hass,
@@ -243,7 +243,78 @@ async def test_failed_write_drops_backup(
     assert not response["success"]
     assert response["error"]["translation_key"] == "unsupported_energy_api"
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/backups")
+    assert len(response["result"]["backups"]) == 1
+
+
+# An external statistic cannot have the fixed price of the grid connection.
+EXTERNAL_IMPORT = {
+    "type": "assign_source",
+    "role": "import",
+    "stat": "utility:grid_meter",
+}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_rejected_by_home_assistant(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Validating reports what HA's schemas reject; saving it makes no backup."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[EXTERNAL_IMPORT],
+    )
+    result = response["result"]
+    assert result["valid"] is False
+    assert result["issues"] == []
+    assert "external statistics" in result["rejected"]
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[EXTERNAL_IMPORT],
+    )
+    assert response["error"]["translation_key"] == "rejected_by_home_assistant"
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/backups")
     assert response["result"]["backups"] == []
+    assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_conflict_while_storing_backup(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A change made elsewhere while the backup is stored is not overwritten."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    backups = loaded_entry.runtime_data.backups
+    add = backups.async_add
+    elsewhere = [{"stat_consumption": "sensor.main_energy"}]
+
+    async def add_and_change(*args: Any) -> str:
+        backup_id = await add(*args)
+        await energy_access.async_write(hass, {"device_consumption": elsewhere})
+        return backup_id
+
+    monkeypatch.setattr(backups, "async_add", add_and_change)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{"type": "remove", "stat": "sensor.garage_energy"}],
+    )
+    assert response["error"]["translation_key"] == "conflict"
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["device_consumption"] == elsewhere
+    assert backups.entries() == []
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -433,7 +504,12 @@ async def test_save_sources(
         type=f"{DOMAIN}/save",
         base_hash=base_hash,
         changes=[
-            {"type": "assign_source", "role": "import", "stat": "sensor.attic_energy"},
+            {
+                "type": "assign_source",
+                "role": "import",
+                "stat": "sensor.attic_energy",
+                "replace": "sensor.grid_import",
+            },
             {"type": "unassign_source", "stat": "sensor.solar_energy"},
             {
                 "type": "assign_source",

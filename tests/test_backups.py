@@ -86,3 +86,17 @@ async def test_discard_and_remove(
     await store.async_remove()
     assert store.entries() == []
     assert STORAGE_KEY not in hass_storage
+
+
+async def test_discard_brings_back_dropped_backups(hass: HomeAssistant) -> None:
+    """Discarding a backup returns the ones adding it pushed out."""
+    store = BackupStore(hass)
+    await store.async_load()
+    ids = [await store.async_add({}, None, None, {"n": n}) for n in range(MAX_BACKUPS)]
+    extra = await store.async_add({}, None, None, {})
+    assert ids[0] not in [entry["id"] for entry in store.entries()]
+    await store.async_discard(extra)
+    assert [entry["id"] for entry in store.entries()] == list(reversed(ids))
+    # A second discard has nothing to bring back.
+    await store.async_discard(ids[-1])
+    assert len(store.entries()) == MAX_BACKUPS - 1
