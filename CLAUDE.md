@@ -68,6 +68,9 @@ pytest
 ruff check . && ruff format --check .
 mypy custom_components/energy_flow_mapper
 
+# Panel (Node version in panel/.nvmrc); always commit the rebuilt bundle
+cd panel && npm ci && npm run typecheck && npm test && npm run build
+
 # Deploy to the maintainer's HA instance (values from .env, see .env.example)
 scripts/deploy.sh --no-restart
 ```

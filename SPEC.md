@@ -106,6 +106,7 @@ ha-energy-flow-mapper/
 │   ├── backups.py             # Store mit Sicherungen
 │   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Schreib-Lock)
 │   ├── websocket.py           # energy_flow_mapper/*
+│   ├── frontend.py            # Static Path und Panel-Registrierung
 │   ├── diagnostics.py
 │   ├── strings.json
 │   ├── translations/{en,de,fr,it}.json
@@ -141,7 +142,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 }
 ```
 
-In Phase 1 ist nur `energy` eingetragen; `frontend`, `http` und `panel_custom` kommen mit dem Panel in Phase 2. `recorder` kommt über `energy` mit.
+`recorder` kommt über `energy` mit.
 
 ### hacs.json
 
