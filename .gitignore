@@ -21,3 +21,6 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Release notes extracted from CHANGELOG.md
+notes.md

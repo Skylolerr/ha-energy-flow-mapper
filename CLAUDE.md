@@ -48,7 +48,9 @@ own repo. Never create, edit or commit files of one project in the other's folde
 - **Versioning:** SemVer. `manifest.json` `version` is the single source of the version;
   git tags / GitHub releases use the form `vX.Y.Z` and must match it. Before 1.0, minor
   releases may contain breaking changes, which must be clearly marked in CHANGELOG.md.
-  Releases are real GitHub releases with a changelog, not just tags.
+  Releases are real GitHub releases with a changelog, not just tags, and normal
+  releases, not pre-releases (HACS hides pre-releases unless beta is switched on; the
+  beta notice is in the README).
 - **Quality:** `ConfigEntry.runtime_data` with a typed entry alias, never `hass.data`.
   Fully async, no blocking I/O in the event loop. All WebSocket commands require admin.
   Errors use `HomeAssistantError`/`ServiceValidationError` with `translation_key`.
@@ -88,6 +90,20 @@ A recreated venv needs these stubs again.
 See SPEC.md §17. A phase is done as a whole unless the maintainer asks for part of it.
 Phase 2 (panel) only starts after the maintainer has approved Phase 1.
 
-The `hacs/action` job is not part of `.github/workflows/validate.yml` until Phase 3
-(it needs a public repo, brand icons, description and topics). Phase 3 must add it with
-`category: integration` and **no ignores**.
+The `hacs/action` job in `.github/workflows/validate.yml` runs with
+`category: integration` and **no ignores**. It is skipped while the repo is private
+(hacs/action can only check public repos); never add ignores to make it pass.
+
+## Releases
+
+Only when the maintainer asks for it, and only after CI (including HACS) is green:
+
+```bash
+VERSION=0.1.0  # must match manifest.json and a "## [0.1.0] - date" CHANGELOG section
+awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{found=0} found && !/^\[/" CHANGELOG.md > notes.md
+gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
+```
+
+`release.yml` checks the tag against the manifest and the CHANGELOG and attaches a ZIP.
+The PR to `hacs/default` is made by the owner account Skylolerr, only after the
+maintainer's explicit OK.

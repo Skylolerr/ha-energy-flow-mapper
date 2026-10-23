@@ -7,7 +7,9 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
-First beta, planned as 0.1.0.
+## [0.1.0] - 2026-10-23
+
+First public beta.
 
 ### Added
 

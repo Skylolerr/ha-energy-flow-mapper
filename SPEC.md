@@ -332,10 +332,10 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 ## 14. CI / Release
 
-- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores, sobald das Repo öffentlich ist.
+- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren.
 - **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version, damit Änderungen am Energie-Format früh auffallen.
-- **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version`, hängt ein ZIP an.
-- Releases sind echte GitHub-Releases mit Changelog. SemVer; vor 1.0 dürfen Minor-Releases Breaking Changes enthalten, im CHANGELOG klar markiert.
+- **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat, hängt ein ZIP an.
+- Releases sind echte GitHub-Releases mit Changelog (Release-Notes aus dem CHANGELOG-Abschnitt der Version), auch vor 1.0 **normale Releases, keine Pre-Releases**: HACS zeigt Pre-Releases nur mit Beta-Schalter an. Der Beta-Hinweis steht im README. SemVer; vor 1.0 dürfen Minor-Releases Breaking Changes enthalten, im CHANGELOG klar markiert.
 
 ---
 
@@ -362,9 +362,9 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
-3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: alle Funktionen umgesetzt; FR/IT, Issue-Vorlagen, `quality_scale.yaml`, README (Screenshots noch Platzhalter) und CHANGELOG fertig; Logo als Entwurf (`scripts/make_brand_icons.py`), mit dem Maintainer abzustimmen. Offen: Screenshots, Logo-Freigabe, `hacs/action` nach dem Öffentlich-Schalten, Release.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, Pre-Release, Installation über HACS «Custom Repository» verifizieren.
+3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: alles umgesetzt bis auf die Schritte des Maintainers; Logo freigegeben, README mit Screenshots, Repo-Beschreibung und Topics gesetzt, `hacs/action` eingebaut (läuft ab dem Öffentlich-Schalten). Offen: Repo öffentlich, CI grün inkl. HACS, Release, HACS-Installation testen.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
 4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter.
-5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback, danach PR an `hacs/default`.
+5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.
 
