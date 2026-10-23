@@ -1432,10 +1432,14 @@ export class EnergyFlowMapperPanel extends LitElement {
         });
       case "moved":
         return entry.to ? this._t("diff_moved", { name, to }) : this._t("diff_moved_top", { name });
-      case "renamed":
+      case "renamed": {
+        // The draft already carries the new name, so name the device as saved.
+        const before =
+          entry.from || this._name(entry.stat, this._snapshot?.prefs.device_consumption);
         return entry.to
-          ? this._t("diff_renamed", { name: entry.from || this._name(entry.stat), to: entry.to })
-          : this._t("diff_renamed_reset", { name });
+          ? this._t("diff_renamed", { name: before, to: entry.to })
+          : this._t("diff_renamed_reset", { name: before });
+      }
       case "source_added":
       case "source_removed":
         return this._t(entry.type === "source_added" ? "diff_source_added" : "diff_source_removed", {
@@ -1877,7 +1881,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .content {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) minmax(320px, 2fr) minmax(220px, 1fr);
+      grid-template-columns: minmax(240px, 1fr) minmax(360px, 3fr) minmax(240px, 1fr);
       gap: 16px;
       padding: 16px;
       align-items: start;

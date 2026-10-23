@@ -520,6 +520,10 @@ describe("texts", () => {
     expect(el._diffText({ type: "renamed", stat: "sensor.tv", from: "TV", to: null })).toBe(
       "TV uses the entity name again",
     );
+    el._change({ type: "rename", stat: "sensor.sonos", name: "Living room amp" });
+    expect(
+      el._diffText({ type: "renamed", stat: "sensor.sonos", from: null, to: "Living room amp" }),
+    ).toBe("Sonos amp renamed to “Living room amp”");
     expect(el._diffText({ type: "rate", stat: "sensor.tv" })).toBe("Power sensor of TV changed");
     expect(
       el._issueText({ code: "not_energy_unit", severity: "warning", stat: "x", details: { unit: "W" } }),

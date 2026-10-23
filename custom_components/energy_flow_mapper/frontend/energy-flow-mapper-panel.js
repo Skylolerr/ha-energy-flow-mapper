@@ -348,7 +348,7 @@ const x=globalThis,w=e=>e,k=x.trustedTypes,A=k?k.createPolicy("lit-html",{create
       >
       <button @click=${()=>this._discard()}>${this._t("discard")}</button>
       <button class="primary" @click=${()=>this._openConfirm()}>${this._t("save")}</button>
-    </div>`}_issueText(e){const t=`issue_${e.code}`;return Be(t)?this._t(t,{unit:String(e.details.unit??"")}):e.code}_diffText(e){const t=this._name(e.stat),s=e.to?this._name(e.to):"";switch(e.type){case"added":return e.parent?this._t("diff_added_under",{name:t,to:this._name(e.parent)}):this._t("diff_added",{name:t});case"removed":return this._t("diff_removed",{name:this._name(e.stat,this._snapshot?.prefs.device_consumption)});case"moved":return e.to?this._t("diff_moved",{name:t,to:s}):this._t("diff_moved_top",{name:t});case"renamed":return e.to?this._t("diff_renamed",{name:e.from||this._name(e.stat),to:e.to}):this._t("diff_renamed_reset",{name:t});case"source_added":case"source_removed":return this._t("source_added"===e.type?"diff_source_added":"diff_source_removed",{name:t,role:this._roleLabel(e.role)});default:return this._t("diff_rate",{name:t})}}_roleLabel(e){const t=`role_${e??""}`;return Be(t)?this._t(t):e??""}_sensorList(e,t){const s=this._freeCandidates().filter(t=>!e.includes(t.stat));return 0===s.length?F`<p class="empty">${this._t("no_candidates")}</p>`:F`<ul class="targets">
+    </div>`}_issueText(e){const t=`issue_${e.code}`;return Be(t)?this._t(t,{unit:String(e.details.unit??"")}):e.code}_diffText(e){const t=this._name(e.stat),s=e.to?this._name(e.to):"";switch(e.type){case"added":return e.parent?this._t("diff_added_under",{name:t,to:this._name(e.parent)}):this._t("diff_added",{name:t});case"removed":return this._t("diff_removed",{name:this._name(e.stat,this._snapshot?.prefs.device_consumption)});case"moved":return e.to?this._t("diff_moved",{name:t,to:s}):this._t("diff_moved_top",{name:t});case"renamed":{const t=e.from||this._name(e.stat,this._snapshot?.prefs.device_consumption);return e.to?this._t("diff_renamed",{name:t,to:e.to}):this._t("diff_renamed_reset",{name:t})}case"source_added":case"source_removed":return this._t("source_added"===e.type?"diff_source_added":"diff_source_removed",{name:t,role:this._roleLabel(e.role)});default:return this._t("diff_rate",{name:t})}}_roleLabel(e){const t=`role_${e??""}`;return Be(t)?this._t(t):e??""}_sensorList(e,t){const s=this._freeCandidates().filter(t=>!e.includes(t.stat));return 0===s.length?F`<p class="empty">${this._t("no_candidates")}</p>`:F`<ul class="targets">
       ${s.map(e=>F`<li>
           <button class="target" data-target=${e.stat} @click=${()=>t(e.stat)}>
             ${e.name||e.stat}
@@ -615,7 +615,7 @@ const x=globalThis,w=e=>e,k=x.trustedTypes,A=k?k.createPolicy("lit-html",{create
     }
     .content {
       display: grid;
-      grid-template-columns: minmax(220px, 1fr) minmax(320px, 2fr) minmax(220px, 1fr);
+      grid-template-columns: minmax(240px, 1fr) minmax(360px, 3fr) minmax(240px, 1fr);
       gap: 16px;
       padding: 16px;
       align-items: start;
