@@ -41,6 +41,7 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Thema | Entscheidung |
 |---|---|
 | Oberfläche | **Eigenes Panel in der Seitenleiste**, keine Lovelace-Karte |
+| Darstellung | **Diagramm mit Blöcken und Pfeilen**, automatisch angeordnet (keine frei verschiebbaren Blöcke, keine gespeicherten Positionen); zoom- und verschiebbar, auch auf dem Handy. Die Listen-Ansicht bleibt im Code, ist aber nicht sichtbar |
 | Zugriff | Panel und WebSocket-API nur für Admins (`require_admin`) |
 | Auslieferung | Python-Integration, die das Panel registriert und eine eigene WebSocket-API anbietet |
 | Struktur | **Ein einziger Config Entry** (`single_config_entry: true`), kein Device, **keine Entities** |
@@ -174,26 +175,33 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 ### Aufbau (breite Ansicht)
 
 ```
-┌ Kopfzeile: Titel · [Rückgängig] [Sicherungen] ───────────────────────────┐
-│ Freie Sensoren   │ Quellen: [Netz-Bezug] [Einspeisung]│ Details           │
-│ (Suche)          │          [Solar] [Batterie]        │ Name, Sensor,     │
-│ ▸ sensor.a       │ Zuhause                            │ Bereich, Leistung │
-│ ▸ sensor.b       │  ├ Küche                           │ jetzt, kWh im     │
-│ Nur Leistung:    │  │  ├ Kaffeemaschine               │ Zeitraum, nicht   │
-│ ▸ sensor.ups_w ⊕ │  │  └ nicht erfasst  12 W          │ erfasst, Warnung  │
-│                  │  └ Werkstatt                       │                   │
-└──────────────────┴────────────────────────────────────┴───────────────────┘
+┌ Kopfzeile: Titel · [Rückgängig] [Sicherungen] [Neu laden] ───────────────┐
+│ Freie Sensoren   │ Diagramm               [−] [+] [Einpassen]│ Details   │
+│ (Suche)          │  [+ Netz-Bezug] [+ Solar] [+ Batterie] [Einspeisung]  │ Name,     │
+│ ▸ sensor.a       │          ╲        │        ╱       ↗       │ Sensor,   │
+│ ▸ sensor.b       │              ┌─ Zuhause ─┐                 │ Bereich,  │
+│                  │          ┃ dick           │ dünn           │ Leistung, │
+│                  │   ┌ Server 160 W ┐   ┌ TV 3 W ┐            │ nicht     │
+│                  │      │        ┆                            │ erfasst,  │
+│                  │  ┌ Sonos 0 W ┐ ┌ Nicht erfasst 160 W ┐     │ Probleme  │
+└──────────────────┴────────────────────────────────────────────┴───────────┘
   Leiste bei Änderungen: «3 Änderungen» · [Verwerfen] [Speichern]
 ```
 
-- **Schmale Ansicht (Handy):** nur Quellen und Baum. Freie Sensoren und Details öffnen sich als Dialog.
+- **Diagramm:** Oben die Quellen, darunter «Zuhause», darunter die Geräte als Blöcke (Name, Leistung jetzt, Bereich). Pfeile zeigen die Zuordnung: Quelle → Zuhause, Zuhause → Einspeisung, Zuhause → oberste Geräte, übergeordnetes → untergeordnetes Gerät.
+- **Pfeildicke = Leistung jetzt** (relativ zum grössten Wert im Diagramm). Ohne Leistungssensor ist der Pfeil dünn und gestrichelt.
+- **Automatische Anordnung** von oben nach unten; ein Block mit untergeordneten Geräten steht mittig über ihnen. Blöcke mit untergeordneten Geräten lassen sich zuklappen.
+- **Nicht konfigurierte Quellen** erscheinen als gestrichelte Platzhalter («+ Netz-Bezug», «+ Solar», «+ Batterie», «+ Einspeisung»). In Phase 2 führt ein Klick zu den Energie-Einstellungen; ab Phase 3 sind sie Ablageziele (§8).
+- **Zoomen und Verschieben:** Mausrad zoomt um den Mauszeiger, Ziehen auf freier Fläche verschiebt; auf dem Handy mit zwei Fingern zoomen und mit einem Finger verschieben. Knöpfe «−», «+» und «Einpassen»; beim Laden wird das Diagramm eingepasst.
+- **Listen-Ansicht:** Die bisherige eingerückte Liste bleibt im Code und in den Tests erhalten, ist aber in der Oberfläche nicht erreichbar.
+- **Schmale Ansicht (Handy):** nur das Diagramm. Freie Sensoren, Sicherungen und Details öffnen sich als Dialog.
 - **Ziehen:** Gerät auf ein anderes Gerät ziehen = darunter hängen. Auf «Zuhause» ziehen = oberste Ebene. Freien Sensor in den Baum ziehen = als Gerät hinzufügen. Ab Phase 3: freien Sensor auf ein Quellen-Feld ziehen = als Quelle zuweisen.
 - **Ohne Ziehen:** Jedes Gerät hat ein Menü «Verschieben nach …», «Umbenennen», «Aus dem Energie-Dashboard entfernen». Ziehen per HTML5 funktioniert auf Touch-Geräten nicht zuverlässig, darum ist das Menü der Hauptweg auf dem Handy und für Tastatur-Bedienung.
 - **Ungültige Ziele** (eigene Unterknoten, sich selbst) werden beim Ziehen gar nicht erst angeboten.
 - **Entwurf:** Änderungen sammeln sich lokal und werden erst mit «Speichern» geschrieben. Vor dem Speichern zeigt ein Dialog die Liste der Änderungen.
 - **Quellen:** In Phase 2 nur zur Anzeige, mit Link zu den Energie-Einstellungen von HA. Ab Phase 3 bearbeitbar (§8).
 - **Live-Werte:** Leistung (aus `stat_rate`, falls gesetzt) direkt aus `hass.states`. Ab Phase 3 Energie im Zeitraum (Heute / 7 Tage / 30 Tage) über `recorder/statistics_during_period`.
-- **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein Pseudo-Knoten «nicht erfasst» mit `eigener Wert − Summe Kinder` (Leistung live, ab Phase 3 auch Energie im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
+- **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein gestrichelter Block «Nicht erfasst» mit `eigener Wert − Summe Kinder` (Leistung live, ab Phase 3 auch Energie im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
 
 ---
 
