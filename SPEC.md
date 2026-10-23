@@ -5,7 +5,7 @@ Home-Assistant-Custom-Integration (HACS) mit einem eigenen Admin-Panel, um die E
 - **Name:** Energy Flow Mapper
 - **Domain:** `energy_flow_mapper`
 - **Repo:** `Skylolerr/ha-energy-flow-mapper`, privat bis zum ersten Beta-Release
-- **Lizenz:** MIT, Copyright skylolerlp
+- **Lizenz:** MIT, Copyright Skylolerr
 - **Mindestversion:** Home Assistant 2026.10.0. Sie wird gemeinsam mit dem Maintainer angehoben, sobald eine neue HA-Version erscheint und getestet ist.
 - **Sprachen:** EN (Basis), DE, FR, IT
 - **Code, Kommentare, README, Commit-Messages:** Englisch
@@ -334,6 +334,7 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 - **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren.
 - **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version, damit Änderungen am Energie-Format früh auffallen.
+- **`scripts/release.sh`:** erstellt den Release erst, wenn main sauber und gepusht ist, der CHANGELOG-Abschnitt existiert und Validate/Tests für den Commit grün sind; die Release-Notes sind der CHANGELOG-Abschnitt.
 - **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat, hängt ein ZIP an.
 - Releases sind echte GitHub-Releases mit Changelog (Release-Notes aus dem CHANGELOG-Abschnitt der Version), auch vor 1.0 **normale Releases, keine Pre-Releases**: HACS zeigt Pre-Releases nur mit Beta-Schalter an. Der Beta-Hinweis steht im README. SemVer; vor 1.0 dürfen Minor-Releases Breaking Changes enthalten, im CHANGELOG klar markiert.
 

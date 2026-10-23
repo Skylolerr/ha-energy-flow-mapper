@@ -1,3 +1,4 @@
-pytest-homeassistant-custom-component==0.13.373
+# Pins Home Assistant 2026.10.0, the minimum in hacs.json; raise both together.
+pytest-homeassistant-custom-component==0.13.371
 ruff==0.17.1
 mypy==2.4.0

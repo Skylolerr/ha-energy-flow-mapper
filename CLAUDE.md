@@ -11,7 +11,7 @@ maintainer instead of deviating.
 ## Project facts
 
 - Domain: `energy_flow_mapper` – integration code lives in `custom_components/energy_flow_mapper/`
-- Repo: `Skylolerr/ha-energy-flow-mapper`, license MIT (Copyright skylolerlp)
+- Repo: `Skylolerr/ha-energy-flow-mapper`, license MIT (Copyright Skylolerr)
 - Local folder is `HA Energy Hierarchy` (working name before the rename)
 - Minimum Home Assistant version: **2026.10.0** (`hacs.json`), raised together with the
   maintainer whenever a new HA release has been tested
@@ -96,14 +96,16 @@ The `hacs/action` job in `.github/workflows/validate.yml` runs with
 
 ## Releases
 
-Only when the maintainer asks for it, and only after CI (including HACS) is green:
+Only when the maintainer asks for it. The version comes from `manifest.json`; set the
+date of its CHANGELOG section first.
 
 ```bash
-VERSION=0.1.0  # must match manifest.json and a "## [0.1.0] - date" CHANGELOG section
-awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{found=0} found && !/^\[/" CHANGELOG.md > notes.md
-gh release create "v${VERSION}" --title "v${VERSION}" --notes-file notes.md
+scripts/release.sh --dry-run   # checks only, prints the release notes
+scripts/release.sh             # creates the normal release vX.Y.Z
 ```
 
-`release.yml` checks the tag against the manifest and the CHANGELOG and attaches a ZIP.
+The script refuses to release unless main is clean and pushed, the CHANGELOG has the
+section, the tag is new and Validate and Tests are green for the commit. The notes are
+the CHANGELOG section. `release.yml` then checks the tag again and attaches a ZIP.
 The PR to `hacs/default` is made by the owner account Skylolerr, only after the
 maintainer's explicit OK.
