@@ -27,7 +27,32 @@ PARENT = "included_in_stat"
 NAME = "name"
 RATE = "stat_rate"
 
-SOURCE_ENERGY_KEYS = ("stat_energy_from", "stat_energy_to")
+FROM = "stat_energy_from"
+TO = "stat_energy_to"
+SOURCE_ENERGY_KEYS = (FROM, TO)
+
+# Roles of a source statistic, by source type and key.
+SOURCE_ROLES: dict[str, dict[str, str]] = {
+    "grid": {FROM: "import", TO: "export"},
+    "solar": {FROM: "production"},
+    "battery": {FROM: "discharge", TO: "charge"},
+    "gas": {FROM: "consumption"},
+    "water": {FROM: "consumption"},
+}
+
+# A grid connection without costs, as the energy settings page creates it.
+NEW_GRID: dict[str, Any] = {
+    "type": "grid",
+    "stat_energy_from": None,
+    "stat_energy_to": None,
+    "stat_cost": None,
+    "entity_energy_price": None,
+    "number_energy_price": None,
+    "stat_compensation": None,
+    "entity_energy_price_export": None,
+    "number_energy_price_export": None,
+    "cost_adjustment_day": 0.0,
+}
 
 type Device = dict[str, Any]
 type Prefs = Mapping[str, Any]
@@ -48,18 +73,30 @@ class IssueCode(StrEnum):
     DUPLICATE = "duplicate"
     MISSING_PARENT = "missing_parent"
     SOURCE_AND_DEVICE = "source_and_device"
+    DUPLICATE_SOURCE = "duplicate_source"
     STATISTIC_MISSING = "statistic_missing"
     NOT_ENERGY_UNIT = "not_energy_unit"
     CHILDREN_EXCEED_PARENT = "children_exceed_parent"
 
 
 class ChangeType(StrEnum):
-    """Changes the panel can make to the device list."""
+    """Changes the panel can make to the devices and sources."""
 
     ADD = "add"
     MOVE = "move"
     RENAME = "rename"
     REMOVE = "remove"
+    ASSIGN_SOURCE = "assign_source"
+    UNASSIGN_SOURCE = "unassign_source"
+
+
+class AssignRole(StrEnum):
+    """Source roles a statistic can be assigned to."""
+
+    IMPORT = "import"
+    EXPORT = "export"
+    PRODUCTION = "production"
+    BATTERY = "battery"
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +216,16 @@ def source_energy_stats(sources: Sequence[Mapping[str, Any]]) -> set[str]:
     }
 
 
+def source_roles(sources: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
+    """Return (role, statistic) for every energy statistic of the sources."""
+    return [
+        (role, value)
+        for source in sources
+        for key, role in SOURCE_ROLES.get(source.get("type", ""), {}).items()
+        if isinstance(value := source.get(key), str)
+    ]
+
+
 def used_stats(prefs: Prefs) -> set[str]:
     """Return every statistic referenced anywhere in the preferences."""
     found: set[str] = set()
@@ -238,6 +285,12 @@ def validate(
                 )
             )
 
+    counts = Counter(stat for _, stat in source_roles(prefs.get(KEY_SOURCES, [])))
+    issues.extend(
+        Issue(IssueCode.DUPLICATE_SOURCE, Severity.ERROR, stat)
+        for stat, count in counts.items()
+        if count > 1
+    )
     sources = source_energy_stats(prefs.get(KEY_SOURCES, []))
     issues.extend(
         Issue(IssueCode.SOURCE_AND_DEVICE, Severity.ERROR, stat)
@@ -285,6 +338,52 @@ def _index(devices: Sequence[Device], stat: str) -> int | None:
     )
 
 
+def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> None:
+    """Assign a statistic to a source role.
+
+    Grid import and export replace the meter of the first grid connection and
+    keep its prices; without a grid connection, one without costs is created.
+    Solar and battery always add a new source; a battery needs both meters.
+    """
+    role = change.get("role")
+    stat = change["stat"]
+    if role in (AssignRole.IMPORT, AssignRole.EXPORT):
+        key = FROM if role == AssignRole.IMPORT else TO
+        grid = next((s for s in sources if s.get("type") == "grid"), None)
+        if grid is None:
+            grid = deepcopy(NEW_GRID)
+            sources.append(grid)
+        grid[key] = stat
+    elif role == AssignRole.PRODUCTION:
+        sources.append(
+            {"type": "solar", FROM: stat, "config_entry_solar_forecast": None}
+        )
+    elif role == AssignRole.BATTERY and change.get("stat_to"):
+        sources.append({"type": "battery", FROM: stat, TO: change["stat_to"]})
+    else:
+        raise ChangeError("unknown_change", stat)
+
+
+def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
+    """Remove a statistic from the sources.
+
+    A grid connection only loses that meter (it is removed once nothing is
+    left); any other source is removed as a whole.
+    """
+    for index, source in enumerate(sources):
+        for key in SOURCE_ENERGY_KEYS:
+            if source.get(key) != stat:
+                continue
+            if source.get("type") != "grid":
+                del sources[index]
+                return
+            source[key] = None
+            if not any(source.get(k) for k in (FROM, TO, RATE, "power_config")):
+                del sources[index]
+            return
+    raise ChangeError("unknown_source", stat)
+
+
 def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Return a copy of the preferences with the changes applied in order.
 
@@ -293,9 +392,16 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
     """
     result = deepcopy(dict(prefs))
     devices: list[Device] = result.setdefault(KEY_DEVICES, [])
+    sources: list[dict[str, Any]] = result.setdefault(KEY_SOURCES, [])
     for change in changes:
         kind = change["type"]
         stat = change["stat"]
+        if kind == ChangeType.ASSIGN_SOURCE:
+            _assign_source(sources, change)
+            continue
+        if kind == ChangeType.UNASSIGN_SOURCE:
+            _unassign_source(sources, stat)
+            continue
         index = _index(devices, stat)
         if kind == ChangeType.ADD:
             if index is not None:
@@ -331,6 +437,18 @@ def diff(old: Prefs, new: Prefs) -> list[dict[str, Any]]:
         for stat, device in new_devices.items()
         if stat not in old_devices
     ]
+    old_roles = set(source_roles(old.get(KEY_SOURCES, [])))
+    new_roles = set(source_roles(new.get(KEY_SOURCES, [])))
+    entries.extend(
+        {"type": "source_added", "stat": stat, "role": role}
+        for role, stat in source_roles(new.get(KEY_SOURCES, []))
+        if (role, stat) not in old_roles
+    )
+    entries.extend(
+        {"type": "source_removed", "stat": stat, "role": role}
+        for role, stat in source_roles(old.get(KEY_SOURCES, []))
+        if (role, stat) not in new_roles
+    )
     for stat, before in old_devices.items():
         after = new_devices.get(stat)
         if after is None:

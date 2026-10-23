@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import pytest
 
 from custom_components.energy_flow_mapper.hierarchy import (
+    NEW_GRID,
     ChangeError,
     IssueCode,
     Node,
@@ -19,6 +21,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     plausibility,
     prefs_hash,
     source_energy_stats,
+    source_roles,
     summarize,
     tree_depth,
     untracked,
@@ -470,3 +473,180 @@ def test_prefs_hash_is_stable() -> None:
     assert len(prefs_hash(first)) == 16
     changed = apply_changes(first, [{"type": "remove", "stat": "sensor.garage"}])
     assert prefs_hash(changed) != prefs_hash(first)
+
+
+# --- sources ----------------------------------------------------------------
+
+GRID_WITH_PRICES = {
+    "type": "grid",
+    "stat_energy_from": "sensor.import",
+    "stat_energy_to": None,
+    "stat_cost": None,
+    "entity_energy_price": None,
+    "number_energy_price": 0.3,
+    "stat_compensation": None,
+    "entity_energy_price_export": None,
+    "number_energy_price_export": None,
+    "cost_adjustment_day": 0.0,
+    "power_config": {"stat_rate": "sensor.grid_power"},
+}
+
+
+def test_source_roles() -> None:
+    sources = [
+        GRID_WITH_PRICES,
+        {"type": "solar", "stat_energy_from": "sensor.pv"},
+        {
+            "type": "battery",
+            "stat_energy_from": "sensor.out",
+            "stat_energy_to": "sensor.in",
+        },
+        {"type": "gas", "stat_energy_from": "sensor.gas"},
+        {"type": "heat", "stat_energy_from": "sensor.heat"},
+    ]
+    assert source_roles(sources) == [
+        ("import", "sensor.import"),
+        ("production", "sensor.pv"),
+        ("discharge", "sensor.out"),
+        ("charge", "sensor.in"),
+        ("consumption", "sensor.gas"),
+    ]
+
+
+def test_assign_grid_keeps_prices_and_power() -> None:
+    old = prefs(energy_sources=[deepcopy(GRID_WITH_PRICES)])
+    new = apply_changes(
+        old,
+        [
+            {"type": "assign_source", "role": "export", "stat": "sensor.export"},
+            {"type": "assign_source", "role": "import", "stat": "sensor.new_import"},
+        ],
+    )
+    (grid,) = new["energy_sources"]
+    assert grid == GRID_WITH_PRICES | {
+        "stat_energy_from": "sensor.new_import",
+        "stat_energy_to": "sensor.export",
+    }
+    assert old["energy_sources"] == [GRID_WITH_PRICES]
+
+
+def test_assign_grid_creates_connection_without_costs() -> None:
+    new = apply_changes(
+        prefs(), [{"type": "assign_source", "role": "export", "stat": "sensor.export"}]
+    )
+    assert new["energy_sources"] == [NEW_GRID | {"stat_energy_to": "sensor.export"}]
+    # The template is not shared between calls.
+    assert NEW_GRID["stat_energy_to"] is None
+
+
+def test_assign_solar_and_battery_add_sources() -> None:
+    new = apply_changes(
+        {"device_consumption": []},
+        [
+            {"type": "assign_source", "role": "production", "stat": "sensor.pv1"},
+            {"type": "assign_source", "role": "production", "stat": "sensor.pv2"},
+            {
+                "type": "assign_source",
+                "role": "battery",
+                "stat": "sensor.out",
+                "stat_to": "sensor.in",
+            },
+        ],
+    )
+    assert new["energy_sources"] == [
+        {
+            "type": "solar",
+            "stat_energy_from": "sensor.pv1",
+            "config_entry_solar_forecast": None,
+        },
+        {
+            "type": "solar",
+            "stat_energy_from": "sensor.pv2",
+            "config_entry_solar_forecast": None,
+        },
+        {
+            "type": "battery",
+            "stat_energy_from": "sensor.out",
+            "stat_energy_to": "sensor.in",
+        },
+    ]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"type": "assign_source", "role": "battery", "stat": "sensor.out"},
+        {"type": "assign_source", "role": "gas", "stat": "sensor.gas"},
+        {"type": "assign_source", "stat": "sensor.x"},
+    ],
+)
+def test_assign_errors(change: dict[str, Any]) -> None:
+    with pytest.raises(ChangeError) as err:
+        apply_changes(prefs(), [change])
+    assert err.value.code == "unknown_change"
+
+
+def test_unassign_sources() -> None:
+    sources = [
+        deepcopy(GRID_WITH_PRICES) | {"stat_energy_to": "sensor.export"},
+        {"type": "grid", "stat_energy_from": "sensor.second", "stat_energy_to": None},
+        {"type": "solar", "stat_energy_from": "sensor.pv"},
+        {
+            "type": "battery",
+            "stat_energy_from": "sensor.out",
+            "stat_energy_to": "sensor.in",
+        },
+    ]
+    new = apply_changes(
+        prefs(energy_sources=sources),
+        [
+            {"type": "unassign_source", "stat": "sensor.import"},
+            {"type": "unassign_source", "stat": "sensor.second"},
+            {"type": "unassign_source", "stat": "sensor.pv"},
+            {"type": "unassign_source", "stat": "sensor.in"},
+        ],
+    )
+    # The first grid keeps its export meter, prices and power; the second one
+    # had nothing left and is gone, as are solar and the battery.
+    assert new["energy_sources"] == [
+        GRID_WITH_PRICES | {"stat_energy_from": None, "stat_energy_to": "sensor.export"}
+    ]
+    # Without export and power the first grid disappears too.
+    bare = apply_changes(
+        prefs(energy_sources=[NEW_GRID | {"stat_energy_from": "sensor.a"}]),
+        [{"type": "unassign_source", "stat": "sensor.a"}],
+    )
+    assert bare["energy_sources"] == []
+    with pytest.raises(ChangeError) as err:
+        apply_changes(prefs(), [{"type": "unassign_source", "stat": "sensor.nope"}])
+    assert err.value.code == "unknown_source"
+
+
+def test_validate_duplicate_source() -> None:
+    data = prefs(
+        energy_sources=[
+            {
+                "type": "grid",
+                "stat_energy_from": "sensor.a",
+                "stat_energy_to": "sensor.a",
+            },
+            {"type": "solar", "stat_energy_from": "sensor.b"},
+        ]
+    )
+    assert codes(validate(data)) == [("duplicate_source", "sensor.a")]
+
+
+def test_diff_sources() -> None:
+    old = prefs(energy_sources=[deepcopy(GRID_WITH_PRICES)])
+    new = apply_changes(
+        old,
+        [
+            {"type": "assign_source", "role": "import", "stat": "sensor.new_import"},
+            {"type": "assign_source", "role": "production", "stat": "sensor.pv"},
+        ],
+    )
+    assert diff(old, new) == [
+        {"type": "source_added", "stat": "sensor.new_import", "role": "import"},
+        {"type": "source_added", "stat": "sensor.pv", "role": "production"},
+        {"type": "source_removed", "stat": "sensor.import", "role": "import"},
+    ]
