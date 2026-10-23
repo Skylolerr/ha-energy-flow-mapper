@@ -57,11 +57,15 @@ export interface StatInfo {
   area_name: string | null;
   floor_id: string | null;
   floor_name: string | null;
+  /** The entity belongs to a helper created by Energy Flow Mapper. */
+  created_helper?: boolean;
 }
 
 /** An energy meter that is not used yet; `power` is a suggested stat_rate. */
 export interface Candidate extends StatInfo {
   power: string | null;
+  /** An external statistic (no entity), e.g. from an energy supplier portal. */
+  external?: boolean;
 }
 
 export type IssueCode =
@@ -70,6 +74,7 @@ export type IssueCode =
   | "duplicate"
   | "missing_parent"
   | "source_and_device"
+  | "duplicate_source"
   | "statistic_missing"
   | "not_energy_unit"
   | "children_exceed_parent";
@@ -86,6 +91,8 @@ export interface Snapshot {
   hash: string;
   stats: Record<string, StatInfo>;
   candidates: Candidate[];
+  /** Power sensors without an energy meter. */
+  power_candidates: StatInfo[];
   issues: Issue[];
 }
 
@@ -99,11 +106,17 @@ export type Change =
     }
   | { type: "move"; stat: string; parent: string | null }
   | { type: "rename"; stat: string; name: string | null }
-  | { type: "remove"; stat: string };
+  | { type: "remove"; stat: string }
+  | { type: "assign_source"; role: AssignRole; stat: string; stat_to?: string }
+  | { type: "unassign_source"; stat: string };
+
+/** Source roles a free sensor can be assigned to. */
+export type AssignRole = "import" | "export" | "production" | "battery";
 
 export interface DiffEntry {
-  type: "added" | "removed" | "moved" | "renamed" | "rate";
+  type: "added" | "removed" | "moved" | "renamed" | "rate" | "source_added" | "source_removed";
   stat: string;
+  role?: string;
   parent?: string | null;
   from?: string | null;
   to?: string | null;

@@ -7,6 +7,7 @@ import {
   MIN_ZOOM,
   PANEL_TAG,
   TOAST_MS,
+  assignRole,
   TOUCH_DRAG_LIFT,
   TOUCH_DRAG_SCALE,
 } from "../src/energy-flow-mapper-panel";
@@ -68,7 +69,9 @@ function snapshot(): Snapshot {
         power: "sensor.printer_power",
       },
       { ...info("sensor.attic", "Attic"), power: null },
+      { ...info("portal:import", "Portal import", { entity_id: null }), power: null, external: true },
     ],
+    power_candidates: [info("sensor.ups_power", "UPS power", { unit: "W", device_class: "power" })],
     issues: [],
   };
 }
@@ -627,7 +630,9 @@ describe("diagram", () => {
     const el = await mount(mockHass());
     const navigated = vi.fn();
     window.addEventListener("location-changed", navigated);
-    root(el).querySelector<HTMLButtonElement>(".placeholder")!.click();
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
+    await settle(el);
+    buttonWith(el, "Energy settings").click();
     expect(location.pathname).toBe("/config/energy");
     expect(navigated).toHaveBeenCalled();
     window.removeEventListener("location-changed", navigated);
@@ -755,5 +760,166 @@ describe("drag feedback", () => {
     await settle(el);
     expect(root(el).querySelector(".viewport")!.classList.contains("dragging")).toBe(false);
     expect(root(el).querySelector(".can-drop, .dragged, .drop")).toBeNull();
+  });
+});
+
+describe("sources", () => {
+  it("assigns a free sensor by dropping it on a placeholder", async () => {
+    const mock = mockHass();
+    const el = await mount(mock);
+    const candidate = root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.attic"]')!;
+    const solar = root(el).querySelector<HTMLElement>('.block.placeholder[data-role="production"]')!;
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "" };
+    candidate.dispatchEvent(Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer }));
+    await settle(el);
+    expect(solar.classList.contains("can-drop")).toBe(true);
+    solar.dispatchEvent(new Event("dragover", { bubbles: true, cancelable: true }));
+    solar.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "production", stat: "sensor.attic" }]);
+    // The draft shows it as a source and it is no longer free.
+    expect(root(el).querySelector('.block.source[data-role="production"]:not(.placeholder)')).not.toBeNull();
+    expect(root(el).querySelector('.candidate[data-stat="sensor.attic"]')).toBeNull();
+  });
+
+  it("does not accept devices on sources", async () => {
+    const el = await mount(mockHass());
+    const solar = root(el).querySelector<HTMLElement>('.block.placeholder[data-role="production"]')!;
+    drag(node(el, "sensor.tv"), solar);
+    expect(el._changes).toEqual([]);
+  });
+
+  it("assigns with the dialog from a placeholder", async () => {
+    const el = await mount(mockHass());
+    root(el).querySelector<HTMLButtonElement>('.block.placeholder[data-role="production"]')!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Assign Solar production");
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.printer"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "production", stat: "sensor.printer" }]);
+  });
+
+  it("asks for the charging meter of a battery", async () => {
+    const el = await mount(mockHass());
+    const candidate = root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.attic"]')!;
+    drag(candidate, root(el).querySelector<HTMLElement>('.block.placeholder[data-role="battery"]')!);
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Attic measures discharging");
+    // The discharging meter itself is not offered again.
+    expect(dialog.querySelector('button.target[data-target="sensor.attic"]')).toBeNull();
+    dialog.querySelector<HTMLButtonElement>('button.target[data-target="sensor.printer"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "assign_source", role: "battery", stat: "sensor.attic", stat_to: "sensor.printer" },
+    ]);
+  });
+
+  it("replaces and removes a grid meter from the source dialog", async () => {
+    const el = await mount(mockHass());
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="export"]')!.click();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Grid export");
+    buttonWith(el, "Replace sensor").click();
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="portal:import"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "export", stat: "portal:import" }]);
+
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
+    await settle(el);
+    buttonWith(el, "Remove as source").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.import" });
+    expect(root(el).querySelector('.block.placeholder[data-role="import"]')).not.toBeNull();
+  });
+
+  it("offers assigning on solar and battery blocks and nothing on gas", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources = [
+      { type: "solar", stat_energy_from: "sensor.pv" },
+      { type: "gas", stat_energy_from: "sensor.gas" },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="production"]:not(.placeholder)')!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Assign sensor");
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="consumption"]')!.click();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!.textContent!;
+    expect(dialog).toContain("Gas");
+    expect(dialog).not.toContain("Assign sensor");
+  });
+
+  it("describes source changes", async () => {
+    const el = await mount(mockHass());
+    expect(el._diffText({ type: "source_added", stat: "sensor.attic", role: "production" })).toBe(
+      "Attic assigned as Solar production",
+    );
+    expect(el._diffText({ type: "source_removed", stat: "sensor.import", role: "import" })).toBe(
+      "Grid import removed as Grid import",
+    );
+    expect(el._roleLabel("weird")).toBe("weird");
+    expect(el._roleLabel(undefined)).toBe("");
+    expect(el._summaryText({ source_added: 2 })).toBe("2 assigned as source");
+    expect(assignRole("charge")).toBe("battery");
+    expect(assignRole("consumption")).toBeNull();
+  });
+});
+
+describe("power-only sensors and external statistics", () => {
+  it("lists power-only sensors and creates a meter", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/create_integral"] = {
+      entity_id: "sensor.ups_power_energy",
+      stat_rate: "sensor.ups_power",
+    };
+    const el = await mount(mock);
+    const row = root(el).querySelector<HTMLElement>('.power-only li[data-stat="sensor.ups_power"]')!;
+    expect(row.textContent).toContain("UPS power");
+    row.querySelector("button")!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("UPS power Energy");
+    root(el).querySelector<HTMLButtonElement>("dialog button.primary")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_integral")).toMatchObject({
+      power_entity_id: "sensor.ups_power",
+      name: "UPS power Energy",
+    });
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.ups_power_energy", parent: null, stat_rate: "sensor.ups_power" },
+    ]);
+    expect(text(el)).toContain("created and added to the draft");
+    // The power sensor is now used as stat_rate in the draft.
+    expect(root(el).querySelector(".power-only")).toBeNull();
+  });
+
+  it("reports a failed meter", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/create_integral"] = { translation_key: "integral_failed" };
+    const el = await mount(mock);
+    await el._createMeter("sensor.ups_power");
+    await settle(el);
+    expect(text(el)).toContain("could not be created");
+    expect(el._changes).toEqual([]);
+  });
+
+  it("labels external statistics and created helpers", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.stats["sensor.server"].created_helper = true;
+    snap.candidates[0].created_helper = true;
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    const external = root(el).querySelector('.candidate[data-stat="portal:import"]')!;
+    expect(external.textContent).toContain("External statistic");
+    const printer = root(el).querySelector('.candidate[data-stat="sensor.printer"]')!;
+    expect(printer.textContent).toContain("Created by Energy Flow Mapper");
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(text(el)).toContain("Helper Created by Energy Flow Mapper");
   });
 });

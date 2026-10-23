@@ -3,6 +3,20 @@
 
 import type { Change, Device, HomeAssistant, Source, StatInfo } from "./types";
 
+/** A grid connection without costs, as the energy settings page creates it. */
+export const NEW_GRID: Source = {
+  type: "grid",
+  stat_energy_from: null,
+  stat_energy_to: null,
+  stat_cost: null,
+  entity_energy_price: null,
+  number_energy_price: null,
+  stat_compensation: null,
+  entity_energy_price_export: null,
+  number_energy_price_export: null,
+  cost_adjustment_day: 0,
+};
+
 export interface TreeNode {
   stat: string;
   device: Device;
@@ -248,4 +262,55 @@ export function sourceRows(sources: Source[]): SourceRow[] {
     }
   }
   return rows;
+}
+
+const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
+
+/**
+ * Apply the source changes of a draft to a copy, like hierarchy.py: grid
+ * import/export replace the meter of the first grid connection (keeping its
+ * prices), solar and battery add a source. Changes that do not fit are skipped.
+ */
+export function applySourceChanges(sources: Source[], changes: Change[]): Source[] {
+  const result: Source[] = structuredClone(sources);
+  for (const change of changes) {
+    if (change.type === "assign_source") {
+      if (change.role === "import" || change.role === "export") {
+        const key = change.role === "import" ? "stat_energy_from" : "stat_energy_to";
+        let grid = result.find((s) => s.type === "grid");
+        if (grid === undefined) {
+          grid = structuredClone(NEW_GRID);
+          result.push(grid);
+        }
+        grid[key] = change.stat;
+      } else if (change.role === "production") {
+        result.push({
+          type: "solar",
+          stat_energy_from: change.stat,
+          config_entry_solar_forecast: null,
+        });
+      } else if (change.role === "battery" && change.stat_to) {
+        result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
+      }
+    } else if (change.type === "unassign_source") {
+      const index = result.findIndex((s) => ENERGY_KEYS.some((k) => s[k] === change.stat));
+      if (index === -1) {
+        continue;
+      }
+      const source = result[index];
+      if (source.type !== "grid") {
+        result.splice(index, 1);
+        continue;
+      }
+      for (const key of ENERGY_KEYS) {
+        if (source[key] === change.stat) {
+          source[key] = null;
+        }
+      }
+      if (!source.stat_energy_from && !source.stat_energy_to && !source.stat_rate && !source.power_config) {
+        result.splice(index, 1);
+      }
+    }
+  }
+  return result;
 }

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyChanges,
+  applySourceChanges,
   buildTree,
+  NEW_GRID,
   canMove,
   displayName,
   moveTargets,
@@ -212,5 +214,64 @@ describe("sourceRows", () => {
       { type: "gas", role: "consumption", stat: "gas", name: undefined },
       { type: "heat", role: "consumption", stat: "heat", name: undefined },
     ]);
+  });
+});
+
+describe("applySourceChanges", () => {
+  const grid = {
+    type: "grid",
+    stat_energy_from: "imp",
+    stat_energy_to: null,
+    number_energy_price: 0.3,
+    power_config: { stat_rate: "p" },
+  };
+
+  it("replaces grid meters and keeps prices", () => {
+    const result = applySourceChanges(
+      [grid],
+      [
+        { type: "assign_source", role: "import", stat: "imp2" },
+        { type: "assign_source", role: "export", stat: "exp" },
+      ],
+    );
+    expect(result).toEqual([{ ...grid, stat_energy_from: "imp2", stat_energy_to: "exp" }]);
+    expect(grid.stat_energy_from).toBe("imp");
+  });
+
+  it("creates a grid without costs and adds solar and battery", () => {
+    const result = applySourceChanges(
+      [],
+      [
+        { type: "assign_source", role: "export", stat: "exp" },
+        { type: "assign_source", role: "production", stat: "pv" },
+        { type: "assign_source", role: "battery", stat: "out", stat_to: "in" },
+        { type: "assign_source", role: "battery", stat: "lonely" },
+      ],
+    );
+    expect(result).toEqual([
+      { ...NEW_GRID, stat_energy_to: "exp" },
+      { type: "solar", stat_energy_from: "pv", config_entry_solar_forecast: null },
+      { type: "battery", stat_energy_from: "out", stat_energy_to: "in" },
+    ]);
+    expect(NEW_GRID.stat_energy_to).toBeNull();
+  });
+
+  it("removes meters and empty sources", () => {
+    const sources = [
+      { ...grid, stat_energy_to: "exp" },
+      { type: "grid", stat_energy_from: "imp2", stat_energy_to: null },
+      { type: "solar", stat_energy_from: "pv" },
+    ];
+    const result = applySourceChanges(sources, [
+      { type: "unassign_source", stat: "imp" },
+      { type: "unassign_source", stat: "imp2" },
+      { type: "unassign_source", stat: "pv" },
+      { type: "unassign_source", stat: "unknown" },
+    ]);
+    expect(result).toEqual([{ ...grid, stat_energy_from: null, stat_energy_to: "exp" }]);
+  });
+
+  it("ignores device changes", () => {
+    expect(applySourceChanges([grid], [{ type: "remove", stat: "x" }])).toEqual([grid]);
   });
 });

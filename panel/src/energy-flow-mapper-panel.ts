@@ -2,6 +2,7 @@ import { css, html, LitElement, nothing, svg, type PropertyValues, type Template
 
 import {
   applyChanges,
+  applySourceChanges,
   buildTree,
   canMove,
   displayName,
@@ -30,6 +31,7 @@ import {
   type StringKey,
 } from "./localize";
 import type {
+  AssignRole,
   BackupEntry,
   Candidate,
   Change,
@@ -39,6 +41,8 @@ import type {
   Issue,
   SaveResult,
   Snapshot,
+  Source,
+  StatInfo,
   ValidateResult,
   WSError,
 } from "./types";
@@ -82,7 +86,30 @@ type Dialog =
   | { kind: "restore"; backup: BackupEntry; undo: boolean }
   | { kind: "candidates" }
   | { kind: "details" }
-  | { kind: "menu" };
+  | { kind: "menu" }
+  | { kind: "source"; role: string; label: string; stat: string | null }
+  | { kind: "assign"; role: AssignRole }
+  | { kind: "battery"; discharge: string }
+  | { kind: "integral"; stat: string };
+
+/** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
+const SOURCE_TARGET = "src:";
+
+/** The assign role of a source block role, if sensors can be dropped on it. */
+export function assignRole(role: string | undefined): AssignRole | null {
+  switch (role) {
+    case "import":
+    case "export":
+    case "production":
+    case "battery":
+      return role;
+    case "discharge":
+    case "charge":
+      return "battery";
+    default:
+      return null;
+  }
+}
 
 /** The error message of a failed WebSocket call, translated if possible. */
 export function errorText(hass: HomeAssistant | undefined, err: unknown): string {
@@ -202,6 +229,19 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** The device list with the draft applied. */
   get draft(): Device[] {
     return applyChanges(this._snapshot?.prefs.device_consumption ?? [], this._changes);
+  }
+
+  /** The sources with the draft applied. */
+  get draftSources(): Source[] {
+    return applySourceChanges(this._snapshot?.prefs.energy_sources ?? [], this._changes);
+  }
+
+  private _info(stat: string): StatInfo | undefined {
+    return (
+      this._snapshot?.stats[stat] ??
+      this._snapshot?.candidates.find((c) => c.stat === stat) ??
+      this._snapshot?.power_candidates?.find((c) => c.stat === stat)
+    );
   }
 
   private _name(stat: string, devices: Device[] = this.draft): string {
@@ -353,6 +393,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (dragged === null) {
       return false;
     }
+    if (target.startsWith(SOURCE_TARGET)) {
+      return dragged.kind === "candidate";
+    }
     const parent = target === HOME ? null : target;
     if (dragged.kind === "candidate") {
       return true;
@@ -366,6 +409,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._dragged = null;
     this._dropTarget = null;
     if (dragged === null || !allowed) {
+      return;
+    }
+    if (target.startsWith(SOURCE_TARGET)) {
+      this._assign(target.split(":")[1] as AssignRole, dragged.stat);
       return;
     }
     const parent = target === HOME ? null : target;
@@ -457,9 +504,65 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._selected = stat;
   }
 
+  /** Assign a free sensor to a source role; a battery asks for its second meter. */
+  _assign(role: AssignRole, stat: string): void {
+    if (role === "battery") {
+      this._dialog = { kind: "battery", discharge: stat };
+      return;
+    }
+    this._dialog = null;
+    this._change({ type: "assign_source", role, stat });
+  }
+
+  /** Statistics used by the draft's devices and sources. */
+  private _usedInDraft(): Set<string> {
+    const used = new Set<string>();
+    for (const device of this.draft) {
+      used.add(device.stat_consumption);
+      if (device.stat_rate) {
+        used.add(device.stat_rate);
+      }
+    }
+    for (const row of sourceRows(this.draftSources)) {
+      used.add(row.stat);
+    }
+    return used;
+  }
+
+  /** Power sensors without meter that the draft does not use yet. */
+  _freePowerSensors(): StatInfo[] {
+    const used = this._usedInDraft();
+    return (this._snapshot?.power_candidates ?? []).filter((c) => !used.has(c.stat));
+  }
+
+  async _createMeter(stat: string): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    const name = `${this._info(stat)?.name || stat} ${this._t("energy_suffix")}`;
+    this._busy = true;
+    try {
+      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string }>({
+        type: `${DOMAIN}/create_integral`,
+        power_entity_id: stat,
+        name,
+      });
+      this._dialog = null;
+      await this._load();
+      this._change({ type: "add", stat: result.entity_id, parent: null, stat_rate: result.stat_rate });
+      this._selected = result.entity_id;
+      this._showToast(this._t("meter_created", { name }));
+    } catch (err) {
+      this._dialog = null;
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
+  }
+
   /** Free sensors that are not added in the draft yet. */
   _freeCandidates(): Candidate[] {
-    const used = new Set(this.draft.map((d) => d.stat_consumption));
+    const used = this._usedInDraft();
     const search = this._search.trim().toLowerCase();
     return (this._snapshot?.candidates ?? []).filter(
       (c) =>
@@ -576,7 +679,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const power = this._powerMap(devices);
     return layout(
       roots,
-      sourceRows(this._snapshot?.prefs.energy_sources ?? []),
+      sourceRows(this.draftSources),
       power,
       untracked(roots, power),
       this._collapsed,
@@ -705,7 +808,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             <button @click=${() => this.fit()}>${this._t("fit")}</button>
           </div>
         </div>
-        <p class="hint">${this._t("devices_hint")} ${this._t("zoom_hint")}</p>
+        <p class="hint">${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}</p>
         <div
           class="viewport ${this._dragged ? "dragging" : ""}"
           @wheel=${(e: WheelEvent) => this._onWheel(e)}
@@ -802,11 +905,28 @@ export class EnergyFlowMapperPanel extends LitElement {
           role === "consumption"
             ? this._t(`role_${block.source?.type ?? "gas"}` as StringKey)
             : this._t(`role_${role}` as StringKey);
+        const assign = assignRole(role);
+        const key = assign ? `${SOURCE_TARGET}${assign}:${block.id}` : null;
+        const drop = key ? this._dragHandlers(key) : null;
         return html`<button
-          class="block source ${block.kind}"
+          class="block source ${block.kind} ${key && this._dropTarget === key ? "drop" : ""} ${key &&
+          this._dragged &&
+          this._canDrop(key)
+            ? "can-drop"
+            : ""}"
           style="${style};--source-color:${SOURCE_COLORS[role] ?? "var(--divider-color)"}"
           title=${this._t("sources_hint")}
-          @click=${() => navigate("/config/energy")}
+          data-role=${role}
+          @dragover=${drop?.over}
+          @dragleave=${drop?.leave}
+          @drop=${drop?.drop}
+          @click=${() => {
+            if (block.kind === "placeholder" && assign) {
+              this._dialog = { kind: "assign", role: assign };
+            } else {
+              this._dialog = { kind: "source", role, label, stat: block.stat ?? null };
+            }
+          }}
         >
           <div class="block-text">
             <span class="node-name">${block.kind === "placeholder" ? `+ ${label}` : label}</span>
@@ -921,7 +1041,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- list (hidden, kept for later use) --------------------------------------
 
   private _renderSources(): TemplateResult {
-    const rows = sourceRows(this._snapshot?.prefs.energy_sources ?? []);
+    const rows = sourceRows(this.draftSources);
     return html`
       <section class="card">
         <div class="card-header">
@@ -1103,7 +1223,16 @@ export class EnergyFlowMapperPanel extends LitElement {
                 >
                   <div class="candidate-text">
                     <span class="node-name">${c.name || c.stat}</span>
-                    <span class="sub">${[c.area_name, c.device_name].filter(Boolean).join(" · ") || c.stat}</span>
+                    <span class="sub"
+                      >${[
+                        c.external ? this._t("external_statistic") : null,
+                        c.area_name,
+                        c.device_name,
+                        c.created_helper ? this._t("created_by") : null,
+                      ]
+                        .filter(Boolean)
+                        .join(" · ") || c.stat}</span
+                    >
                   </div>
                   <button @click=${() => (this._dialog = { kind: "add", stat: c.stat })}>
                     ${this._t("add")}
@@ -1111,8 +1240,31 @@ export class EnergyFlowMapperPanel extends LitElement {
                 </li>`,
               )}
             </ul>`}
+        ${this._renderPowerSensors()}
       </section>
     `;
+  }
+
+  private _renderPowerSensors(): TemplateResult | typeof nothing {
+    const sensors = this._freePowerSensors();
+    if (sensors.length === 0) {
+      return nothing;
+    }
+    return html`<h3>${this._t("power_only")}</h3>
+      <p class="hint">${this._t("power_only_hint")}</p>
+      <ul class="candidates power-only">
+        ${sensors.map(
+          (s) => html`<li data-stat=${s.stat}>
+            <div class="candidate-text">
+              <span class="node-name">${s.name || s.stat}</span>
+              <span class="sub">${[s.area_name, s.device_name].filter(Boolean).join(" · ") || s.stat}</span>
+            </div>
+            <button @click=${() => (this._dialog = { kind: "integral", stat: s.stat })}>
+              ${this._t("create_meter")}
+            </button>
+          </li>`,
+        )}
+      </ul>`;
   }
 
   private _renderDetails(): TemplateResult {
@@ -1143,6 +1295,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${row("detail_statistic", stat)} ${row("detail_power_sensor", device.stat_rate)}
           ${row("detail_device", info?.device_name)} ${row("detail_area", info?.area_name)}
           ${row("detail_power", watts === null ? null : formatPower(this.hass, watts))}
+          ${info?.created_helper ? row("detail_helper", this._t("created_by")) : nothing}
           ${rest !== undefined
             ? row("detail_untracked", rest === null ? null : formatPower(this.hass, rest))
             : nothing}
@@ -1198,9 +1351,37 @@ export class EnergyFlowMapperPanel extends LitElement {
         return entry.to
           ? this._t("diff_renamed", { name: entry.from || this._name(entry.stat), to: entry.to })
           : this._t("diff_renamed_reset", { name });
+      case "source_added":
+      case "source_removed":
+        return this._t(entry.type === "source_added" ? "diff_source_added" : "diff_source_removed", {
+          name,
+          role: this._roleLabel(entry.role),
+        });
       default:
         return this._t("diff_rate", { name });
     }
+  }
+
+  _roleLabel(role: string | undefined): string {
+    const key = `role_${role ?? ""}`;
+    return hasKey(key) ? this._t(key) : (role ?? "");
+  }
+
+  /** A list of free sensors to pick from, for source dialogs. */
+  private _sensorList(exclude: string[], pick: (stat: string) => void): TemplateResult {
+    const sensors = this._freeCandidates().filter((c) => !exclude.includes(c.stat));
+    if (sensors.length === 0) {
+      return html`<p class="empty">${this._t("no_candidates")}</p>`;
+    }
+    return html`<ul class="targets">
+      ${sensors.map(
+        (c) => html`<li>
+          <button class="target" data-target=${c.stat} @click=${() => pick(c.stat)}>
+            ${c.name || c.stat}
+          </button>
+        </li>`,
+      )}
+    </ul>`;
   }
 
   _summaryText(summary: Record<string, number>): string {
@@ -1408,6 +1589,75 @@ export class EnergyFlowMapperPanel extends LitElement {
               @click=${() => this._restore(dialog.backup)}
             >
               ${this._t("restore")}
+            </button>
+          </div>`;
+      }
+      case "source": {
+        const assign = assignRole(dialog.role);
+        return html`<h2>${dialog.label}</h2>
+          ${dialog.stat ? html`<p>${this._name(dialog.stat)}</p>` : nothing}
+          <div class="dialog-actions column-actions">
+            ${assign
+              ? html`<button @click=${() => (this._dialog = { kind: "assign", role: assign })}>
+                  ${this._t(dialog.stat && assign !== "production" && assign !== "battery" ? "source_replace" : "source_assign")}
+                </button>`
+              : nothing}
+            ${dialog.stat
+              ? html`<button
+                  class="danger"
+                  @click=${() => {
+                    this._close();
+                    this._change({ type: "unassign_source", stat: dialog.stat! });
+                  }}
+                >
+                  ${this._t("source_remove")}
+                </button>`
+              : nothing}
+            <button
+              @click=${() => {
+                this._close();
+                navigate("/config/energy");
+              }}
+            >
+              ${this._t("open_energy_settings")}
+            </button>
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      }
+      case "assign":
+        return html`<h2>${this._t("assign_title", { role: this._roleLabel(dialog.role) })}</h2>
+          <p class="hint">${this._t("assign_hint")}</p>
+          ${this._sensorList([], (stat) => this._assign(dialog.role, stat))}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      case "battery":
+        return html`<h2>${this._t("battery_title")}</h2>
+          <p class="hint">${this._t("battery_hint", { name: this._name(dialog.discharge) })}</p>
+          ${this._sensorList([dialog.discharge], (stat) => {
+            this._close();
+            this._change({
+              type: "assign_source",
+              role: "battery",
+              stat: dialog.discharge,
+              stat_to: stat,
+            });
+          })}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      case "integral": {
+        const name = this._info(dialog.stat)?.name || dialog.stat;
+        return html`<h2>${this._t("create_meter_title", { name })}</h2>
+          <p>${this._t("create_meter_text", { helper: `${name} ${this._t("energy_suffix")}` })}</p>
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button
+              class="primary"
+              ?disabled=${this._busy}
+              @click=${() => this._createMeter(dialog.stat)}
+            >
+              ${this._busy ? this._t("creating") : this._t("create_meter")}
             </button>
           </div>`;
       }
@@ -1718,6 +1968,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       flex-direction: column;
       flex: 1;
       min-width: 0;
+    }
+    .candidate-text .node-name,
+    .candidate-text .sub {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     dl {
       display: grid;
