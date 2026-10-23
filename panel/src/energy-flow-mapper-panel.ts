@@ -549,7 +549,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return false;
     }
     const { width: w, height: h } = this.diagramLayout();
-    const k = Math.min(1, Math.max(MIN_ZOOM, Math.min(width / w, height / h)));
+    const k = Math.min(1.4, Math.max(MIN_ZOOM, Math.min(width / w, height / h)));
     this._zoom = { k, x: (width - w * k) / 2, y: Math.max(0, (height - h * k) / 2) };
     return true;
   }
@@ -1685,7 +1685,16 @@ export class EnergyFlowMapperPanel extends LitElement {
       display: flex;
       gap: 4px;
     }
+    .toolbar button.icon {
+      font-size: 18px;
+      min-width: 32px;
+      border: 1px solid var(--divider-color);
+    }
     .viewport {
+      /* Contrast colours, derived from the theme so light and dark both work. */
+      --block-bg: var(--card-background-color, var(--primary-background-color));
+      --block-border: color-mix(in srgb, var(--primary-text-color) 35%, transparent);
+      --canvas-bg: color-mix(in srgb, var(--primary-text-color) 4%, var(--primary-background-color));
       position: relative;
       overflow: hidden;
       height: calc(100vh - 250px);
@@ -1694,7 +1703,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       border-top: 1px solid var(--divider-color);
       touch-action: none;
       cursor: grab;
-      background-image: radial-gradient(var(--divider-color) 1px, transparent 1px);
+      background-color: var(--canvas-bg);
+      background-image: radial-gradient(
+        color-mix(in srgb, var(--primary-text-color) 18%, transparent) 1px,
+        transparent 1px
+      );
       background-size: 20px 20px;
     }
     .narrow .viewport {
@@ -1719,13 +1732,14 @@ export class EnergyFlowMapperPanel extends LitElement {
       display: flex;
       align-items: center;
       gap: 4px;
-      padding: 6px 4px 6px 10px;
+      padding: 6px 4px 6px 12px;
       border-radius: 10px;
-      border: 1px solid var(--divider-color);
-      background: var(--card-background-color, var(--primary-background-color));
+      border: 1px solid var(--block-border);
+      background: var(--block-bg);
       color: var(--primary-text-color);
       font-size: 14px;
       text-align: left;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
     }
     .block-text {
       display: flex;
@@ -1734,6 +1748,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       align-self: stretch;
       flex: 1;
       min-width: 0;
+      gap: 2px;
     }
     .block .node-name {
       flex: none;
@@ -1742,27 +1757,36 @@ export class EnergyFlowMapperPanel extends LitElement {
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
       line-height: 1.25;
-      font-size: 13px;
+      font-size: 14px;
+      font-weight: 500;
     }
     .block .sub {
-      font-size: 12px;
+      font-size: 13px;
+      color: var(--secondary-text-color);
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
     .block.device {
       cursor: grab;
-      border-left: 4px solid var(--primary-color);
+      border-left: 5px solid var(--primary-color);
+      background: color-mix(in srgb, var(--primary-color) 10%, var(--block-bg));
     }
     .block.device.selected {
-      background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.15);
+      border-color: var(--primary-color);
+      background: color-mix(in srgb, var(--primary-color) 25%, var(--block-bg));
     }
     .block.home {
-      font-weight: 500;
-      border-width: 2px;
+      border: 2px solid var(--primary-text-color);
+      font-size: 15px;
+    }
+    .block.home .mdi {
+      color: var(--primary-text-color);
     }
     .block.source {
-      border-left: 4px solid var(--source-color);
+      border: 1px solid var(--source-color);
+      border-left: 5px solid var(--source-color);
+      background: color-mix(in srgb, var(--source-color) 14%, var(--block-bg));
       padding-right: 10px;
       cursor: pointer;
       font: inherit;
@@ -1770,19 +1794,27 @@ export class EnergyFlowMapperPanel extends LitElement {
       justify-content: flex-start;
     }
     .block.placeholder {
-      border: 1px dashed var(--source-color);
-      background: transparent;
-      color: var(--secondary-text-color);
+      border: 2px dashed var(--source-color);
+      background: color-mix(in srgb, var(--source-color) 8%, transparent);
+      box-shadow: none;
+    }
+    .block.placeholder .node-name {
+      color: var(--source-color);
     }
     .block.untracked {
-      border-style: dashed;
+      border: 2px dashed var(--block-border);
       background: transparent;
-      color: var(--secondary-text-color);
+      box-shadow: none;
+    }
+    .block.untracked .node-name {
       font-style: italic;
+      font-weight: 400;
+      color: var(--secondary-text-color);
     }
     .block .toggle {
       width: auto;
       padding: 2px 4px;
+      color: var(--primary-text-color);
     }
     .block.has-error {
       border-color: var(--error-color);

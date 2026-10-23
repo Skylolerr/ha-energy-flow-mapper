@@ -195,12 +195,12 @@ export function layout(
   return { blocks, edges, width: contentWidth + 2 * MARGIN, height: height + MARGIN };
 }
 
-/** Stroke width for an edge: 1.5 to 8 px relative to the largest power. */
+/** Stroke width for an edge: 2 to 8 px relative to the largest power. */
 export function strokeWidth(power: number | null, maxPower: number): number {
   if (power === null || maxPower <= 0) {
-    return 1.5;
+    return 2;
   }
-  return 1.5 + 6.5 * Math.min(1, Math.max(0, power) / maxPower);
+  return 2 + 6 * Math.min(1, Math.max(0, power) / maxPower);
 }
 
 /**

@@ -125,11 +125,11 @@ describe("layout", () => {
 
 describe("drawing helpers", () => {
   it("scales strokes by power", () => {
-    expect(strokeWidth(null, 100)).toBe(1.5);
-    expect(strokeWidth(50, 0)).toBe(1.5);
-    expect(strokeWidth(0, 100)).toBe(1.5);
+    expect(strokeWidth(null, 100)).toBe(2);
+    expect(strokeWidth(50, 0)).toBe(2);
+    expect(strokeWidth(0, 100)).toBe(2);
     expect(strokeWidth(100, 100)).toBe(8);
-    expect(strokeWidth(-5, 100)).toBe(1.5);
+    expect(strokeWidth(-5, 100)).toBe(2);
     expect(strokeWidth(200, 100)).toBe(8);
   });
 
