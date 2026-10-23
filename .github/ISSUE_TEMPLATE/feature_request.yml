@@ -1,0 +1,23 @@
+name: Feature request
+description: Suggest an idea or improvement.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What would you like to do?
+      description: Describe your energy setup or use case and what is missing today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: How could Energy Flow Mapper support it (diagram, panel, source, meter …)?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use today or other ideas you considered.

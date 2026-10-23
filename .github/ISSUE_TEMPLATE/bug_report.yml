@@ -1,0 +1,76 @@
+name: Bug report
+description: Something does not work as expected.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Please check the [open issues](https://github.com/Skylolerr/ha-energy-flow-mapper/issues) first.
+        If your energy settings look wrong after a save, use "Undo last save" or "Backups" in the panel first.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the Energy Flow Mapper panel
+        2. Drag … onto …
+        3. …
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected part
+      multiple: true
+      options:
+        - Diagram / layout
+        - Drag and drop / menus
+        - Saving / backups
+        - Sources
+        - Free sensors / meters for power sensors
+        - Energy per period / warnings
+        - Phone layout
+        - Translations
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Energy Flow Mapper version
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: ha_version
+    attributes:
+      label: Home Assistant version
+      description: Settings → About.
+      placeholder: "2026.10.0"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser / app
+      placeholder: "Chrome on Windows, Companion app on Android"
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: >
+        Settings → Devices & services → Energy Flow Mapper → ⋮ → Download diagnostics.
+        Drag the file here. It contains counts only, no entity names.
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log entries
+      description: Settings → System → Logs, filtered for "energy_flow_mapper".
+      render: text

@@ -1,0 +1,128 @@
+# Internal checklist against the Home Assistant integration quality scale.
+# Goal: all Silver rules, Gold where it makes sense (SPEC.md §13).
+rules:
+  # Bronze
+  action-setup:
+    status: exempt
+    comment: No actions; the panel uses WebSocket commands.
+  appropriate-polling:
+    status: exempt
+    comment: No polling. Data is read when the panel asks for it.
+  brands: done
+  common-modules: done
+  config-flow: done
+  config-flow-test-coverage: done
+  dependency-transparency:
+    status: exempt
+    comment: No external requirements.
+  docs-actions:
+    status: exempt
+    comment: No actions.
+  docs-conditions:
+    status: exempt
+    comment: No device conditions.
+  docs-high-level-description: done
+  docs-installation-instructions: done
+  docs-removal-instructions: done
+  docs-triggers:
+    status: exempt
+    comment: No device triggers.
+  entity-event-setup:
+    status: exempt
+    comment: No entities.
+  entity-unique-id:
+    status: exempt
+    comment: No entities.
+  has-entity-name:
+    status: exempt
+    comment: No entities.
+  runtime-data: done
+  test-before-configure:
+    status: exempt
+    comment: Nothing to connect to.
+  test-before-setup:
+    status: done
+    comment: An unsupported energy API raises a repair issue and disables writing.
+  unique-config-entry:
+    status: done
+    comment: single_config_entry in the manifest.
+
+  # Silver
+  action-exceptions:
+    status: done
+    comment: WebSocket commands raise translated HomeAssistantError.
+  config-entry-unloading: done
+  docs-configuration-parameters:
+    status: exempt
+    comment: No options.
+  docs-installation-parameters: done
+  entity-unavailable:
+    status: exempt
+    comment: No entities.
+  integration-owner: done
+  log-when-unavailable:
+    status: exempt
+    comment: No entities and no external connection.
+  parallel-updates:
+    status: exempt
+    comment: No entity platforms.
+  reauthentication-flow:
+    status: exempt
+    comment: No authentication.
+  test-coverage: done
+
+  # Gold
+  devices:
+    status: exempt
+    comment: A service integration without devices.
+  diagnostics: done
+  discovery:
+    status: exempt
+    comment: Nothing to discover.
+  discovery-update-info:
+    status: exempt
+    comment: No discovery.
+  docs-data-update: done
+  docs-examples: done
+  docs-known-limitations: done
+  docs-supported-devices:
+    status: exempt
+    comment: Works with any energy sensor; no device support list.
+  docs-supported-functions: done
+  docs-troubleshooting: done
+  docs-use-cases: done
+  dynamic-devices:
+    status: exempt
+    comment: No devices.
+  entity-category:
+    status: exempt
+    comment: No entities.
+  entity-device-class:
+    status: exempt
+    comment: No entities.
+  entity-disabled-by-default:
+    status: exempt
+    comment: No entities.
+  entity-translations:
+    status: exempt
+    comment: No entities.
+  exception-translations: done
+  icon-translations:
+    status: exempt
+    comment: No entities or actions with icons.
+  reconfiguration-flow:
+    status: exempt
+    comment: Nothing to configure.
+  repair-issues: done
+  stale-devices:
+    status: exempt
+    comment: No devices.
+
+  # Platinum
+  async-dependency:
+    status: exempt
+    comment: No external dependencies.
+  inject-websession:
+    status: exempt
+    comment: No HTTP requests.
+  strict-typing: done
