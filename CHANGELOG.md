@@ -28,12 +28,13 @@ First public beta.
   supplier portals) can be added as devices.
 - Sources: drag a free sensor onto grid import, grid export, solar or battery, or tap a
   source to assign, replace or remove its sensor. Prices of the grid connection stay.
+  Gas and water sources are shown only.
 - Meters for power sensors without an energy meter: "Create meter" adds an ordinary
   integral helper (it keeps working without Energy Flow Mapper) and puts it into the
   draft; helpers created by the panel are labelled.
 - Changes are collected in a draft, checked (loops, missing parents, duplicates, a
-  sensor used as source and device or by two sources) and saved in one step after a
-  confirmation. Every save stores a backup first (the last 20 are kept); "Undo last
+  sensor used as source and device or by two sources, and what Home Assistant itself
+  would reject) and saved in one step after a confirmation. Every save stores a backup first (the last 20 are kept); "Undo last
   save" and "Backups" restore an earlier state.
 - Saving is refused when the energy settings were changed elsewhere in the meantime;
   the panel reloads and keeps the draft.
