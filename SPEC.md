@@ -103,6 +103,8 @@ ha-energy-flow-mapper/
 │   ├── config_flow.py         # nur Bestätigung, keine Optionen
 │   ├── hierarchy.py           # Reine Funktionen: Baum bauen, Prüfungen, Änderungen anwenden, Diff, Plausibilität – ohne HA-Imports
 │   ├── candidates.py          # Freie Sensoren und Statistiken ermitteln
+│   ├── integral.py            # Integral-Helfer für Leistungssensoren anlegen
+│   ├── created_helpers.py     # Store: welche Helfer das Panel angelegt hat
 │   ├── energy_access.py       # Einzige Stelle, die die HA-Energie-Konfiguration liest/schreibt
 │   ├── backups.py             # Store mit Sicherungen
 │   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Schreib-Lock)
@@ -221,7 +223,9 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 
 - legt über den Config Flow der HA-Integration `integration` einen Integral-Helfer an (Methode `left`, Einheit kWh, Name «<Sensorname> Energie»),
 - hängt den neuen Energie-Sensor als Entwurfs-Änderung in den Baum, der Leistungssensor wird `stat_rate`.
-- Der Helfer ist ein normaler HA-Helfer und läuft auch ohne Energy Flow Mapper weiter. Er wird **sofort** angelegt (nicht erst beim Speichern), das Panel weist darauf hin.
+- Der Helfer ist ein normaler HA-Helfer und läuft auch ohne Energy Flow Mapper weiter (entschieden 2026-10-23, Variante A). Er wird **sofort** angelegt (nicht erst beim Speichern), das Panel weist darauf hin.
+- Einstellungen: Methode `left`, 3 Nachkommastellen, kWh, Stunden, `max_sub_interval` 5 Minuten (der Zähler läuft auch bei konstanter Leistung weiter).
+- Die Config-Entry-IDs angelegter Helfer stehen in `.storage/energy_flow_mapper.helpers` (`STORAGE_VERSION = 1`). Das Panel markiert sie als «Von Energy Flow Mapper angelegt». Beim Entfernen von Energy Flow Mapper wird nur diese Liste gelöscht, die Helfer bleiben.
 
 ---
 
@@ -234,6 +238,8 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 - Eine Quelle entfernen entfernt nur den Sensor bzw. den Eintrag, nie andere Quellen.
 - Ein Sensor kann nicht gleichzeitig Quelle und Gerät sein; das Panel bietet das nicht an, das Backend prüft es.
 - Preise und Kosten bearbeitet der Editor nicht, dafür verlinkt er auf die Energie-Einstellungen von HA.
+- **Bedienung:** Freien Sensor auf einen Quellen-Block ziehen (Netz-Bezug/Einspeisung ersetzen den Zähler, Solar und Batterie fügen eine Quelle hinzu). Antippen eines Platzhalters öffnet die Auswahl der freien Sensoren; Antippen einer Quelle bietet «Sensor ersetzen/zuweisen», «Als Quelle entfernen» und «Energie-Einstellungen». Bei der Batterie fragt ein zweiter Schritt nach dem Zähler fürs Laden.
+- Änderungen: `assign_source` (`role`: `import`, `export`, `production`, `battery` mit `stat_to`) und `unassign_source` (`stat`). Ein Sensor in zwei Quellen ist ein Fehler (`duplicate_source`).
 
 ---
 
@@ -290,7 +296,7 @@ Alle Befehle nur für Admins.
 | `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
-| `energy_flow_mapper/create_integral` (Phase 3) | `power_entity_id` | neue Energie-Entity-ID |
+| `energy_flow_mapper/create_integral` (Phase 3) | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
 
@@ -351,7 +357,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
-3. **Phase 3 – v0.1.0 (Beta, öffentlich):** Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, Pre-Release, Installation über HACS «Custom Repository» verifizieren.
+3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: Quellen zuweisen, Integral-Helfer und externe Statistiken umgesetzt)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, Pre-Release, Installation über HACS «Custom Repository» verifizieren.
 4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter.
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback, danach PR an `hacs/default`.
 

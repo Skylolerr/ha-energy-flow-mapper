@@ -21,3 +21,8 @@ breaking changes; they are marked as **Breaking**.
   drag and drop or a "Move to" menu, rename and remove, a draft that is saved in one
   step after a confirmation, undo and a list of backups. English and German, light and
   dark themes, phone layout.
+- Assign sources in the diagram: drag a free sensor onto grid import, grid export,
+  solar or battery (or tap a source). Grid prices stay as they are.
+- Power sensors without an energy meter: "Create meter" adds an ordinary integral
+  helper and puts its meter into the draft; helpers created this way are labelled.
+- External energy statistics (e.g. from supplier portals) appear as free sensors.
