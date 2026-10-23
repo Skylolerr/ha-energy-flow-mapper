@@ -369,6 +369,8 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Gas- und Wasser-Quellen zuweisen, ersetzen und entfernen (§8).
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
+**Optional, irgendwann (unwichtig):** `hacs.json` um `"zip_release": true` und `"filename": "energy_flow_mapper.zip"` ergänzen. HACS installiert dann das ZIP des Releases, GitHub zählt die Downloads und HACS zeigt sie an. Viele grosse Integrationen machen das (HACS, Powercalc, Watchman, Alexa Media Player), andere nicht (Frigate, Adaptive Lighting). Wirkt erst ab dem nächsten Release; der Release-Workflow hängt das ZIP schon an.
+
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.
 
 ### Später (nicht Teil von v1.0)
