@@ -7,25 +7,35 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+First beta, planned as 0.1.0.
+
 ### Added
 
-- Integration core: config flow (single entry), admin-only WebSocket API to read the
-  energy preferences with metadata and unused energy meters, and to validate, save and
-  restore changes of the device hierarchy.
-- Checks for cycles, missing parents, duplicates and sensors that are both a source and
-  a device; warnings for missing statistics and non-energy units.
-- Backups of the previous energy settings before every write (last 20).
-- Repair issue when the energy settings of the Home Assistant release are not supported.
-- Admin panel "Energy Flow Mapper" in the sidebar: sources (read-only), the device tree
-  with live power and the consumption not tracked individually, free energy sensors,
-  drag and drop or a "Move to" menu, rename and remove, a draft that is saved in one
-  step after a confirmation, undo and a list of backups. English and German, light and
-  dark themes, phone layout.
-- Assign sources in the diagram: drag a free sensor onto grid import, grid export,
-  solar or battery (or tap a source). Grid prices stay as they are.
-- Power sensors without an energy meter: "Create meter" adds an ordinary integral
-  helper and puts its meter into the draft; helpers created this way are labelled.
-- External energy statistics (e.g. from supplier portals) appear as free sensors.
-- Period switch (now, today, 7 days, 30 days): blocks, untracked consumption and
-  arrows show the energy of the period; a warning marks devices whose devices used
-  clearly more than they did (more than 5 % and 0.1 kWh).
+- Admin panel **Energy Flow Mapper** in the sidebar that shows the energy dashboard
+  configuration as a diagram: sources, Home and devices as blocks, arranged
+  automatically, with arrows from each device to the devices it includes. Zoom and move
+  with the mouse wheel, by dragging or with two fingers.
+- Live power and energy per period (now, today, 7 days, 30 days): blocks, Home and arrow
+  widths follow the value; devices with sub-devices show the consumption that is not
+  tracked individually.
+- Plausibility warnings when sub-devices used clearly more energy than their device
+  (more than 5 % and 0.1 kWh).
+- Edit by drag and drop or the ⋮ menu: include a device in another one, move it to the
+  top level, rename or remove it. While dragging, valid targets are highlighted.
+- Free sensors: unused energy meters and external energy statistics (e.g. from energy
+  supplier portals) can be added as devices.
+- Sources: drag a free sensor onto grid import, grid export, solar or battery, or tap a
+  source to assign, replace or remove its sensor. Prices of the grid connection stay.
+- Meters for power sensors without an energy meter: "Create meter" adds an ordinary
+  integral helper (it keeps working without Energy Flow Mapper) and puts it into the
+  draft; helpers created by the panel are labelled.
+- Changes are collected in a draft, checked (loops, missing parents, duplicates, a
+  sensor used as source and device or by two sources) and saved in one step after a
+  confirmation. Every save stores a backup first (the last 20 are kept); "Undo last
+  save" and "Backups" restore an earlier state.
+- Saving is refused when the energy settings were changed elsewhere in the meantime;
+  the panel reloads and keeps the draft.
+- Repair issue and disabled editor when the energy settings of the Home Assistant
+  release are not supported.
+- Diagnostics with counts only (no entity names).
+- English, German, French and Italian; light and dark theme; phone layout.
