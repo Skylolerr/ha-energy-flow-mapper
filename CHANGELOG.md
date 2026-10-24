@@ -9,6 +9,8 @@ breaking changes; they are marked as **Breaking**.
 
 ## [0.2.0] - 2026-10-24
 
+Tested with Home Assistant 2026.10.3; the minimum stays 2026.10.0.
+
 ### Added
 
 - Option "Backups to keep" (5 to 100, default 20) under Settings → Devices & services →
