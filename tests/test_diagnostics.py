@@ -28,6 +28,7 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
     assert result == {
         "supported": True,
         "backups": 1,
+        "backup_limit": 20,
         "created_helpers": 0,
         "sources": {"grid": 1, "solar": 1, "battery": 1},
         "devices": 3,
@@ -44,4 +45,9 @@ async def test_diagnostics_unsupported(
     """Without a supported energy API only the basics are reported."""
     loaded_entry.runtime_data.supported = False
     result = await async_get_config_entry_diagnostics(hass, loaded_entry)
-    assert result == {"supported": False, "backups": 0, "created_helpers": 0}
+    assert result == {
+        "supported": False,
+        "backups": 0,
+        "backup_limit": 20,
+        "created_helpers": 0,
+    }

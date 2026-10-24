@@ -8,7 +8,7 @@ from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 
 from custom_components.energy_flow_mapper.backups import BackupStore
-from custom_components.energy_flow_mapper.const import MAX_BACKUPS, STORAGE_KEY
+from custom_components.energy_flow_mapper.const import DEFAULT_MAX_BACKUPS, STORAGE_KEY
 
 
 async def test_add_list_and_get(
@@ -60,15 +60,15 @@ async def test_add_list_and_get(
 
 
 async def test_limit(hass: HomeAssistant) -> None:
-    """Only the newest MAX_BACKUPS backups are kept."""
+    """Only the newest DEFAULT_MAX_BACKUPS backups are kept."""
     store = BackupStore(hass)
     await store.async_load()
     ids = [
         await store.async_add({"device_consumption": []}, None, None, {"n": n})
-        for n in range(MAX_BACKUPS + 3)
+        for n in range(DEFAULT_MAX_BACKUPS + 3)
     ]
     entries = store.entries()
-    assert len(entries) == MAX_BACKUPS
+    assert len(entries) == DEFAULT_MAX_BACKUPS
     assert [entry["id"] for entry in entries] == list(reversed(ids[3:]))
 
 
@@ -92,11 +92,31 @@ async def test_discard_brings_back_dropped_backups(hass: HomeAssistant) -> None:
     """Discarding a backup returns the ones adding it pushed out."""
     store = BackupStore(hass)
     await store.async_load()
-    ids = [await store.async_add({}, None, None, {"n": n}) for n in range(MAX_BACKUPS)]
+    ids = [
+        await store.async_add({}, None, None, {"n": n})
+        for n in range(DEFAULT_MAX_BACKUPS)
+    ]
     extra = await store.async_add({}, None, None, {})
     assert ids[0] not in [entry["id"] for entry in store.entries()]
     await store.async_discard(extra)
     assert [entry["id"] for entry in store.entries()] == list(reversed(ids))
     # A second discard has nothing to bring back.
     await store.async_discard(ids[-1])
-    assert len(store.entries()) == MAX_BACKUPS - 1
+    assert len(store.entries()) == DEFAULT_MAX_BACKUPS - 1
+
+
+async def test_custom_limit_and_trim_on_load(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A lower limit keeps fewer backups and trims older ones when loading."""
+    store = BackupStore(hass, 7)
+    await store.async_load()
+    assert store.limit == 7
+    ids = [await store.async_add({}, None, None, {"n": n}) for n in range(9)]
+    assert [entry["id"] for entry in store.entries()] == list(reversed(ids[2:]))
+
+    smaller = BackupStore(hass, 5)
+    await smaller.async_load()
+    assert [entry["id"] for entry in smaller.entries()] == list(reversed(ids[4:]))
+    # The trim is saved at once, not only with the next backup.
+    assert len(hass_storage[STORAGE_KEY]["data"]["backups"]) == 5

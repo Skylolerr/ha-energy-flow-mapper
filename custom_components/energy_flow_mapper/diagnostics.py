@@ -31,6 +31,7 @@ async def async_get_config_entry_diagnostics(
     result: dict[str, Any] = {
         "supported": runtime.supported,
         "backups": len(runtime.backups.entries()),
+        "backup_limit": runtime.backups.limit,
         "created_helpers": len(runtime.helpers.entries()),
     }
     if not runtime.supported:

@@ -10,6 +10,20 @@
       "single_instance_allowed": "Energy Flow Mapper ist bereits eingerichtet."
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Sicherungen",
+        "description": "Vor jedem Speichern sichert Energy Flow Mapper deine bisherigen Energie-Einstellungen im Konfigurationsordner von Home Assistant. Sie sind damit in jedem Home-Assistant-Backup enthalten.",
+        "data": {
+          "max_backups": "Anzahl Sicherungen"
+        },
+        "data_description": {
+          "max_backups": "Zwischen 5 und 100. Verkleinerst du die Zahl, werden die ältesten Sicherungen darüber gelöscht."
+        }
+      }
+    }
+  },
   "exceptions": {
     "not_loaded": {
       "message": "Energy Flow Mapper ist nicht geladen."
@@ -34,6 +48,9 @@
     },
     "backup_not_found": {
       "message": "Keine Sicherung mit der ID {backup_id} gefunden."
+    },
+    "invalid_import": {
+      "message": "Die Datei ist kein Export von Energy Flow Mapper: {error}"
     },
     "rejected_by_home_assistant": {
       "message": "Home Assistant hat die Energie-Einstellungen abgelehnt: {error}"

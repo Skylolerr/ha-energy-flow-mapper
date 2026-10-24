@@ -53,8 +53,8 @@ rules:
     comment: WebSocket commands raise translated HomeAssistantError.
   config-entry-unloading: done
   docs-configuration-parameters:
-    status: exempt
-    comment: No options.
+    status: done
+    comment: The README describes the backup option.
   docs-installation-parameters: done
   entity-unavailable:
     status: exempt

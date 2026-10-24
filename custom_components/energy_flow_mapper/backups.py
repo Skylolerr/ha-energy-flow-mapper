@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import MAX_BACKUPS, STORAGE_KEY, STORAGE_VERSION
+from .const import DEFAULT_MAX_BACKUPS, STORAGE_KEY, STORAGE_VERSION
 
 
 class Backup(TypedDict):
@@ -30,19 +30,32 @@ class BackupData(TypedDict):
 
 
 class BackupStore:
-    """Keep the last MAX_BACKUPS backups in `.storage`."""
+    """Keep the last `limit` backups in `.storage`."""
 
-    def __init__(self, hass: HomeAssistant) -> None:
+    def __init__(self, hass: HomeAssistant, limit: int = DEFAULT_MAX_BACKUPS) -> None:
         """Create the store; call async_load before use."""
         self._store: Store[BackupData] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._limit = limit
         self._backups: list[Backup] = []
         # Backups dropped by the last async_add, returned by async_discard.
         self._dropped: list[Backup] = []
 
     async def async_load(self) -> None:
-        """Load the backups from disk."""
+        """Load the backups from disk.
+
+        When the limit was lowered in the options, the oldest backups beyond
+        it are deleted right away.
+        """
         data = await self._store.async_load()
         self._backups = list(data["backups"]) if data else []
+        if len(self._backups) > self._limit:
+            self._backups = self._backups[-self._limit :]
+            await self._async_save()
+
+    @property
+    def limit(self) -> int:
+        """Return how many backups are kept."""
+        return self._limit
 
     def entries(self) -> list[dict[str, Any]]:
         """Return the backups without their content, newest first."""
@@ -72,8 +85,8 @@ class BackupStore:
             "data": data,
         }
         backups = [*self._backups, backup]
-        self._dropped = backups[:-MAX_BACKUPS]
-        self._backups = backups[-MAX_BACKUPS:]
+        self._dropped = backups[: -self._limit]
+        self._backups = backups[-self._limit :]
         await self._async_save()
         return backup["id"]
 

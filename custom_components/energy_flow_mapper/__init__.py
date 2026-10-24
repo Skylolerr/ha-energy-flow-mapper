@@ -9,7 +9,13 @@ from homeassistant.helpers.typing import ConfigType
 
 from . import energy_access
 from .backups import BackupStore
-from .const import DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API, LOGGER
+from .const import (
+    CONF_MAX_BACKUPS,
+    DEFAULT_MAX_BACKUPS,
+    DOMAIN,
+    ISSUE_UNSUPPORTED_ENERGY_API,
+    LOGGER,
+)
 from .created_helpers import CreatedHelpers
 from .frontend import (
     async_register_panel,
@@ -50,7 +56,9 @@ async def async_setup_entry(
             severity=ir.IssueSeverity.ERROR,
             translation_key=ISSUE_UNSUPPORTED_ENERGY_API,
         )
-    backups = BackupStore(hass)
+    backups = BackupStore(
+        hass, entry.options.get(CONF_MAX_BACKUPS, DEFAULT_MAX_BACKUPS)
+    )
     await backups.async_load()
     helpers = CreatedHelpers(hass)
     await helpers.async_load()
