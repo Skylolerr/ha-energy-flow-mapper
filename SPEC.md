@@ -145,7 +145,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Skylolerr/ha-energy-flow-mapper/issues",
   "requirements": [],
-  "version": "0.1.0"
+  "version": "0.2.0"
 }
 ```
 
@@ -372,7 +372,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
 3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: v0.1.0 veröffentlicht, Installation über HACS «Custom repositories» getestet, PR hacs/default#12520 gestellt, alle Checks grün. Offen: Aufnahme durch HACS (Monate), **(M)** Forenbeiträge.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
-**Zwischen-Release v0.2.0** (2026-10-24, Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Gas/Wasser rutscht dafür auf v0.3.0.
+**Zwischen-Release v0.2.0** (veröffentlicht 2026-10-24, getestet mit HA 2026.10.3; Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Gas/Wasser rutscht dafür auf v0.3.0.
 
 4. **Phase 4 – v0.3.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Gas- und Wasser-Quellen zuweisen, ersetzen und entfernen (§8).
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
