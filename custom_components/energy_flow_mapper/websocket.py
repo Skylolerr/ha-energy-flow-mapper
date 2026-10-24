@@ -52,6 +52,7 @@ from .hierarchy import (
 )
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
+from .transfer import InvalidImportError, build_export, parse_import
 
 ATTR_BASE_HASH = "base_hash"
 ATTR_CHANGES = "changes"
@@ -59,6 +60,7 @@ ATTR_BACKUP_ID = "backup_id"
 ATTR_POWER_ENTITY_ID = "power_entity_id"
 ATTR_NAME = "name"
 ATTR_PERIOD = "period"
+ATTR_DOCUMENT = "document"
 
 # Keys the panel may change; water devices follow in phase 4.
 EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES)
@@ -125,6 +127,9 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_restore)
     async_register_command(hass, websocket_create_integral)
     async_register_command(hass, websocket_energy)
+    async_register_command(hass, websocket_export)
+    async_register_command(hass, websocket_import_check)
+    async_register_command(hass, websocket_import)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -432,3 +437,110 @@ async def websocket_energy(
             "issues": [issue.as_dict() for issue in plausibility(roots, energy)],
         },
     )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/export",
+        vol.Optional(ATTR_BACKUP_ID): str,
+    }
+)
+@require_admin
+@async_response
+async def websocket_export(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return the sources and devices as an export document.
+
+    With `backup_id`, the content of that backup; otherwise the current
+    settings.
+    """
+    runtime = _runtime(hass)
+    exported = dt_util.utcnow().isoformat()
+    if ATTR_BACKUP_ID in msg:
+        backup = runtime.backups.get(msg[ATTR_BACKUP_ID])
+        if backup is None:
+            raise _error("backup_not_found", backup_id=msg[ATTR_BACKUP_ID])
+        document = build_export(backup["data"], exported, backup)
+    else:
+        document = build_export(await energy_access.async_get_prefs(hass), exported)
+    connection.send_result(msg["id"], document)
+
+
+def _imported(prefs: Prefs, document: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return the preferences with an import applied, and the changed lists."""
+    try:
+        data = parse_import(document)
+    except InvalidImportError as err:
+        raise _error("invalid_import", error=str(err)) from err
+    update = {key: value for key, value in data.items() if prefs.get(key) != value}
+    return dict(prefs) | update, update
+
+
+_IMPORT_SCHEMA: dict[vol.Marker | str, Any] = {
+    vol.Required(ATTR_BASE_HASH): str,
+    vol.Required(ATTR_DOCUMENT): dict,
+}
+
+
+@websocket_command({vol.Required("type"): f"{DOMAIN}/import_check", **_IMPORT_SCHEMA})
+@require_admin
+@async_response
+async def websocket_import_check(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Check an export document against the current settings without saving.
+
+    Answers like `validate`; `changed` is False when the file holds the
+    current settings already.
+    """
+    _runtime(hass)
+    prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
+    new, update = _imported(prefs, msg[ATTR_DOCUMENT])
+    # A file is not checked like a draft: its lists may be malformed, so
+    # Home Assistant's schemas come first and the hierarchy only after them.
+    rejected = energy_access.schema_error(update)
+    issues = _issues(hass, new) if rejected is None else []
+    connection.send_result(
+        msg["id"],
+        {
+            "valid": not has_errors(issues) and rejected is None,
+            "changed": bool(update),
+            "issues": [issue.as_dict() for issue in issues],
+            "rejected": rejected,
+            "diff": diff(prefs, new) if rejected is None else [],
+        },
+    )
+
+
+@websocket_command({vol.Required("type"): f"{DOMAIN}/import", **_IMPORT_SCHEMA})
+@require_admin
+@async_response
+async def websocket_import(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Import an export document; the current content is backed up first."""
+    runtime = _runtime(hass)
+    async with runtime.lock:
+        prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
+        new, update = _imported(prefs, msg[ATTR_DOCUMENT])
+        energy_access.validate(update)
+        issues = _issues(hass, new)
+        if has_errors(issues):
+            raise _error(
+                "invalid_changes",
+                issues=", ".join(
+                    f"{issue.code.value} ({issue.stat})"
+                    for issue in issues
+                    if issue.severity is Severity.ERROR
+                ),
+            )
+        if not update:
+            connection.send_result(
+                msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
+            )
+            return
+        result = await _async_write_with_backup(
+            connection, runtime, prefs, update, {"imported": 1}
+        )
+    connection.send_result(msg["id"], result)

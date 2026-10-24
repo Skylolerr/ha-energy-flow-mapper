@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
@@ -437,6 +438,9 @@ async def test_schema_rejects_unknown_change_type(
         {"type": f"{DOMAIN}/validate", "base_hash": "x", "changes": []},
         {"type": f"{DOMAIN}/save", "base_hash": "x", "changes": []},
         {"type": f"{DOMAIN}/restore", "base_hash": "x", "backup_id": "x"},
+        {"type": f"{DOMAIN}/export"},
+        {"type": f"{DOMAIN}/import_check", "base_hash": "x", "document": {}},
+        {"type": f"{DOMAIN}/import", "base_hash": "x", "document": {}},
     ],
 )
 async def test_admin_required(
@@ -771,5 +775,216 @@ async def test_energy_errors(
         period="today",
         base_hash="old",
         changes=[],
+    )
+    assert response["error"]["translation_key"] == "conflict"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_export_current_and_backup(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The current settings and every backup can be exported."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/export")
+    document = response["result"]
+    assert document["format"] == "energy_flow_mapper"
+    assert document["source"] == "current"
+    assert dt_util.parse_datetime(document["exported"]) is not None
+    assert document["data"] == {
+        "energy_sources": ENERGY_PREFS["energy_sources"],
+        "device_consumption": ENERGY_PREFS["device_consumption"],
+    }
+
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{"type": "remove", "stat": "sensor.garage_energy"}],
+    )
+    backup_id = response["result"]["backup_id"]
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/export", backup_id=backup_id
+    )
+    document = response["result"]
+    assert document["source"] == "backup"
+    assert document["backup"]["id"] == backup_id
+    assert document["data"] == {
+        "device_consumption": ENERGY_PREFS["device_consumption"]
+    }
+
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/export", backup_id="nope"
+    )
+    assert response["error"]["translation_key"] == "backup_not_found"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_import_round_trip(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """An export brings back the exported state, with a check and a backup first."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/export")
+    document = response["result"]
+
+    base_hash = await current_hash(hass_ws_client, hass)
+    await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[
+            {"type": "remove", "stat": "sensor.garage_energy"},
+            {"type": "unassign_source", "stat": "sensor.solar_energy"},
+        ],
+    )
+    changed_hash = await current_hash(hass_ws_client, hass)
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=changed_hash,
+        document=document,
+    )
+    result = response["result"]
+    assert result["valid"] is True
+    assert result["changed"] is True
+    assert result["rejected"] is None
+    assert {entry["type"] for entry in result["diff"]} == {"added", "source_added"}
+    assert await current_hash(hass_ws_client, hass) == changed_hash
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=changed_hash,
+        document=document,
+    )
+    assert response["success"], response
+    assert response["result"]["backup_id"]
+    assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/backups")
+    assert response["result"]["backups"][0]["summary"] == {"imported": 1}
+
+    # Importing the same file again changes nothing and makes no backup.
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["result"]["changed"] is False
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["result"] == {"hash": base_hash, "backup_id": None}
+
+
+CYCLE_DOCUMENT = {
+    "format": "energy_flow_mapper",
+    "version": 1,
+    "data": {
+        "device_consumption": [
+            {"stat_consumption": "sensor.main_energy", "included_in_stat": "sensor.b"},
+            {"stat_consumption": "sensor.b", "included_in_stat": "sensor.main_energy"},
+        ]
+    },
+}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    ("document", "translation_key"),
+    [
+        ({"format": "something else"}, "invalid_import"),
+        (CYCLE_DOCUMENT, "invalid_changes"),
+        (
+            {
+                "format": "energy_flow_mapper",
+                "version": 1,
+                "data": {"device_consumption": [{"name": "no statistic"}]},
+            },
+            "rejected_by_home_assistant",
+        ),
+    ],
+)
+async def test_import_refused(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    document: dict[str, Any],
+    translation_key: str,
+) -> None:
+    """Wrong files and files with errors in the hierarchy are not written."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["error"]["translation_key"] == translation_key
+    assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/backups")
+    assert response["result"]["backups"] == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_import_check_reports_problems(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The check lists hierarchy errors, what HA rejects and wrong files."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=CYCLE_DOCUMENT,
+    )
+    result = response["result"]
+    assert result["valid"] is False
+    assert {issue["code"] for issue in result["issues"]} >= {"cycle"}
+
+    rejected = {
+        "format": "energy_flow_mapper",
+        "version": 1,
+        "data": {"device_consumption": [{"name": "no statistic"}]},
+    }
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=rejected,
+    )
+    result = response["result"]
+    assert result["valid"] is False
+    assert result["rejected"]
+    # Malformed lists are not checked or described as a hierarchy.
+    assert result["issues"] == []
+    assert result["diff"] == []
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document={"format": "energy_flow_mapper", "version": 9, "data": {}},
+    )
+    assert response["error"]["translation_key"] == "invalid_import"
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash="outdated",
+        document=CYCLE_DOCUMENT,
     )
     assert response["error"]["translation_key"] == "conflict"

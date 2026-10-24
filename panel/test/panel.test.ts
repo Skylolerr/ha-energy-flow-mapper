@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EnergyFlowMapperPanel,
   errorText,
+  fileStamp,
   MAX_ZOOM,
   MIN_ZOOM,
   PANEL_TAG,
@@ -488,6 +489,214 @@ describe("backups", () => {
     await el._restore(backup);
     await settle(el);
     expect(text(el)).toContain("This backup no longer exists.");
+  });
+});
+
+describe("export and import", () => {
+  const backup: BackupEntry = {
+    id: "b1",
+    created: "2026-10-23T10:00:00+00:00",
+    user_id: "u",
+    user_name: "Admin",
+    summary: { moved: 2 },
+  };
+  const exportDocument = {
+    format: "energy_flow_mapper",
+    version: 1,
+    exported: "2026-10-24T08:30:00+00:00",
+    source: "current",
+    data: { device_consumption: [] },
+  };
+
+  function captureDownloads() {
+    const downloads: { name: string; href: string }[] = [];
+    const created = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ name: this.download, href: this.href });
+    });
+    return { downloads, created };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("exports the current settings and a backup as files", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/backups"] = { backups: [backup] };
+    mock.responses["energy_flow_mapper/export"] = exportDocument;
+    const { downloads, created } = captureDownloads();
+    const el = await mount(mock);
+    await el._openBackups(false);
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("every Home Assistant backup includes them");
+
+    buttonWith(el, "Export current settings").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/export")).toEqual({ type: "energy_flow_mapper/export" });
+    expect(downloads).toEqual([
+      { name: `energy-flow-mapper-settings-${fileStamp(exportDocument.exported)}.json`, href: "blob:export" },
+    ]);
+    const blob = created.mock.calls[0][0] as Blob;
+    expect(JSON.parse(await blob.text())).toEqual(exportDocument);
+
+    root(el).querySelector<HTMLButtonElement>(".backup-actions button")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/export")).toMatchObject({ backup_id: "b1" });
+    expect(downloads[1].name).toBe(`energy-flow-mapper-backup-${fileStamp(backup.created)}.json`);
+  });
+
+  it("names files with the local date and time", () => {
+    const iso = "2026-10-24T08:30:05+00:00";
+    const date = new Date(iso);
+    expect(fileStamp(iso)).toBe(
+      `2026-10-${String(date.getDate()).padStart(2, "0")}-${String(date.getHours()).padStart(2, "0")}-30-05`,
+    );
+  });
+
+  it("keeps a dialog that was opened before the close event of the last one arrived", async () => {
+    const el = await mount(mockHass());
+    el._dialog = { kind: "menu" };
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.open).toBe(true);
+    // A late close event while the new dialog is open changes nothing.
+    dialog.dispatchEvent(new Event("close"));
+    await settle(el);
+    expect(el._dialog).toEqual({ kind: "menu" });
+    // Closed for real (Escape, form method=dialog): the dialog state goes too.
+    dialog.open = false;
+    dialog.dispatchEvent(new Event("close"));
+    await settle(el);
+    expect(el._dialog).toBeNull();
+  });
+
+  it("reports a failed export", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/export"] = { translation_key: "backup_not_found" };
+    const el = await mount(mock);
+    await el._export(backup);
+    await settle(el);
+    expect(text(el)).toContain("This backup no longer exists.");
+  });
+
+  it("checks an imported file, shows the changes and imports it", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = {
+      valid: true,
+      changed: true,
+      issues: [{ code: "statistic_missing", severity: "warning", stat: "sensor.tv", details: {} }],
+      rejected: null,
+      diff: [{ type: "moved", stat: "sensor.tv", from: null, to: "sensor.server" }],
+    };
+    mock.responses["energy_flow_mapper/import"] = { hash: "hash-4", backup_id: "b4" };
+    const el = await mount(mock);
+    el._change({ type: "rename", stat: "sensor.sonos", name: "Amp" });
+    await el._readImport(new File([JSON.stringify(exportDocument)], "settings.json"));
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Import settings.json");
+    expect(dialog.textContent).toContain("TV moved under Server & co");
+    expect(dialog.textContent).toContain("Statistic not found");
+    expect(dialog.textContent).toContain("unsaved changes will be discarded");
+    expect(lastCall(mock, "energy_flow_mapper/import_check")).toMatchObject({
+      base_hash: "hash-1",
+      document: exportDocument,
+    });
+
+    dialog.querySelector<HTMLButtonElement>("button.primary")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/import")).toMatchObject({
+      base_hash: "hash-1",
+      document: exportDocument,
+    });
+    expect(el._changes).toEqual([]);
+    expect(text(el)).toContain("Imported. The previous settings were backed up.");
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/get")).toHaveLength(2);
+  });
+
+  it("says when a file holds the current settings", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = {
+      valid: true,
+      changed: false,
+      issues: [],
+      rejected: null,
+      diff: [],
+    };
+    const el = await mount(mock);
+    await el._readImport(new File([JSON.stringify(exportDocument)], "same.json"));
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("There is nothing to import");
+    expect(dialog.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
+  });
+
+  it("does not import what Home Assistant rejects", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = {
+      valid: false,
+      changed: true,
+      issues: [],
+      rejected: "required key not provided",
+      diff: [],
+    };
+    const el = await mount(mock);
+    await el._readImport(new File([JSON.stringify(exportDocument)], "broken.json"));
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.querySelector(".rejected")!.textContent).toContain("required key not provided");
+    expect(dialog.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(true);
+  });
+
+  it("reports files that are not exports", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = { translation_key: "invalid_import" };
+    const el = await mount(mock);
+    await el._readImport(new File(["not json"], "notes.txt"));
+    await settle(el);
+    expect(text(el)).toContain("This file could not be read.");
+    expect(lastCall(mock, "energy_flow_mapper/import_check")).toBeUndefined();
+
+    await el._readImport(new File(['{"format": "other"}'], "other.json"));
+    await settle(el);
+    expect(text(el)).toContain("This file is not an Energy Flow Mapper export.");
+    expect(root(el).querySelector("dialog")!.open).toBe(false);
+  });
+
+  it("reports a failed import and an import without effect", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import"] = { translation_key: "conflict" };
+    const el = await mount(mock);
+    await el._import(exportDocument);
+    await settle(el);
+    expect(text(el)).toContain("changed elsewhere");
+
+    mock.responses["energy_flow_mapper/import"] = { hash: "hash-1", backup_id: null };
+    await el._import(exportDocument);
+    await settle(el);
+    expect(text(el)).toContain("Nothing changed");
+  });
+
+  it("opens a file picker for JSON files", async () => {
+    const el = await mount(mockHass());
+    const read = vi.spyOn(el, "_readImport").mockResolvedValue();
+    let picker: HTMLInputElement | undefined;
+    vi.spyOn(HTMLInputElement.prototype, "click").mockImplementation(function (this: HTMLInputElement) {
+      picker = this;
+    });
+    el._pickImportFile();
+    expect(picker!.type).toBe("file");
+    expect(picker!.accept).toBe(".json,application/json");
+    const file = new File(["{}"], "pick.json");
+    Object.defineProperty(picker!, "files", { value: [file], configurable: true });
+    picker!.dispatchEvent(new Event("change"));
+    expect(read).toHaveBeenCalledWith(file);
+    // Cancelling the picker leaves nothing to read.
+    Object.defineProperty(picker!, "files", { value: [], configurable: true });
+    picker!.dispatchEvent(new Event("change"));
+    expect(read).toHaveBeenCalledTimes(1);
   });
 });
 

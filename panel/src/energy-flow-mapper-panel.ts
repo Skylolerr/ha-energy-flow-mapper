@@ -36,6 +36,8 @@ import {
 import type {
   AssignRole,
   BackupEntry,
+  ExportDocument,
+  ImportCheckResult,
   Candidate,
   Change,
   Device,
@@ -89,6 +91,7 @@ type Dialog =
   | { kind: "confirm"; result: ValidateResult | null }
   | { kind: "backups"; entries: BackupEntry[] }
   | { kind: "restore"; backup: BackupEntry; undo: boolean }
+  | { kind: "import"; file: string; document: unknown; result: ImportCheckResult | null }
   | { kind: "candidates" }
   | { kind: "details" }
   | { kind: "menu" }
@@ -127,6 +130,30 @@ export function errorText(hass: HomeAssistant | undefined, err: unknown): string
     return localize(hass, key, placeholders);
   }
   return localize(hass, "error_unknown", { message: error.message ?? String(err) });
+}
+
+/** Local date and time for a file name, like 2026-10-24-09-30-00. */
+export function fileStamp(iso: string): string {
+  const date = new Date(iso);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("-");
+}
+
+/** Offer a JSON document as a file download. */
+export function downloadJson(filename: string, data: unknown): void {
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 /** Navigate inside the Home Assistant frontend without reloading the page. */
@@ -432,6 +459,87 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._dialog = null;
       this._discard();
       this._showToast(this._t("restored"));
+      await this._load();
+    } catch (err) {
+      this._dialog = null;
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
+  }
+
+  /** Download the current settings, or a backup, as a JSON file. */
+  async _export(backup?: BackupEntry): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    try {
+      const document = await this.hass.callWS<ExportDocument>({
+        type: `${DOMAIN}/export`,
+        ...(backup ? { backup_id: backup.id } : {}),
+      });
+      const stamp = fileStamp(backup?.created ?? document.exported);
+      downloadJson(`energy-flow-mapper-${backup ? "backup" : "settings"}-${stamp}.json`, document);
+    } catch (err) {
+      await this._handleError(err);
+    }
+  }
+
+  /** Let the user pick an exported file; it is checked before anything is written. */
+  _pickImportFile(): void {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json,application/json";
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) {
+        void this._readImport(file);
+      }
+    });
+    input.click();
+  }
+
+  async _readImport(file: File): Promise<void> {
+    if (!this.hass || !this._snapshot) {
+      return;
+    }
+    let document: unknown;
+    try {
+      document = JSON.parse(await file.text());
+    } catch {
+      this._showToast(this._t("import_invalid_file"));
+      return;
+    }
+    this._dialog = { kind: "import", file: file.name, document, result: null };
+    try {
+      const result = await this.hass.callWS<ImportCheckResult>({
+        type: `${DOMAIN}/import_check`,
+        base_hash: this._snapshot.hash,
+        document,
+      });
+      if (this._dialog?.kind === "import") {
+        this._dialog = { ...this._dialog, result };
+      }
+    } catch (err) {
+      this._dialog = null;
+      await this._handleError(err);
+    }
+  }
+
+  async _import(document: unknown): Promise<void> {
+    if (!this.hass || !this._snapshot) {
+      return;
+    }
+    this._busy = true;
+    try {
+      const result = await this.hass.callWS<SaveResult>({
+        type: `${DOMAIN}/import`,
+        base_hash: this._snapshot.hash,
+        document,
+      });
+      this._dialog = null;
+      this._discard();
+      this._showToast(this._t(result.backup_id ? "imported" : "nothing_to_save"));
       await this._load();
     } catch (err) {
       this._dialog = null;
@@ -1524,6 +1632,25 @@ export class EnergyFlowMapperPanel extends LitElement {
     </ul>`;
   }
 
+  /** The list of changes, problems and what Home Assistant rejects. */
+  private _renderCheck(result: ValidateResult): TemplateResult {
+    const errors = result.issues.filter((i) => i.severity === "error");
+    const warnings = result.issues.filter((i) => i.severity === "warning");
+    const issueList = (issues: Issue[]) =>
+      html`<ul class="issues">
+        ${issues.map((i) => html`<li class=${i.severity}>${this._name(i.stat)}: ${this._issueText(i)}</li>`)}
+      </ul>`;
+    return html`<ul class="diff">
+        ${result.diff.map((entry) => html`<li>${this._diffText(entry)}</li>`)}
+      </ul>
+      ${errors.length ? html`<p>${this._t("confirm_errors")}</p>${issueList(errors)}` : nothing}
+      ${warnings.length ? html`<p>${this._t("confirm_warnings")}</p>${issueList(warnings)}` : nothing}
+      ${result.rejected
+        ? html`<p>${this._t("confirm_rejected")}</p>
+            <p class="rejected">${result.rejected}</p>`
+        : nothing}`;
+  }
+
   _summaryText(summary: Record<string, number>): string {
     return Object.entries(summary)
       .map(([type, count]) => {
@@ -1535,8 +1662,11 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   private _renderDialog(): TemplateResult {
     return html`<dialog
-      @close=${() => {
-        this._dialog = null;
+      @close=${(event: Event) => {
+        // The close event arrives later; a dialog opened meanwhile stays open.
+        if (!(event.target as HTMLDialogElement).open) {
+          this._dialog = null;
+        }
       }}
       @cancel=${() => {
         this._dialog = null;
@@ -1667,22 +1797,8 @@ export class EnergyFlowMapperPanel extends LitElement {
           return html`<h2>${this._t("confirm_title")}</h2>
             <p>${this._t("checking")}</p>`;
         }
-        const errors = result.issues.filter((i) => i.severity === "error");
-        const warnings = result.issues.filter((i) => i.severity === "warning");
-        const issueList = (issues: Issue[]) =>
-          html`<ul class="issues">
-            ${issues.map((i) => html`<li class=${i.severity}>${this._name(i.stat)}: ${this._issueText(i)}</li>`)}
-          </ul>`;
         return html`<h2>${this._t("confirm_title")}</h2>
-          <ul class="diff">
-            ${result.diff.map((entry) => html`<li>${this._diffText(entry)}</li>`)}
-          </ul>
-          ${errors.length ? html`<p>${this._t("confirm_errors")}</p>${issueList(errors)}` : nothing}
-          ${warnings.length ? html`<p>${this._t("confirm_warnings")}</p>${issueList(warnings)}` : nothing}
-          ${result.rejected
-            ? html`<p>${this._t("confirm_rejected")}</p>
-                <p class="rejected">${result.rejected}</p>`
-            : nothing}
+          ${this._renderCheck(result)}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
             <button
@@ -1696,6 +1812,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "backups":
         return html`<h2>${this._t("backups_title")}</h2>
+          <p class="hint">${this._t("backups_hint")}</p>
+          <div class="dialog-actions transfer-actions">
+            <button @click=${() => this._export()}>${this._t("export_current")}</button>
+            <button @click=${() => this._pickImportFile()}>${this._t("import_file")}</button>
+          </div>
           ${dialog.entries.length === 0
             ? html`<p class="empty">${this._t("backups_empty")}</p>`
             : html`<ul class="backups">
@@ -1709,11 +1830,14 @@ export class EnergyFlowMapperPanel extends LitElement {
                           : ""}</span
                       >
                     </div>
-                    <button
-                      @click=${() => (this._dialog = { kind: "restore", backup, undo: false })}
-                    >
-                      ${this._t("restore")}
-                    </button>
+                    <div class="backup-actions">
+                      <button @click=${() => this._export(backup)}>${this._t("export")}</button>
+                      <button
+                        @click=${() => (this._dialog = { kind: "restore", backup, undo: false })}
+                      >
+                        ${this._t("restore")}
+                      </button>
+                    </div>
                   </li>`,
                 )}
               </ul>`}
@@ -1733,6 +1857,27 @@ export class EnergyFlowMapperPanel extends LitElement {
               @click=${() => this._restore(dialog.backup)}
             >
               ${this._t("restore")}
+            </button>
+          </div>`;
+      }
+      case "import": {
+        const result = dialog.result;
+        const title = html`<h2>${this._t("import_title", { file: dialog.file })}</h2>`;
+        if (result === null) {
+          return html`${title}
+            <p>${this._t("checking")}</p>`;
+        }
+        return html`${title}
+          ${result.changed ? this._renderCheck(result) : html`<p>${this._t("import_unchanged")}</p>`}
+          ${result.changed && this._changes.length ? html`<p class="warning">${this._t("draft_lost")}</p>` : nothing}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button
+              class="primary"
+              ?disabled=${!result.valid || !result.changed || this._busy}
+              @click=${() => this._import(dialog.document)}
+            >
+              ${this._t("import")}
             </button>
           </div>`;
       }
@@ -2139,6 +2284,16 @@ export class EnergyFlowMapperPanel extends LitElement {
       gap: 8px;
       padding: 6px 0;
       border-bottom: 1px solid var(--divider-color);
+    }
+    .backup-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 4px;
+    }
+    /* Two long buttons: they wrap on phones instead of overflowing. */
+    .transfer-actions {
+      flex-wrap: wrap;
     }
     .candidate {
       cursor: grab;

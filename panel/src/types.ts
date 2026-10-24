@@ -142,6 +142,22 @@ export interface SaveResult {
   backup_id: string | null;
 }
 
+/** File written by `energy_flow_mapper/export`; only `data` is imported. */
+export interface ExportDocument {
+  format: string;
+  version: number;
+  exported: string;
+  source: "current" | "backup";
+  backup?: { id: string; created: string; user_name: string | null; summary: Record<string, number> };
+  data: Record<string, unknown[]>;
+}
+
+/** Answer of `energy_flow_mapper/import_check`. */
+export interface ImportCheckResult extends ValidateResult {
+  /** False when the file holds the current settings already. */
+  changed: boolean;
+}
+
 export interface BackupEntry {
   id: string;
   created: string;
