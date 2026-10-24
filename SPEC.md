@@ -56,7 +56,8 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Gas- und Wasser-Quellen bearbeiten | Phase 4, nach v0.1.0 (Wunsch des Maintainers vom 2026-10-23); bis dahin nur Anzeige |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
 | Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** mehr verbrauchen als das übergeordnete |
-| Sicherungen | die letzten **20** |
+| Sicherungen | Standard die letzten **20**, in den Optionen der Integration **5 bis 100** einstellbar (Wunsch des Maintainers vom 2026-10-24). Ablage fest in `.storage`, **kein** frei wählbarer Speicherort |
+| Export/Import | Aktuelle Einstellungen und jede Sicherung als JSON-Datei exportieren; Import geht durch Prüfung, Bestätigung und Sicherung wie jedes Speichern (2026-10-24) |
 | Mehrere übergeordnete Geräte | **Nicht möglich**, HA erlaubt genau eines (`included_in_stat` ist ein String) |
 
 ---
@@ -285,8 +286,10 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 
 - Store `.storage/energy_flow_mapper.backups`, `STORAGE_VERSION = 1`.
 - Vor jedem Speichern wird der alte Inhalt der geänderten Schlüssel gesichert, mit Zeitstempel, HA-Benutzer und kurzer Zusammenfassung (z. B. «3 verschoben, 1 hinzugefügt»).
-- Es bleiben die letzten 20 Sicherungen, ältere werden beim Anlegen einer neuen gelöscht.
-- «Rückgängig» im Panel stellt die letzte Sicherung wieder her. Die Liste «Sicherungen» erlaubt jede ältere. Auch das Wiederherstellen legt vorher eine Sicherung an.
+- Es bleiben die letzten 20 Sicherungen (Option `max_backups`, 5–100, Optionen der Integration mit Neuladen des Eintrags). Ältere werden beim Anlegen einer neuen gelöscht; wird die Zahl verkleinert, gleich beim Laden.
+- «Rückgängig» im Panel stellt die letzte Sicherung wieder her. Die Liste «Sicherungen» erlaubt jede ältere. Auch das Wiederherstellen und der Import legen vorher eine Sicherung an.
+- **Kein frei wählbarer Speicherort** (entschieden 2026-10-24): `.storage` wird von HA sicher geschrieben und ist Teil jedes HA-Backups; ein externer Pfad brächte Ausfälle (nicht eingebundenes NAS), Sicherheitsfragen und fehlende Wiederherstellung mit sich. Wer eine Kopie woanders will, exportiert sie.
+- **Export/Import (`transfer.py`):** Datei-Format `{"format": "energy_flow_mapper", "version": 1, "exported", "source": "current" | "backup", "backup"?, "data": {energy_sources?, device_consumption?}}`. Beim Import zählt nur `data`; andere Listen (z. B. Wasser-Geräte) werden abgelehnt. Erst HAs eigene Schemas, dann die Hierarchie-Prüfung, dann Bestätigung im Panel. Sicherung mit Zusammenfassung `{"imported": 1}`.
 - Store-Format-Änderungen nur mit Migration.
 
 ---
@@ -304,6 +307,9 @@ Alle Befehle nur für Admins.
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
 | `energy_flow_mapper/energy` (Phase 3) | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (kWh pro Statistik, `null` ohne Daten), `untracked`, `issues` (Plausibilität) |
 | `energy_flow_mapper/create_integral` (Phase 3) | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
+| `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
+| `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
+| `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
 

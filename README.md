@@ -85,8 +85,16 @@ Home Assistant configuration and restart Home Assistant.
 [![Open your Home Assistant instance and start setting up a new integration.](https://my.home-assistant.io/badges/config_flow_start.svg)](https://my.home-assistant.io/redirect/config_flow_start/?domain=energy_flow_mapper)
 
 Settings → Devices & services → **Add integration** → **Energy Flow Mapper** → Submit.
-There is nothing to configure. The setup does not change your energy settings; the panel
-**Energy Flow Mapper** appears in the sidebar for admins.
+The setup does not change your energy settings; the panel **Energy Flow Mapper** appears
+in the sidebar for admins.
+
+### Options
+
+Settings → Devices & services → Energy Flow Mapper → **Configure**:
+
+| Option | Default | Meaning |
+|---|---|---|
+| Backups to keep | 20 | How many backups of your previous energy settings are kept, 5 to 100. If you lower it, the oldest backups beyond the new number are deleted. |
 
 ## Using the panel
 
@@ -101,6 +109,8 @@ There is nothing to configure. The setup does not change your energy settings; t
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
 | Save | *Save* in the bar at the bottom, check the list of changes, confirm |
 | Go back | *Undo last save* or *Backups* → *Restore* |
+| Keep a copy elsewhere | *Backups* → *Export current settings*, or *Export* next to a backup |
+| Bring a copy back | *Backups* → *Import from file …*, check the list of changes, confirm |
 
 Good to know:
 
@@ -115,13 +125,33 @@ Good to know:
 - If someone changes the energy settings elsewhere while you edit, saving is refused and
   the panel reloads; your draft is kept and checked again.
 
+## Backups
+
+- **When:** before every save, restore and import, Energy Flow Mapper backs up the
+  previous content of the energy settings it changes (sources and/or devices), with the
+  time, the user and a short summary.
+- **Where:** in `/config/.storage/energy_flow_mapper.backups`, next to Home Assistant's own
+  energy settings (`/config/.storage/energy`). Both are part of every **Home Assistant
+  backup**, so to keep them off the device, use a Home Assistant backup location such as a
+  network share or the cloud.
+- **How many:** the last 20 by default; set 5 to 100 in the [options](#options).
+- **Restore:** *Undo last save* restores the newest backup, *Backups* → *Restore* any of
+  them. The current settings are backed up first.
+- **Export:** *Backups* → *Export current settings* downloads the energy sources and
+  devices as a JSON file; *Export* next to a backup downloads that backup. Keep it
+  wherever you like.
+- **Import:** *Backups* → *Import from file …* reads such a file, checks it like a draft
+  (including what Home Assistant itself would reject) and shows the list of changes
+  before anything is written. Only files exported by Energy Flow Mapper are accepted.
+- **Removal:** the backups are deleted with the integration; exported files stay.
+
 ## How it works
 
 - The energy dashboard configuration of Home Assistant stays the single source of truth.
   Energy Flow Mapper reads it fresh, writes it through the same checks as the energy
   settings page and always sends complete lists, so unrelated settings are kept.
-- Backups (the last 20) are stored in `.storage/energy_flow_mapper.backups`, the list of
-  helpers created by the panel in `.storage/energy_flow_mapper.helpers`.
+- Backups are stored in `.storage/energy_flow_mapper.backups` (see [Backups](#backups)),
+  the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers`.
 - The integration has no entities and no devices.
 
 ## Known limitations

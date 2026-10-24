@@ -7,6 +7,17 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+### Added
+
+- Option "Backups to keep" (5 to 100, default 20) under Settings → Devices & services →
+  Energy Flow Mapper → Configure.
+- Export of the current energy sources and devices, or of any backup, as a JSON file from
+  the Backups dialog.
+- Import of such a file: it is checked like a draft, the changes are shown for
+  confirmation, and the current settings are backed up first.
+- README section about where backups are kept and how they get into Home Assistant
+  backups.
+
 ## [0.1.0] - 2026-10-23
 
 First public beta.
