@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from http import HTTPStatus
 
 from homeassistant.components.frontend import DATA_PANELS
@@ -28,7 +29,10 @@ async def test_panel_registered_for_admins(
     assert panel.require_admin
     custom = panel.config["_panel_custom"]
     assert custom["name"] == "energy-flow-mapper-panel"
-    assert custom["module_url"] == f"{PANEL_URL}?v=0.1.0-{panel_hash()}"
+    version = json.loads((PANEL_PATH.parent.parent / "manifest.json").read_text())[
+        "version"
+    ]
+    assert custom["module_url"] == f"{PANEL_URL}?v={version}-{panel_hash()}"
     assert not custom["embed_iframe"]
 
 

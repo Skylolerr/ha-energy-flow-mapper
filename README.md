@@ -160,7 +160,7 @@ Good to know:
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.
 - Gas and water sources are shown only. Editing them and the water device hierarchy are
-  planned for 0.2.0.
+  planned for 0.3.0.
 - Dragging works with a mouse and with a long press on phones; the ⋮ menu offers the
   same actions.
 

@@ -52,8 +52,8 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Quellen zuweisen | Phase 3, vor v0.1.0 |
 | Externe Statistiken als freie Sensoren | Phase 3, vor v0.1.0 |
 | Integral-Helfer für Leistungssensoren | Phase 3, vor v0.1.0 |
-| Wasser-Hierarchie | Phase 4, nach v0.1.0 |
-| Gas- und Wasser-Quellen bearbeiten | Phase 4, nach v0.1.0 (Wunsch des Maintainers vom 2026-10-23); bis dahin nur Anzeige |
+| Wasser-Hierarchie | Phase 4, v0.3.0 |
+| Gas- und Wasser-Quellen bearbeiten | Phase 4, v0.3.0 (Wunsch des Maintainers vom 2026-10-23); bis dahin nur Anzeige |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
 | Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** mehr verbrauchen als das übergeordnete |
 | Sicherungen | Standard die letzten **20**, in den Optionen der Integration **5 bis 100** einstellbar (Wunsch des Maintainers vom 2026-10-24). Ablage fest in `.storage`, **kein** frei wählbarer Speicherort |
@@ -237,7 +237,7 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 
 ## 8. Quellen zuweisen (Phase 3)
 
-- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen). Gas und Wasser werden in v0.1.0 nur angezeigt; bearbeitbar ab Phase 4 (siehe unten).
+- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen). Gas und Wasser werden bis v0.2.0 nur angezeigt; bearbeitbar ab Phase 4, v0.3.0 (siehe unten).
 - **Netz:** Gibt es schon einen Netz-Eintrag, wird nur `stat_energy_from` bzw. `stat_energy_to` ersetzt. Alle anderen Felder (Preise, Vergütung, `power_config`, `cost_adjustment_day`, unbekannte Felder) bleiben unverändert. Gibt es noch keinen, wird einer ohne Kosten angelegt (`stat_cost` und Preise `null`, `cost_adjustment_day: 0`).
 - **Solar:** neuer Eintrag pro Sensor, `config_entry_solar_forecast: null`.
 - **Batterie:** Laden und Entladen werden als Paar zugewiesen. Ein Eintrag wird erst gespeichert, wenn beide gesetzt sind.
@@ -372,7 +372,9 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
 3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: v0.1.0 veröffentlicht, Installation über HACS «Custom repositories» getestet, PR hacs/default#12520 gestellt, alle Checks grün. Offen: Aufnahme durch HACS (Monate), **(M)** Forenbeiträge.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
-4. **Phase 4 – v0.2.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Gas- und Wasser-Quellen zuweisen, ersetzen und entfernen (§8).
+**Zwischen-Release v0.2.0** (2026-10-24, Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Gas/Wasser rutscht dafür auf v0.3.0.
+
+4. **Phase 4 – v0.3.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Gas- und Wasser-Quellen zuweisen, ersetzen und entfernen (§8).
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
 **Optional, irgendwann (unwichtig):** `hacs.json` um `"zip_release": true` und `"filename": "energy_flow_mapper.zip"` ergänzen. HACS installiert dann das ZIP des Releases, GitHub zählt die Downloads und HACS zeigt sie an. Viele grosse Integrationen machen das (HACS, Powercalc, Watchman, Alexa Media Player), andere nicht (Frigate, Adaptive Lighting). Wirkt erst ab dem nächsten Release; der Release-Workflow hängt das ZIP schon an.

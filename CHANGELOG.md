@@ -7,6 +7,8 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-24
+
 ### Added
 
 - Option "Backups to keep" (5 to 100, default 20) under Settings → Devices & services →
