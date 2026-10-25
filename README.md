@@ -187,6 +187,19 @@ deleted with the integration.
 English and German are maintained by the author; French and Italian are new – community
 review is welcome.
 
+Missing your language? Open an
+[issue](https://github.com/Skylolerr/ha-energy-flow-mapper/issues) and it will gladly be
+added. Translations and corrections from users are very welcome, as an issue or a pull
+request. The texts are in two places:
+
+- `custom_components/energy_flow_mapper/translations/<language>.json` (setup, options and
+  messages; English base: `en.json`)
+- `panel/src/translations/<language>.ts` (the panel; English base: `en.ts`)
+
+Copy the English file, translate the texts and keep the keys and `{placeholders}` as they
+are. You do not need to build anything; registering the new language is done when it is
+merged.
+
 ## License
 
 MIT, see [LICENSE](LICENSE).
