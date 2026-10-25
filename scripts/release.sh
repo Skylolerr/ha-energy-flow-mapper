@@ -6,8 +6,9 @@
 # Checks before anything is published: clean main in sync with origin, a
 # CHANGELOG section "## [X.Y.Z]", no tag vX.Y.Z yet, and green Validate and
 # Tests runs for the current commit. Then creates a normal (not pre-) release
-# vX.Y.Z with the CHANGELOG section as notes. --dry-run only runs the checks
-# and prints the notes.
+# vX.Y.Z with the CHANGELOG section as notes and energy_flow_mapper.zip
+# attached right away (HACS installs that ZIP, see zip_release in hacs.json).
+# --dry-run only runs the checks, builds the ZIP and prints the notes.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -40,13 +41,23 @@ for workflow in validate.yml tests.yml; do
 done
 
 NOTES="$(mktemp)"
-trap 'rm -f "$NOTES"' EXIT
+WORK="$(mktemp -d)"
+ZIP="${WORK}/energy_flow_mapper.zip"
+trap 'rm -rf "$NOTES" "$WORK"' EXIT
+# The integration folder of the commit, with its files at the top of the ZIP.
+git archive --format=zip -o "$ZIP" "${COMMIT}:custom_components/energy_flow_mapper"
+zip_has() {
+  python -c "import sys, zipfile; sys.exit(sys.argv[2] not in zipfile.ZipFile(sys.argv[1]).namelist())" "$ZIP" "$1"
+}
+for file in manifest.json frontend/energy-flow-mapper-panel.js; do
+  zip_has "$file" || fail "the ZIP has no ${file}"
+done
 awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{found=0} found && !/^\[/" CHANGELOG.md >"$NOTES"
 [ -s "$NOTES" ] || fail "the CHANGELOG section for ${VERSION} is empty"
 
 if $DRY_RUN; then
-  echo "All checks passed for ${TAG}. Release notes:"
+  echo "All checks passed for ${TAG} ($(python -c "import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))" "$ZIP") files in the ZIP). Release notes:"
   cat "$NOTES"
   exit 0
 fi
-"$GH" release create "$TAG" --target "$COMMIT" --title "$TAG" --notes-file "$NOTES"
+"$GH" release create "$TAG" "$ZIP" --target "$COMMIT" --title "$TAG" --notes-file "$NOTES"

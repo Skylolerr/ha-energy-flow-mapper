@@ -17,6 +17,8 @@ breaking changes; they are marked as **Breaking**.
   when sub-devices used more than 5 % and 10 L more than their device.
 - Export and import include the water devices; files exported with 0.2.0 still import
   and leave the water devices as they are.
+- HACS installs the release ZIP (`zip_release`), so the download count of a release
+  shows roughly how often it was installed.
 
 ## [0.2.0] - 2026-10-24
 

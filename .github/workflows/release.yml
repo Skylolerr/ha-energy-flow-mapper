@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   release:
-    name: Check version and attach ZIP
+    name: Check version and ZIP
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -31,7 +31,14 @@ jobs:
         run: |
           cd custom_components/energy_flow_mapper
           zip -r "${GITHUB_WORKSPACE}/energy_flow_mapper.zip" . -x '__pycache__/*'
-      - name: Attach ZIP to release
+      # scripts/release.sh attaches the ZIP when it creates the release; HACS
+      # installs it (zip_release), so an existing one is never replaced.
+      - name: Attach ZIP if the release has none
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload "${GITHUB_REF_NAME}" energy_flow_mapper.zip --clobber
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | grep -qx energy_flow_mapper.zip; then
+            echo "The release has its ZIP already."
+          else
+            gh release upload "${GITHUB_REF_NAME}" energy_flow_mapper.zip
+          fi

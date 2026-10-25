@@ -106,6 +106,8 @@ scripts/release.sh             # creates the normal release vX.Y.Z
 
 The script refuses to release unless main is clean and pushed, the CHANGELOG has the
 section, the tag is new and Validate and Tests are green for the commit. The notes are
-the CHANGELOG section. `release.yml` then checks the tag again and attaches a ZIP.
+the CHANGELOG section. It attaches `energy_flow_mapper.zip` right away, because HACS
+installs that ZIP (`zip_release` in `hacs.json`). `release.yml` then checks the tag again
+and only attaches a ZIP if the release has none.
 The PR to `hacs/default` is made by the owner account Skylolerr, only after the
 maintainer's explicit OK.
