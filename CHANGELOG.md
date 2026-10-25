@@ -5,13 +5,20 @@ All notable changes to this project are documented here. The format follows
 [Semantic Versioning](https://semver.org/). Before 1.0, minor releases may contain
 breaking changes; they are marked as **Breaking**.
 
+Each version starts with its highlight and ends with the Home Assistant release it was
+tested with. The section of a version is also the text of its GitHub release, which HACS
+and Home Assistant show when they offer the update.
+
 ## [Unreleased]
 
 ## [0.5.0] - 2026-10-25
 
-Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
+> **Highlight:** a dashboard card for everyone – your device tree, read-only, on any
+> dashboard.
 
-### Added
+![Two dashboard cards: the energy flow of 30 days and the water flow now](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/card-light.png)
+
+### ✨ Added
 
 - **Dashboard card** `custom:energy-flow-mapper-card`: the device tree of electricity or
   water on any dashboard, read-only and for every user. Period (now, today, 7 or 30
@@ -21,11 +28,14 @@ Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
 - A read-only command for the card, which users who are not admins may use too. It
   returns the tree, names and consumption only, never prices or costs.
 
+*Tested with Home Assistant 2026.10.4 · minimum 2026.10.0*
+
 ## [0.4.0] - 2026-10-25
 
-Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
+> **Highlight:** water meters from flow sensors, undo in the draft, and a search for big
+> diagrams.
 
-### Added
+### ✨ Added
 
 - "Create meter" for flow sensors without a water meter in the Water tab: an integral
   helper that counts litres (or the unit of the flow) and is shown as water.
@@ -34,17 +44,19 @@ Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
 - "Find device" above the diagram: matching devices are highlighted, collapsed parents
   open, and Enter moves from match to match.
 
-### Fixed
+### 🐛 Fixed
 
 - A zoom made before the diagram had its size is no longer replaced by the first fit.
 - The diagram fits into the window again; since the tabs came in 0.3.0 it reached
   below the bottom edge.
 
+*Tested with Home Assistant 2026.10.4 · minimum 2026.10.0*
+
 ## [0.3.0] - 2026-10-25
 
-Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
+> **Highlight:** water joins electricity – its own tab for water devices and water meters.
 
-### Added
+### ✨ Added
 
 - **Water** tab: the water devices of the energy dashboard as their own diagram, edited
   like electricity devices (include, move to the top level, rename, remove, add free
@@ -57,11 +69,14 @@ Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
 - HACS installs the release ZIP (`zip_release`), so the download count of a release
   shows roughly how often it was installed.
 
+*Tested with Home Assistant 2026.10.4 · minimum 2026.10.0*
+
 ## [0.2.0] - 2026-10-24
 
-Tested with Home Assistant 2026.10.3; the minimum stays 2026.10.0.
+> **Highlight:** your energy settings as a file – export, import, and as many backups as
+> you like.
 
-### Added
+### ✨ Added
 
 - Option "Backups to keep" (5 to 100, default 20) under Settings → Devices & services →
   Energy Flow Mapper → Configure.
@@ -72,11 +87,14 @@ Tested with Home Assistant 2026.10.3; the minimum stays 2026.10.0.
 - README section about where backups are kept and how they get into Home Assistant
   backups.
 
+*Tested with Home Assistant 2026.10.3 · minimum 2026.10.0*
+
 ## [0.1.0] - 2026-10-23
 
-First public beta.
+> **Highlight:** first public beta – the energy dashboard as a diagram you can edit by
+> drag and drop.
 
-### Added
+### ✨ Added
 
 - Admin panel **Energy Flow Mapper** in the sidebar that shows the energy dashboard
   configuration as a diagram: sources, Home and devices as blocks, arranged
@@ -99,11 +117,13 @@ First public beta.
   draft; helpers created by the panel are labelled.
 - Changes are collected in a draft, checked (loops, missing parents, duplicates, a
   sensor used as source and device or by two sources, and what Home Assistant itself
-  would reject) and saved in one step after a confirmation. Every save stores a backup first (the last 20 are kept); "Undo last
-  save" and "Backups" restore an earlier state.
+  would reject) and saved in one step after a confirmation. Every save stores a backup
+  first (the last 20 are kept); "Undo last save" and "Backups" restore an earlier state.
 - Saving is refused when the energy settings were changed elsewhere in the meantime;
   the panel reloads and keeps the draft.
 - Repair issue and disabled editor when the energy settings of the Home Assistant
   release are not supported.
 - Diagnostics with counts only (no entity names).
 - English, German, French and Italian; light and dark theme; phone layout.
+
+*Minimum Home Assistant 2026.10.0*
