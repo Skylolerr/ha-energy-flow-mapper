@@ -27,7 +27,7 @@ TAG="v${VERSION}"
 
 [ "$(git rev-parse --abbrev-ref HEAD)" = "main" ] || fail "not on main"
 [ -z "$(git status --porcelain)" ] || fail "working tree is not clean"
-git fetch --quiet origin main
+git fetch --quiet --tags origin main
 [ "$(git rev-parse HEAD)" = "$(git rev-parse origin/main)" ] || fail "main is not in sync with origin/main"
 grep -q "^## \[${VERSION}\]" CHANGELOG.md || fail "CHANGELOG.md has no section '## [${VERSION}]'"
 if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null; then
@@ -54,6 +54,39 @@ for file in manifest.json frontend/energy-flow-mapper-panel.js; do
 done
 awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{found=0} found && !/^\[/" CHANGELOG.md >"$NOTES"
 [ -s "$NOTES" ] || fail "the CHANGELOG section for ${VERSION} is empty"
+# GitHub keeps every line break in release notes, so the wrapped lines of a
+# paragraph, list item or quote are joined into one.
+python - "$NOTES" <<'PY'
+import re
+import sys
+
+path = sys.argv[1]
+lines = open(path, encoding="utf-8").read().splitlines()
+out: list[str] = []
+for line in lines:
+    prev = out[-1] if out else ""
+    starts_block = re.match(r"(#|[-*] |\d+\. |!\[|---|\*[A-Z])", line)
+    if prev and line.startswith("> ") and prev.startswith("> "):
+        out[-1] = f"{prev} {line[2:].strip()}"
+    elif prev and line.startswith("  ") and line.strip():
+        out[-1] = f"{prev} {line.strip()}"
+    elif prev.strip() and line.strip() and not starts_block and not re.match(r"(#|!\[|>)", prev):
+        out[-1] = f"{prev} {line.strip()}"
+    else:
+        out.append(line)
+open(path, "w", encoding="utf-8", newline="\n").write("\n".join(out).strip("\n") + "\n")
+PY
+# Links under the notes, which HACS and Home Assistant show with the update.
+REPO="https://github.com/Skylolerr/ha-energy-flow-mapper"
+PREVIOUS="$(git describe --tags --abbrev=0 "${COMMIT}^" 2>/dev/null || true)"
+{
+  echo
+  echo "---"
+  echo
+  printf '[Documentation](%s#readme) · [Report a problem](%s/issues)' "$REPO" "$REPO"
+  [ -n "$PREVIOUS" ] && printf ' · [All changes since %s](%s/compare/%s...%s)' "$PREVIOUS" "$REPO" "$PREVIOUS" "$TAG"
+  echo
+} >>"$NOTES"
 
 if $DRY_RUN; then
   echo "All checks passed for ${TAG} ($(python -c "import sys, zipfile; print(len(zipfile.ZipFile(sys.argv[1]).namelist()))" "$ZIP") files in the ZIP). Release notes:"
