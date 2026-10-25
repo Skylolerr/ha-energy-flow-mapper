@@ -10,6 +10,7 @@ from copy import deepcopy
 from typing import Any
 
 import pytest
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, UrlManager
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
@@ -89,10 +90,12 @@ async def dependencies_loaded(hass: HomeAssistant) -> None:
     Energy Flow Mapper only needs the energy manager, which works without the
     energy integration being set up; this avoids starting a recorder in every
     test. The real frontend needs the `home-assistant-frontend` package, so it
-    is marked as loaded too; panels still register. HTTP is set up for real
-    (the test plugin never binds a port).
+    is marked as loaded too; panels still register, and the list of extra
+    modules the frontend loads is set up like the frontend does. HTTP is set
+    up for real (the test plugin never binds a port).
     """
     hass.config.components.update({"energy", "frontend", "panel_custom"})
+    hass.data[DATA_EXTRA_MODULE_URL] = UrlManager(lambda change, url: None, [])
     assert await async_setup_component(hass, "http", {})
 
 

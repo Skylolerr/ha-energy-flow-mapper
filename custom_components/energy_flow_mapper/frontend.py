@@ -1,4 +1,4 @@
-"""Serve the panel bundle and register the admin panel in the sidebar."""
+"""Serve the bundles, register the admin panel and load the dashboard card."""
 
 from __future__ import annotations
 
@@ -20,17 +20,67 @@ PANEL_ELEMENT = "energy-flow-mapper-panel"
 PANEL_TITLE = "Energy Flow Mapper"
 PANEL_ICON = "mdi:transit-connection-variant"
 
+# The card: a small loader on every page, and the card itself, which the
+# loader imports only when a dashboard shows the card.
+CARD_FILENAME = "energy-flow-mapper-card.js"
+CARD_VIEW_FILENAME = "energy-flow-mapper-card-view.js"
+CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
+CARD_VIEW_URL = f"/{DOMAIN}/{CARD_VIEW_FILENAME}"
+CARD_PATH = PANEL_PATH.parent / CARD_FILENAME
+CARD_VIEW_PATH = PANEL_PATH.parent / CARD_VIEW_FILENAME
+
+
+def _hash(*paths: Path) -> str:
+    """Return a short hash of the files (blocking: run in the executor)."""
+    digest = hashlib.sha256()
+    for path in paths:
+        digest.update(path.read_bytes())
+    return digest.hexdigest()[:8]
+
 
 def panel_hash() -> str:
-    """Return a short hash of the bundle (blocking: run in the executor)."""
-    return hashlib.sha256(PANEL_PATH.read_bytes()).hexdigest()[:8]
+    """Return a short hash of the panel bundle (blocking)."""
+    return _hash(PANEL_PATH)
+
+
+def card_hash() -> str:
+    """Return a short hash of the loader and the card (blocking).
+
+    The loader imports the card with its own query, so one hash over both
+    makes browsers load either file again when one changes.
+    """
+    return _hash(CARD_PATH, CARD_VIEW_PATH)
 
 
 async def async_register_static_path(hass: HomeAssistant) -> None:
-    """Serve the panel bundle; called once per Home Assistant start."""
+    """Serve the bundles; called once per Home Assistant start."""
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_URL, str(PANEL_PATH), cache_headers=True)]
+        [
+            StaticPathConfig(url, str(path), cache_headers=True)
+            for url, path in (
+                (PANEL_URL, PANEL_PATH),
+                (CARD_URL, CARD_PATH),
+                (CARD_VIEW_URL, CARD_VIEW_PATH),
+            )
+        ]
     )
+
+
+async def async_card_url(hass: HomeAssistant) -> str:
+    """Return the loader URL with version and content hash."""
+    integration = await async_get_integration(hass, DOMAIN)
+    content = await hass.async_add_executor_job(card_hash)
+    return f"{CARD_URL}?v={integration.version}-{content}"
+
+
+async def async_register_card(hass: HomeAssistant) -> None:
+    """Load the card loader on every frontend page."""
+    frontend.add_extra_js_url(hass, await async_card_url(hass))
+
+
+async def async_unregister_card(hass: HomeAssistant) -> None:
+    """Stop loading the card loader."""
+    frontend.remove_extra_js_url(hass, await async_card_url(hass))
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

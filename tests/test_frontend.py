@@ -5,15 +5,20 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 
-from homeassistant.components.frontend import DATA_PANELS
+from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, DATA_PANELS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.energy_flow_mapper.frontend import (
+    CARD_PATH,
+    CARD_URL,
+    CARD_VIEW_PATH,
+    CARD_VIEW_URL,
     PANEL_PATH,
     PANEL_URL,
     PANEL_URL_PATH,
+    card_hash,
     panel_hash,
 )
 
@@ -63,3 +68,35 @@ async def test_bundle_is_served(
 def test_panel_hash_follows_content() -> None:
     """The hash is the start of the SHA-256 of the bundle."""
     assert len(panel_hash()) == 8
+    assert len(card_hash()) == 8
+    assert card_hash() != panel_hash()
+
+
+async def test_card_loader_on_every_page(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry
+) -> None:
+    """The card loader is an extra module of the frontend while the entry runs."""
+    version = json.loads((PANEL_PATH.parent.parent / "manifest.json").read_text())[
+        "version"
+    ]
+    url = f"{CARD_URL}?v={version}-{card_hash()}"
+    assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset([url])
+    assert await hass.config_entries.async_unload(loaded_entry.entry_id)
+    assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset()
+    assert await hass.config_entries.async_setup(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset([url])
+
+
+async def test_card_files_are_served(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    hass_client: ClientSessionGenerator,
+) -> None:
+    """Loader and card are served next to the panel, as JavaScript."""
+    client = await hass_client()
+    for url, path in ((CARD_URL, CARD_PATH), (CARD_VIEW_URL, CARD_VIEW_PATH)):
+        response = await client.get(url)
+        assert response.status == HTTPStatus.OK
+        assert await response.read() == path.read_bytes()
+        assert "javascript" in response.headers["Content-Type"]

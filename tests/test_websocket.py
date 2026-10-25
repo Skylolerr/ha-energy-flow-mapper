@@ -532,6 +532,8 @@ async def test_schema_rejects_unknown_change_type(
         {"type": f"{DOMAIN}/export"},
         {"type": f"{DOMAIN}/import_check", "base_hash": "x", "document": {}},
         {"type": f"{DOMAIN}/import", "base_hash": "x", "document": {}},
+        {"type": f"{DOMAIN}/energy", "period": "today"},
+        {"type": f"{DOMAIN}/create_integral", "power_entity_id": "x", "name": "x"},
     ],
 )
 async def test_admin_required(
@@ -540,10 +542,126 @@ async def test_admin_required(
     hass_read_only_access_token: str,
     msg: dict[str, Any],
 ) -> None:
-    """Users who are not admins cannot use any command."""
+    """Users who are not admins cannot use any command but the card's."""
     response = await send(hass_ws_client, hass, hass_read_only_access_token, **msg)
     assert not response["success"]
     assert response["error"]["code"] == "unauthorized"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_for_every_user(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """The card reads the electricity tree with names; no prices, no period."""
+    response = await send(
+        hass_ws_client, hass, hass_read_only_access_token, type=f"{DOMAIN}/card"
+    )
+    assert response["success"], response
+    result = response["result"]
+    assert result["kind"] == "electricity"
+    assert result["water_unit"] == "L"
+    devices = {d["stat"]: d for d in result["devices"]}
+    assert list(devices)[:2] == ["sensor.main_energy", "sensor.kitchen_energy"]
+    assert devices["sensor.main_energy"] == {
+        "stat": "sensor.main_energy",
+        "name": "Main",
+        "parent": None,
+        "stat_rate": "sensor.main_power",
+        "area": None,
+    }
+    assert devices["sensor.kitchen_energy"]["parent"] == "sensor.main_energy"
+    assert devices["sensor.kitchen_energy"]["area"] == "Kitchen"
+    assert [(s["type"], s["role"], s["stat"]) for s in result["sources"]] == [
+        ("grid", "import", "sensor.grid_import"),
+        ("grid", "export", "sensor.grid_export"),
+        ("solar", "production", "sensor.solar_energy"),
+        ("battery", "discharge", "sensor.battery_out"),
+        ("battery", "charge", "sensor.battery_in"),
+    ]
+    assert "energy" not in result
+    assert "price" not in str(result)
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_water_in_a_period(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    energy_values: dict[str, Any],
+) -> None:
+    """A water card gets the water tree, its meters and the period values."""
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *ENERGY_PREFS["energy_sources"],
+                {"type": "gas", "stat_energy_from": "sensor.gas"},
+                {
+                    "type": "water",
+                    "stat_energy_from": "sensor.water_meter",
+                    "name": "Main water",
+                    "number_energy_price": 2.0,
+                },
+            ],
+            "device_consumption_water": [
+                {"stat_consumption": "sensor.house_water", "name": "House"},
+                {
+                    "stat_consumption": "portal:garden",
+                    "included_in_stat": "sensor.house_water",
+                },
+            ],
+        },
+    )
+    energy_values.update({"sensor.house_water": 100.0, "portal:garden": 120.0})
+    response = await send(
+        hass_ws_client,
+        hass,
+        hass_read_only_access_token,
+        type=f"{DOMAIN}/card",
+        kind="water",
+        period="week",
+    )
+    result = response["result"]
+    assert result["kind"] == "water"
+    assert [(d["stat"], d["name"]) for d in result["devices"]] == [
+        ("sensor.house_water", "House"),
+        ("portal:garden", "portal:garden"),
+    ]
+    assert result["sources"] == [
+        {
+            "type": "water",
+            "role": "water",
+            "stat": "sensor.water_meter",
+            "name": "Main water",
+        }
+    ]
+    assert result["period"] == "week"
+    assert set(result["energy"]) == {
+        "sensor.house_water",
+        "portal:garden",
+        "sensor.water_meter",
+    }
+    assert result["untracked"] == {"sensor.house_water": -20.0}
+    assert [(i["stat"], i["kind"]) for i in result["issues"]] == [
+        ("sensor.house_water", "water")
+    ]
+    assert "price" not in str(result)
+
+
+async def test_card_errors(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Unknown lists and periods are refused; without the entry nothing works."""
+    for msg in ({"kind": "gas"}, {"period": "year"}):
+        response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card", **msg)
+        assert response["error"]["code"] == "invalid_format"
+    assert await hass.config_entries.async_unload(loaded_entry.entry_id)
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert response["error"]["translation_key"] == "not_loaded"
 
 
 @pytest.mark.parametrize(

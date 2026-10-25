@@ -18,8 +18,10 @@ from .const import (
 )
 from .created_helpers import CreatedHelpers
 from .frontend import (
+    async_register_card,
     async_register_panel,
     async_register_static_path,
+    async_unregister_card,
     async_unregister_panel,
 )
 from .models import EnergyFlowMapperConfigEntry, EnergyFlowMapperData
@@ -29,7 +31,7 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Register the WebSocket commands and serve the panel (once per start)."""
+    """Register the WebSocket commands and serve the bundles (once per start)."""
     async_setup_websocket(hass)
     await async_register_static_path(hass)
     return True
@@ -66,14 +68,16 @@ async def async_setup_entry(
         backups=backups, helpers=helpers, supported=supported
     )
     await async_register_panel(hass)
+    await async_register_card(hass)
     return True
 
 
 async def async_unload_entry(
     hass: HomeAssistant, entry: EnergyFlowMapperConfigEntry
 ) -> bool:
-    """Remove the panel; backups are always saved immediately."""
+    """Remove the panel and the card; backups are always saved immediately."""
     async_unregister_panel(hass)
+    await async_unregister_card(hass)
     return True
 
 

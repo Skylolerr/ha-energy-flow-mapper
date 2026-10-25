@@ -1,4 +1,8 @@
-"""WebSocket commands used by the panel; all of them require an admin."""
+"""WebSocket commands of the panel and the dashboard card.
+
+All of them require an admin, except `card`: it only reads what the energy
+dashboard shows every user anyway (see SPEC.md §2).
+"""
 
 from __future__ import annotations
 
@@ -26,6 +30,7 @@ from .candidates import (
     async_external_statistics,
     async_mark_created,
     async_power_candidates,
+    async_stat_info,
     async_stat_units,
     async_stats_info,
 )
@@ -36,6 +41,10 @@ from .hierarchy import (
     KEY_DEVICES,
     KEY_DEVICES_WATER,
     KEY_SOURCES,
+    NAME,
+    PARENT,
+    RATE,
+    SOURCE_ROLES,
     STAT,
     AssignRole,
     ChangeError,
@@ -50,6 +59,7 @@ from .hierarchy import (
     plausibility,
     prefs_hash,
     source_energy_stats,
+    source_kind,
     summarize,
     untracked,
     validate,
@@ -65,6 +75,7 @@ ATTR_POWER_ENTITY_ID = "power_entity_id"
 ATTR_NAME = "name"
 ATTR_PERIOD = "period"
 ATTR_DOCUMENT = "document"
+ATTR_KIND = "kind"
 
 # Keys the panel may change.
 EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES, KEY_DEVICES_WATER)
@@ -141,6 +152,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_export)
     async_register_command(hass, websocket_import_check)
     async_register_command(hass, websocket_import)
+    async_register_command(hass, websocket_card)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -448,10 +460,27 @@ async def websocket_energy(
     else:
         prefs = await energy_access.async_get_prefs(hass)
     lists = {kind: prefs.get(key, []) for kind, key in DEVICE_KEYS.items()}
+    sources = source_energy_stats(prefs.get(KEY_SOURCES, []))
+    connection.send_result(
+        msg["id"], await _async_period(hass, lists, sources, msg[ATTR_PERIOD])
+    )
+
+
+async def _async_period(
+    hass: HomeAssistant,
+    lists: dict[DeviceKind, list[Any]],
+    sources: set[str],
+    period: str,
+) -> dict[str, Any]:
+    """Return energy, untracked values and warnings of device lists in a period.
+
+    Electricity is in kWh, water in `water_unit`; the energy of `sources` is
+    included too.
+    """
     stats = list(dict.fromkeys(d[STAT] for devices in lists.values() for d in devices))
-    stats += sorted(source_energy_stats(prefs.get(KEY_SOURCES, [])) - set(stats))
+    stats += sorted(sources - set(stats))
     now = dt_util.now()
-    energy = await async_energy(hass, stats, msg[ATTR_PERIOD], now)
+    energy = await async_energy(hass, stats, period, now)
     unit = water_unit(hass)
     minimum = {
         DeviceKind.ELECTRICITY: PLAUSIBILITY_MIN_KWH,
@@ -468,19 +497,80 @@ async def websocket_energy(
                 roots, energy, min_amount=minimum[kind], kind=kind
             )
         ]
-    start, end = period_range(msg[ATTR_PERIOD], now)
-    connection.send_result(
-        msg["id"],
-        {
-            "period": msg[ATTR_PERIOD],
-            "start": start.isoformat(),
-            "end": end.isoformat(),
-            "energy": energy,
-            "water_unit": unit,
-            "untracked": rest,
-            "issues": issues,
-        },
-    )
+    start, end = period_range(period, now)
+    return {
+        "period": period,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+        "energy": energy,
+        "water_unit": unit,
+        "untracked": rest,
+        "issues": issues,
+    }
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/card",
+        vol.Optional(ATTR_KIND, default=DeviceKind.ELECTRICITY.value): _KINDS,
+        vol.Optional(ATTR_PERIOD): vol.In(list(PERIODS)),
+    }
+)
+@async_response
+async def websocket_card(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return one device tree for the dashboard card; every user may read it.
+
+    Only what the card shows: the devices of the list with name, parent, rate
+    sensor and area, the sources of the list, and with `period` the energy,
+    untracked values and warnings. No prices or costs, and nothing to change.
+    """
+    _runtime(hass)
+    kind = DeviceKind(msg[ATTR_KIND])
+    prefs = await energy_access.async_get_prefs(hass)
+    devices: list[Any] = prefs.get(DEVICE_KEYS[kind], [])
+    sources = [s for s in prefs.get(KEY_SOURCES, []) if source_kind(s) == kind]
+    rows = [
+        (source, role, stat)
+        for source in sources
+        for key, role in SOURCE_ROLES.get(source.get("type", ""), {}).items()
+        if isinstance(stat := source.get(key), str)
+    ]
+    external = await async_external_statistics(hass)
+    stats = {d[STAT] for d in devices} | {stat for _, _, stat in rows}
+    info = {stat: async_stat_info(hass, stat, external) for stat in stats}
+    result: dict[str, Any] = {
+        "kind": kind,
+        "devices": [
+            {
+                "stat": device[STAT],
+                "name": device.get(NAME) or info[device[STAT]]["name"] or device[STAT],
+                "parent": device.get(PARENT),
+                "stat_rate": device.get(RATE),
+                "area": info[device[STAT]]["area_name"],
+            }
+            for device in devices
+        ],
+        "sources": [
+            {
+                "type": source["type"],
+                "role": role,
+                "stat": stat,
+                "name": source.get(NAME) or info[stat]["name"] or stat,
+            }
+            for source, role, stat in rows
+        ],
+        "water_unit": water_unit(hass),
+    }
+    if ATTR_PERIOD in msg:
+        result |= await _async_period(
+            hass,
+            {kind: devices},
+            {stat for _, _, stat in rows},
+            msg[ATTR_PERIOD],
+        )
+    connection.send_result(msg["id"], result)
 
 
 @websocket_command(
