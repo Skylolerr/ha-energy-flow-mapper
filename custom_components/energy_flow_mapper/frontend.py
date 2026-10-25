@@ -73,14 +73,20 @@ async def async_card_url(hass: HomeAssistant) -> str:
     return f"{CARD_URL}?v={integration.version}-{content}"
 
 
-async def async_register_card(hass: HomeAssistant) -> None:
-    """Load the card loader on every frontend page."""
-    frontend.add_extra_js_url(hass, await async_card_url(hass))
+async def async_register_card(hass: HomeAssistant) -> str:
+    """Load the card loader on every frontend page; return its URL."""
+    url = await async_card_url(hass)
+    frontend.add_extra_js_url(hass, url)
+    return url
 
 
-async def async_unregister_card(hass: HomeAssistant) -> None:
-    """Stop loading the card loader."""
-    frontend.remove_extra_js_url(hass, await async_card_url(hass))
+def async_unregister_card(hass: HomeAssistant, url: str) -> None:
+    """Stop loading the card loader added with `url`.
+
+    The URL is the one registered, not computed again: the files may have
+    changed since (an update without restart) or be gone (removal).
+    """
+    frontend.remove_extra_js_url(hass, url)
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:

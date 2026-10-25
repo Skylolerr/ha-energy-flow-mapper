@@ -16,7 +16,7 @@ from homeassistant.components.websocket_api.decorators import (
     require_admin,
     websocket_command,
 )
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
@@ -537,8 +537,12 @@ async def websocket_card(
         for key, role in SOURCE_ROLES.get(source.get("type", ""), {}).items()
         if isinstance(stat := source.get(key), str)
     ]
-    external = await async_external_statistics(hass)
     stats = {d[STAT] for d in devices} | {stat for _, _, stat in rows}
+    # Every card asks every minute: only the external statistics it shows are
+    # looked up, from the recorder's cache.
+    external = await async_external_statistics(
+        hass, {stat for stat in stats if not valid_entity_id(stat)}
+    )
     info = {stat: async_stat_info(hass, stat, external) for stat in stats}
     result: dict[str, Any] = {
         "kind": kind,

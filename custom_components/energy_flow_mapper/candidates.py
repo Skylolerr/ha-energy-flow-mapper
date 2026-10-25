@@ -268,15 +268,25 @@ def _sorted(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
 
 
-async def async_external_statistics(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
+async def async_external_statistics(
+    hass: HomeAssistant, statistic_ids: Collection[str] | None = None
+) -> dict[str, dict[str, Any]]:
     """Return external statistics with a sum in an energy or water unit, by ID.
 
     External statistics (e.g. from energy supplier portals) belong to no
     entity; their ID contains a colon. Without a recorder there are none.
+    With `statistic_ids`, only those are looked up, which the recorder answers
+    from its cache; an empty collection needs no lookup at all.
     """
-    if "recorder" not in hass.config.components:
+    if "recorder" not in hass.config.components or (
+        statistic_ids is not None and not statistic_ids
+    ):
         return {}
-    statistics = await async_list_statistic_ids(hass, statistic_type="sum")
+    statistics = await async_list_statistic_ids(
+        hass,
+        statistic_type="sum",
+        **({} if statistic_ids is None else {"statistic_ids": set(statistic_ids)}),
+    )
     return {
         meta["statistic_id"]: meta
         for meta in statistics

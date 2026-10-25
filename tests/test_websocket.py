@@ -13,6 +13,7 @@ from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
+from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import websocket as websocket_module
@@ -648,6 +649,49 @@ async def test_card_water_in_a_period(
         ("sensor.house_water", "water")
     ]
     assert "price" not in str(result)
+
+
+async def test_card_looks_up_only_its_external_statistics(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Every card asks every minute: only shown external statistics are read."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_list(hass: HomeAssistant, **kwargs: Any) -> list[dict[str, Any]]:
+        calls.append(kwargs)
+        return [
+            {
+                "statistic_id": "portal:garden",
+                "name": "Garden portal",
+                "statistics_unit_of_measurement": "L",
+            }
+        ]
+
+    monkeypatch.setattr(candidates_module, "async_list_statistic_ids", fake_list)
+    hass.config.components.add("recorder")
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert response["success"]
+    assert calls == []
+    await energy_access.async_write(
+        hass, {"device_consumption_water": [{"stat_consumption": "portal:garden"}]}
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card", kind="water")
+    assert calls == [{"statistic_type": "sum", "statistic_ids": {"portal:garden"}}]
+    assert response["result"]["devices"][0]["name"] == "Garden portal"
+
+
+async def test_card_with_unsupported_energy_api(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Without a supported energy API the card gets the translated error."""
+    loaded_entry.runtime_data.supported = False
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert response["error"]["translation_key"] == "unsupported_energy_api"
 
 
 async def test_card_errors(

@@ -64,11 +64,11 @@ async def async_setup_entry(
     await backups.async_load()
     helpers = CreatedHelpers(hass)
     await helpers.async_load()
+    card_url = await async_register_card(hass)
     entry.runtime_data = EnergyFlowMapperData(
-        backups=backups, helpers=helpers, supported=supported
+        backups=backups, helpers=helpers, supported=supported, card_url=card_url
     )
     await async_register_panel(hass)
-    await async_register_card(hass)
     return True
 
 
@@ -77,7 +77,7 @@ async def async_unload_entry(
 ) -> bool:
     """Remove the panel and the card; backups are always saved immediately."""
     async_unregister_panel(hass)
-    await async_unregister_card(hass)
+    async_unregister_card(hass, entry.runtime_data.card_url)
     return True
 
 

@@ -5,11 +5,13 @@ from __future__ import annotations
 import json
 from http import HTTPStatus
 
+import pytest
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, DATA_PANELS
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
+from custom_components.energy_flow_mapper import frontend as frontend_module
 from custom_components.energy_flow_mapper.frontend import (
     CARD_PATH,
     CARD_URL,
@@ -86,6 +88,19 @@ async def test_card_loader_on_every_page(
     assert await hass.config_entries.async_setup(loaded_entry.entry_id)
     await hass.async_block_till_done()
     assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset([url])
+
+
+async def test_card_loader_removed_after_an_update_without_restart(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unloading removes the URL that was added, even if the files changed."""
+    added = loaded_entry.runtime_data.card_url
+    assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset([added])
+    monkeypatch.setattr(frontend_module, "card_hash", lambda: "changed0")
+    assert await hass.config_entries.async_unload(loaded_entry.entry_id)
+    assert hass.data[DATA_EXTRA_MODULE_URL].urls == frozenset()
 
 
 async def test_card_files_are_served(
