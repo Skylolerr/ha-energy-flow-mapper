@@ -1,7 +1,14 @@
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
 import { CARD_EDITOR_TAG, CARD_TAG, CARD_VIEW_TAG, cardConfig, type CardConfig } from "../src/card-config";
-import { DESCRIPTIONS, defineCard, description, EnergyFlowMapperCard, setViewLoader } from "../src/card-loader";
+import {
+  DESCRIPTIONS,
+  defineCard,
+  description,
+  EnergyFlowMapperCard,
+  LOAD_ERRORS,
+  setViewLoader,
+} from "../src/card-loader";
 import {
   CARD_REFRESH_MS,
   type CardData,
@@ -144,6 +151,26 @@ describe("card loader", () => {
     expect(cards.filter((c) => c.type === CARD_TAG).length).toBe(1);
   });
 
+  it("says so when the card cannot be loaded, and does not try again", async () => {
+    const load = vi.fn(() => Promise.reject(new Error("offline")));
+    setViewLoader(load);
+    try {
+      const card = document.createElement(CARD_TAG) as EnergyFlowMapperCard;
+      card.setConfig({ type: `custom:${CARD_TAG}` });
+      card.hass = { locale: { language: "de" } };
+      document.body.append(card);
+      await settle(card);
+      card.hass = { locale: { language: "de" } };
+      await settle(card);
+      expect(card.textContent).toBe(LOAD_ERRORS.de);
+      expect(card.querySelectorAll("ha-card").length).toBe(1);
+      expect(load).toHaveBeenCalledTimes(1);
+      expect(Object.keys(LOAD_ERRORS).sort()).toEqual(Object.keys(LANGUAGES).sort());
+    } finally {
+      setViewLoader(() => import("../src/card"));
+    }
+  });
+
   it("checks the configuration at once and passes it to the card", async () => {
     const card = document.createElement(CARD_TAG) as EnergyFlowMapperCard;
     expect(() => card.setConfig({ kind: "gas" })).toThrow();
@@ -228,9 +255,31 @@ describe("card", () => {
     const el = await view({ show_sources: false, show_untracked: false, title: "", period: "now" });
     expect(el.shadowRoot!.querySelector(".block.source")).toBeNull();
     expect(el.shadowRoot!.querySelector(".block.untracked")).toBeNull();
-    expect(el.shadowRoot!.querySelector(".title")!.textContent).toBe("");
+    // An empty title hides the whole header, the period included.
+    expect(el.shadowRoot!.querySelector(".header")).toBeNull();
     const titled = await view({ title: "Basement" });
     expect(titled.shadowRoot!.querySelector(".title")!.textContent).toBe("Basement");
+  });
+
+  it("loads again when it comes back, and stops watching its size when it leaves", async () => {
+    const disconnect = vi.fn();
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe(): void {}
+      disconnect = disconnect;
+    } as unknown as typeof ResizeObserver;
+    try {
+      const mock = mockHass();
+      const el = await view({ period: "week" }, mock);
+      expect(mock.calls.length).toBe(1);
+      el.remove();
+      expect(disconnect).toHaveBeenCalled();
+      document.body.append(el);
+      await settle(el);
+      expect(mock.calls.length).toBe(2);
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
   });
 
   it("shows water in litres and m³, and flow now", async () => {
@@ -357,9 +406,10 @@ describe("card editor", () => {
     el.addEventListener("config-changed", (e) => changes.push((e as CustomEvent).detail.config));
     const form = el.shadowRoot!.querySelector("ha-form")!;
     form.dispatchEvent(new CustomEvent("value-changed", { detail: { value: { period: "week", title: "" } } }));
-    expect(changes.at(-1)).toMatchObject({ period: "week", root: "sensor.server" });
-    expect(changes.at(-1)).not.toHaveProperty("title");
-    expect(changes.at(-1)).not.toHaveProperty("show_sources");
+    // An empty title is kept (it hides the header); defaults stay out.
+    expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}`, period: "week", root: "sensor.server", title: "" });
+    el._valueChanged({ period: "today", root: "", title: null });
+    expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}` });
     el._valueChanged({ show_untracked: false });
     expect(changes.at(-1)).toMatchObject({ show_untracked: false });
     el._valueChanged({ kind: "water" });
@@ -372,6 +422,16 @@ describe("card editor", () => {
   it("keeps working without devices or configuration", async () => {
     const failing = await editor({}, mockHass(() => ({ translation_key: "not_loaded" })));
     expect(failing._devices).toEqual([]);
+    // A late failure for the old list does not empty the list of the new one.
+    let fail: (reason: unknown) => void = () => undefined;
+    const mock = mockHass((msg) => (msg.kind === "water" ? data({ kind: "water" }) : new Promise((_, reject) => (fail = reject))));
+    const switching = await editor({ kind: "electricity" }, mock);
+    switching._valueChanged({ kind: "water" });
+    await settle(switching);
+    expect(switching._devices.length).toBe(3);
+    fail({ translation_key: "not_loaded" });
+    await settle(switching);
+    expect(switching._devices.length).toBe(3);
     const bare = document.createElement(CARD_EDITOR_TAG) as EnergyFlowMapperCardEditor;
     document.body.append(bare);
     await settle(bare);

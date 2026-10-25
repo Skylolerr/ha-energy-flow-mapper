@@ -13,25 +13,46 @@ export const DESCRIPTIONS: Record<string, string> = {
   it: "L’albero dei dispositivi della tua dashboard energia, per elettricità o acqua, ora o in un periodo.",
 };
 
+/** Shown in the card when the card itself cannot be loaded. */
+export const LOAD_ERRORS: Record<string, string> = {
+  en: "The card could not be loaded. Reload the page.",
+  de: "Die Karte konnte nicht geladen werden. Lade die Seite neu.",
+  fr: "La carte n’a pas pu être chargée. Recharge la page.",
+  it: "Non è stato possibile caricare la scheda. Ricarica la pagina.",
+};
+
+function translated(texts: Record<string, string>, language: string): string {
+  return texts[language] ?? texts[language.split("-")[0]] ?? texts.en;
+}
+
 export function description(language: string): string {
-  return DESCRIPTIONS[language] ?? DESCRIPTIONS[language.split("-")[0]] ?? DESCRIPTIONS.en;
+  return translated(DESCRIPTIONS, language);
 }
 
 /** Import the card; its URL keeps the loader's version query. */
 let loadView = (): Promise<unknown> =>
   import(/* @vite-ignore */ new URL(VIEW_FILE + new URL(import.meta.url).search, import.meta.url).href);
+/** The import, once per page: a failed one is not tried again on every update. */
+let viewImport: Promise<unknown> | undefined;
+
+function importView(): Promise<unknown> {
+  viewImport ??= loadView();
+  return viewImport;
+}
 
 /** Replace how the card is imported (tests). */
 export function setViewLoader(load: () => Promise<unknown>): void {
   loadView = load;
+  viewImport = undefined;
 }
 
 type View = HTMLElement & { config?: CardConfig; hass?: unknown };
 
 export class EnergyFlowMapperCard extends HTMLElement {
   private _config?: CardConfig;
-  private _hass?: unknown;
+  private _hass?: { locale?: { language?: string } };
   private _view?: View;
+  private _failed = false;
 
   /** Called by Home Assistant; an invalid configuration throws at once. */
   setConfig(config: unknown): void {
@@ -40,7 +61,7 @@ export class EnergyFlowMapperCard extends HTMLElement {
   }
 
   set hass(hass: unknown) {
-    this._hass = hass;
+    this._hass = hass as { locale?: { language?: string } };
     void this._update();
   }
 
@@ -53,7 +74,7 @@ export class EnergyFlowMapperCard extends HTMLElement {
   }
 
   static async getConfigElement(): Promise<HTMLElement> {
-    await loadView();
+    await importView();
     return document.createElement(CARD_EDITOR_TAG);
   }
 
@@ -63,12 +84,32 @@ export class EnergyFlowMapperCard extends HTMLElement {
 
   private async _update(): Promise<void> {
     if (!this._view) {
-      await loadView();
+      try {
+        await importView();
+      } catch {
+        this._showLoadError();
+        return;
+      }
       // Another call may have created it while the card was loading.
       this._view ??= this.appendChild(document.createElement(CARD_VIEW_TAG) as View);
     }
     this._view.config = this._config;
     this._view.hass = this._hass;
+  }
+
+  /** Say so in the card instead of staying blank (offline, half-done update). */
+  private _showLoadError(): void {
+    if (this._failed) {
+      return;
+    }
+    this._failed = true;
+    const language = this._hass?.locale?.language || document.documentElement.lang || "en";
+    const card = document.createElement("ha-card");
+    const text = document.createElement("p");
+    text.style.cssText = "margin:0;padding:16px;color:var(--error-color)";
+    text.textContent = translated(LOAD_ERRORS, language);
+    card.append(text);
+    this.replaceChildren(card);
   }
 }
 

@@ -104,6 +104,10 @@ export class EnergyFlowMapperCardView extends LitElement {
 
   override connectedCallback(): void {
     super.connectedCallback();
+    // Back on a cached dashboard: the values may be a minute old.
+    if (this._loaded !== null) {
+      void this._load();
+    }
     this._timer = setInterval(() => void this._load(), CARD_REFRESH_MS);
     if (typeof ResizeObserver !== "undefined") {
       this._resizeObserver ??= new ResizeObserver((entries) => {
@@ -199,20 +203,18 @@ export class EnergyFlowMapperCardView extends LitElement {
     return water ? formatVolume(this.hass, value, unit) : formatEnergy(this.hass, value);
   }
 
-  private _title(): string | null {
-    if (this.config?.title !== undefined) {
-      return this.config.title || null;
-    }
-    return this._t(this.config?.kind === "water" ? "diagram_water" : "diagram");
+  /** The header text; an empty title hides the whole header. */
+  private _title(): string {
+    return this.config?.title ?? this._t(this.config?.kind === "water" ? "diagram_water" : "diagram");
   }
 
   protected override render(): TemplateResult {
     const title = this._title();
     return html`<ha-card>
-      ${title || this.config
+      ${title && this.config
         ? html`<div class="header">
-            <span class="title">${title ?? ""}</span>
-            ${this.config ? html`<span class="period">${this._t(`period_${this.config.period}`)}</span>` : nothing}
+            <span class="title">${title}</span>
+            <span class="period">${this._t(`period_${this.config.period}`)}</span>
           </div>`
         : nothing}
       ${this._renderBody()}
@@ -562,7 +564,9 @@ export class EnergyFlowMapperCardEditor extends LitElement {
         this._devices = data.devices;
       }
     } catch {
-      this._devices = [];
+      if (kind === this._kindLoaded) {
+        this._devices = [];
+      }
     }
   }
 
@@ -612,14 +616,22 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     if (value.kind !== undefined && value.kind !== this._config.kind) {
       delete next.root;
     }
-    // Empty and default values stay out of the YAML.
-    for (const key of ["root", "title"]) {
-      if (next[key] === "" || next[key] === null) {
-        delete next[key];
-      }
+    // Default values stay out of the YAML; an empty title is kept, it hides
+    // the header.
+    if (!next.root) {
+      delete next.root;
     }
-    for (const key of ["show_sources", "show_untracked"]) {
-      if (next[key] === true) {
+    if (next.title === null || next.title === undefined) {
+      delete next.title;
+    }
+    const defaults: Record<string, unknown> = {
+      kind: "electricity",
+      period: "today",
+      show_sources: true,
+      show_untracked: true,
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (next[key] === value) {
         delete next[key];
       }
     }
