@@ -7,6 +7,10 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-25
+
+Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
+
 ### Added
 
 - **Dashboard card** `custom:energy-flow-mapper-card`: the device tree of electricity or
