@@ -40,9 +40,9 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 
 | Thema | Entscheidung |
 |---|---|
-| Oberfläche | **Eigenes Panel in der Seitenleiste**, keine Lovelace-Karte |
+| Oberfläche | **Eigenes Panel in der Seitenleiste** zum Bearbeiten. Dazu ab v0.5.0 eine **Dashboard-Karte nur zur Anzeige** (Entscheid des Maintainers vom 2026-10-25), siehe §17 |
 | Darstellung | **Diagramm mit Blöcken und Pfeilen**, automatisch angeordnet (keine frei verschiebbaren Blöcke, keine gespeicherten Positionen); zoom- und verschiebbar, auch auf dem Handy. Die Listen-Ansicht bleibt im Code, ist aber nicht sichtbar |
-| Zugriff | Panel und WebSocket-API nur für Admins (`require_admin`) |
+| Zugriff | Panel und WebSocket-API nur für Admins (`require_admin`). **Einzige Ausnahme** ab v0.5.0: ein Lese-Befehl für die Dashboard-Karte, den alle angemeldeten Benutzer nutzen dürfen; er liefert nur Baum, Namen und Verbrauch und kann nichts ändern (Entscheid des Maintainers vom 2026-10-25; HAs Energie-Dashboard zeigt diese Daten auch allen) |
 | Auslieferung | Python-Integration, die das Panel registriert und eine eigene WebSocket-API anbietet |
 | Struktur | **Ein einziger Config Entry** (`single_config_entry: true`), kein Device, **keine Entities** |
 | Integrationstyp | `integration_type: service`, `iot_class: calculated` |
@@ -309,7 +309,7 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 
 ## 12. WebSocket-API
 
-Alle Befehle nur für Admins.
+Alle Befehle nur für Admins, ausser dem Lese-Befehl der Dashboard-Karte ab v0.5.0 (§2).
 
 | Befehl | Eingabe | Ausgabe |
 |---|---|---|
@@ -388,7 +388,9 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 **Zwischen-Release v0.2.0** (veröffentlicht 2026-10-24, getestet mit HA 2026.10.3; Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Wasser rutscht dafür auf v0.3.0.
 
 4. **Phase 4 – v0.3.0:** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4)* Reiter «Strom» und «Wasser»; Wasser-Hierarchie (`device_consumption_water`) mit freien Wasser-Zählern, Durchfluss und Wasser im Zeitraum; Wasser-Quellen zuweisen, ersetzen und entfernen (§8); Export/Import mit Wasser-Geräten; `zip_release` (§4). Gas bleibt bei der Anzeige (§2).
-**v0.4.0** *(in Arbeit, Stand 2026-10-25; Wunsch des Maintainers)*: «Zähler anlegen» für Durchflusssensoren (§7), «Änderung zurücknehmen» im Entwurf und «Gerät suchen» im Diagramm (§6). Danach entscheidet der Maintainer über eine Dashboard-Karte (nur Anzeige; braucht einen Lese-Befehl ohne Admin-Pflicht, eine Abweichung von §2 und §12).
+**v0.4.0** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4; Wunsch des Maintainers)*: «Zähler anlegen» für Durchflusssensoren (§7), «Änderung zurücknehmen» im Entwurf und «Gerät suchen» im Diagramm (§6).
+
+**v0.5.0 – Dashboard-Karte** *(geplant; Entscheid des Maintainers vom 2026-10-25)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
 
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
@@ -397,5 +399,4 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 ### Später (nicht Teil von v1.0)
 
 - Sensoren für «nicht erfasster Verbrauch», falls gewünscht
-- Anzeige-Karte für Dashboards, falls die vorhandenen Karten nicht reichen
 - Gruppierung nach Stockwerk/Bereich zusätzlich zur Hierarchie

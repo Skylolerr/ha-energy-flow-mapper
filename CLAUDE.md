@@ -52,7 +52,8 @@ own repo. Never create, edit or commit files of one project in the other's folde
   releases, not pre-releases (HACS hides pre-releases unless beta is switched on; the
   beta notice is in the README).
 - **Quality:** `ConfigEntry.runtime_data` with a typed entry alias, never `hass.data`.
-  Fully async, no blocking I/O in the event loop. All WebSocket commands require admin.
+  Fully async, no blocking I/O in the event loop. All WebSocket commands require admin. The only exception (from v0.5.0, maintainer
+  decision of 2026-10-25) is the read-only command of the dashboard card, see SPEC.md §2.
   Errors use `HomeAssistantError`/`ServiceValidationError` with `translation_key`.
 - HA ≥ 2026.10 uses `probatio` instead of `voluptuous` (`import probatio as vol`).
 - Keep commits small and focused; conventional, imperative commit subjects.
