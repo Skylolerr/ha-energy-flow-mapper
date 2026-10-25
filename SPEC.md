@@ -1,10 +1,10 @@
 # Energy Flow Mapper – Spezifikation
 
-Home-Assistant-Custom-Integration (HACS) mit einem eigenen Admin-Panel, um die Energie-Konfiguration von HA grafisch anzuzeigen und zu bearbeiten: welche Sensoren Quellen sind (Netz-Bezug, Einspeisung, Solar, Batterie), welche Verbraucher, und welcher Verbraucher wem untergeordnet ist.
+Home-Assistant-Custom-Integration (HACS) mit einem eigenen Admin-Panel, um die Energie-Konfiguration von HA grafisch anzuzeigen und zu bearbeiten: welche Sensoren Quellen sind (Netz-Bezug, Einspeisung, Solar, Batterie, Wasser), welche Verbraucher (Strom und Wasser), und welcher Verbraucher wem untergeordnet ist.
 
 - **Name:** Energy Flow Mapper
 - **Domain:** `energy_flow_mapper`
-- **Repo:** `Skylolerr/ha-energy-flow-mapper`, privat bis zum ersten Beta-Release
+- **Repo:** `Skylolerr/ha-energy-flow-mapper`, öffentlich seit v0.1.0
 - **Lizenz:** MIT, Copyright Skylolerr
 - **Mindestversion:** Home Assistant 2026.10.0. Sie wird gemeinsam mit dem Maintainer angehoben, sobald eine neue HA-Version erscheint und getestet ist.
 - **Sprachen:** EN (Basis), DE, FR, IT
@@ -48,15 +48,11 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Integrationstyp | `integration_type: service`, `iot_class: calculated` |
 | Source of Truth | **Die Energie-Konfiguration von HA.** Die Integration speichert nur Sicherungen |
 | Schreibweg | Über das Backend (prüfen, sichern, speichern in einem Schritt), nicht direkt aus dem Panel per `energy/save_prefs` |
-| Umfang Phase 2 (erste Testversion) | Strom-Verbraucher: Hierarchie, hinzufügen, entfernen, umbenennen. Quellen nur anzeigen |
-| Quellen zuweisen | Phase 3, vor v0.1.0 |
-| Externe Statistiken als freie Sensoren | Phase 3, vor v0.1.0 |
-| Integral-Helfer für Leistungssensoren | Phase 3, vor v0.1.0 |
-| Wasser-Hierarchie | Phase 4, v0.3.0 |
-| Wasser-Quellen bearbeiten | Phase 4, v0.3.0 (Wunsch des Maintainers vom 2026-10-23); bis dahin nur Anzeige |
-| Gas | nur Anzeige der Gas-Quellen, keine Bearbeitung und kein eigener Reiter (Entscheid des Maintainers vom 2026-10-25: HA kennt keine Gas-Geräte, ein Reiter hätte nur die Quellen) |
+| Quellen zuweisen, externe Statistiken, Integral-Helfer | seit v0.1.0 |
+| Wasser | **Eigener Reiter «Wasser»** neben «Strom» (v0.3.0): Wasser-Geräte (`device_consumption_water`) als eigenes Diagramm, Wasser-Zähler als Quellen zuweisen, ersetzen und entfernen (Wunsch des Maintainers vom 2026-10-23) |
+| Gas | nur Anzeige der Gas-Quellen im Reiter «Strom», keine Bearbeitung und kein eigener Reiter (Entscheid des Maintainers vom 2026-10-25: HA kennt keine Gas-Geräte, ein Reiter hätte nur die Quellen) |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
-| Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** mehr verbrauchen als das übergeordnete |
+| Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** (Wasser: **> 10 L**) mehr verbrauchen als das übergeordnete |
 | Sicherungen | Standard die letzten **20**, in den Optionen der Integration **5 bis 100** einstellbar (Wunsch des Maintainers vom 2026-10-24). Ablage fest in `.storage`, **kein** frei wählbarer Speicherort |
 | Export/Import | Aktuelle Einstellungen und jede Sicherung als JSON-Datei exportieren; Import geht durch Prüfung, Bestätigung und Sicherung wie jedes Speichern (2026-10-24) |
 | Mehrere übergeordnete Geräte | **Nicht möglich**, HA erlaubt genau eines (`included_in_stat` ist ein String) |
@@ -103,7 +99,7 @@ ha-energy-flow-mapper/
 │   ├── __init__.py            # Setup, Panel- und Static-Path-Registrierung
 │   ├── manifest.json
 │   ├── const.py
-│   ├── config_flow.py         # nur Bestätigung, keine Optionen
+│   ├── config_flow.py         # Bestätigung, Optionen (Anzahl Sicherungen)
 │   ├── hierarchy.py           # Reine Funktionen: Baum bauen, Prüfungen, Änderungen anwenden, Diff, Plausibilität – ohne HA-Imports
 │   ├── candidates.py          # Freie Sensoren und Statistiken ermitteln
 │   ├── integral.py            # Integral-Helfer für Leistungssensoren anlegen
@@ -111,7 +107,8 @@ ha-energy-flow-mapper/
 │   ├── created_helpers.py     # Store: welche Helfer das Panel angelegt hat
 │   ├── energy_access.py       # Einzige Stelle, die die HA-Energie-Konfiguration liest/schreibt
 │   ├── backups.py             # Store mit Sicherungen
-│   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Schreib-Lock)
+│   ├── transfer.py            # Export/Import-Dateien – ohne HA-Imports
+│   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Helfer, Schreib-Lock)
 │   ├── websocket.py           # energy_flow_mapper/*
 │   ├── frontend.py            # Static Path und Panel-Registrierung
 │   ├── diagnostics.py
@@ -121,10 +118,11 @@ ha-energy-flow-mapper/
 │   └── frontend/energy-flow-mapper-panel.js   # Gebautes Bundle (wird committet)
 ├── panel/                     # Quellcode des Panels (TypeScript, Lit, Rollup)
 ├── tests/
-├── scripts/deploy.sh
+├── scripts/{deploy.sh, release.sh}
 ├── .github/workflows/{validate.yml, tests.yml, release.yml}
 ├── hacs.json
 ├── README.md
+├── CHANGELOG.md
 └── LICENSE
 ```
 
@@ -146,9 +144,11 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   "iot_class": "calculated",
   "issue_tracker": "https://github.com/Skylolerr/ha-energy-flow-mapper/issues",
   "requirements": [],
-  "version": "0.2.0"
+  "version": "X.Y.Z"
 }
 ```
+
+`version` ist die einzige Quelle der Versionsnummer (Release-Tags `vX.Y.Z`).
 
 `recorder` steht in `after_dependencies`, weil die externen Statistiken aus dem Recorder gelesen werden; geladen wird er ohnehin über `energy`.
 
@@ -158,15 +158,19 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 {
   "name": "Energy Flow Mapper",
   "homeassistant": "2026.10.0",
-  "render_readme": true
+  "render_readme": true,
+  "zip_release": true,
+  "filename": "energy_flow_mapper.zip"
 }
 ```
+
+HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt die Downloads, das zeigt ungefähr, wie oft installiert wurde. Viele grosse Integrationen machen das (HACS, Powercalc, Watchman, Alexa Media Player).
 
 ---
 
 ## 5. Einrichtung
 
-- Config Flow mit einem einzigen Bestätigungsschritt. Kein Options Flow.
+- Config Flow mit einem einzigen Bestätigungsschritt. Options Flow mit einer Option: Anzahl Sicherungen (§11); eine Änderung lädt den Eintrag neu.
 - Beim Setup werden der Static Path und das Panel registriert, beim Unload wieder entfernt.
 - Beim Entfernen des Config Entry wird der Sicherungs-Store gelöscht. Die Energie-Konfiguration von HA bleibt unverändert.
 
@@ -183,6 +187,7 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 
 ```
 ┌ Kopfzeile: Titel · [Rückgängig] [Sicherungen] [Neu laden] ───────────────┐
+│ Reiter: [Strom] [Wasser]                                                   │
 │ Freie Sensoren   │ Diagramm               [−] [+] [Einpassen]│ Details   │
 │ (Suche)          │  [+ Netz-Bezug] [+ Solar] [+ Batterie] [Einspeisung]  │ Name,     │
 │ ▸ sensor.a       │          ╲        │        ╱       ↗       │ Sensor,   │
@@ -195,28 +200,29 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
   Leiste bei Änderungen: «3 Änderungen» · [Verwerfen] [Speichern]
 ```
 
-- **Diagramm:** Oben die Quellen, darunter «Zuhause», darunter die Geräte als Blöcke (Name, Leistung jetzt, Bereich). Pfeile zeigen die Zuordnung: Quelle → Zuhause, Zuhause → Einspeisung, Zuhause → oberste Geräte, übergeordnetes → untergeordnetes Gerät.
-- **Pfeildicke = Leistung jetzt** (relativ zum grössten Wert im Diagramm). Ohne Leistungssensor ist der Pfeil dünn und gestrichelt.
+- **Reiter «Strom» und «Wasser»:** Jeder Reiter zeigt seine Geräte-Liste als eigenes Diagramm, mit seinen Quellen (Strom: Netz, Solar, Batterie und Gas nur zur Anzeige; Wasser: Wasser-Zähler) und seinen freien Sensoren. Der Entwurf gilt für beide Reiter; Geräte-Änderungen im Reiter «Wasser» tragen `kind: "water"`. Beim Wechsel wird die Auswahl aufgehoben und das Diagramm neu eingepasst.
+- **Diagramm:** Oben die Quellen, darunter «Zuhause», darunter die Geräte als Blöcke (Name, Leistung bzw. Durchfluss jetzt, Bereich). Pfeile zeigen die Zuordnung: Quelle → Zuhause, Zuhause → Einspeisung, Zuhause → oberste Geräte, übergeordnetes → untergeordnetes Gerät.
+- **Pfeildicke = Wert des Blocks** (relativ zum grössten Wert im Diagramm). Ohne Leistungs- bzw. Durchflusssensor ist der Pfeil dünn und gestrichelt.
 - **Automatische Anordnung** von oben nach unten; ein Block mit untergeordneten Geräten steht mittig über ihnen. Blöcke mit untergeordneten Geräten lassen sich zuklappen.
-- **Nicht konfigurierte Quellen** erscheinen als gestrichelte Platzhalter («+ Netz-Bezug», «+ Solar», «+ Batterie», «+ Einspeisung»). In Phase 2 führt ein Klick zu den Energie-Einstellungen; ab Phase 3 sind sie Ablageziele (§8).
+- **Nicht konfigurierte Quellen** erscheinen als gestrichelte Platzhalter («+ Netz-Bezug», «+ Solar», «+ Batterie», «+ Einspeisung», im Reiter Wasser «+ Wasser»). Sie sind Ablageziele; ein Klick öffnet die Auswahl der freien Sensoren (§8).
 - **Zoomen und Verschieben:** Mausrad zoomt um den Mauszeiger, Ziehen auf freier Fläche verschiebt; auf dem Handy mit zwei Fingern zoomen und mit einem Finger verschieben. Knöpfe «−», «+» und «Einpassen»; beim Laden wird das Diagramm eingepasst.
 - **Listen-Ansicht:** Die bisherige eingerückte Liste bleibt im Code und in den Tests erhalten, ist aber in der Oberfläche nicht erreichbar.
 - **Schmale Ansicht (Handy):** nur das Diagramm. Freie Sensoren, Sicherungen und Details öffnen sich als Dialog.
-- **Ziehen:** Gerät auf ein anderes Gerät ziehen = darunter hängen. Auf «Zuhause» ziehen = oberste Ebene. Freien Sensor in den Baum ziehen = als Gerät hinzufügen. Ab Phase 3: freien Sensor auf ein Quellen-Feld ziehen = als Quelle zuweisen.
+- **Ziehen:** Gerät auf ein anderes Gerät ziehen = darunter hängen. Auf «Zuhause» ziehen = oberste Ebene. Freien Sensor in den Baum ziehen = als Gerät hinzufügen. Freien Sensor auf ein Quellen-Feld ziehen = als Quelle zuweisen.
 - **Ohne Ziehen:** Jedes Gerät hat ein Menü «Verschieben nach …», «Umbenennen», «Aus dem Energie-Dashboard entfernen». Ziehen per HTML5 funktioniert auf Touch-Geräten nicht zuverlässig, darum ist das Menü der Hauptweg auf dem Handy und für Tastatur-Bedienung.
 - **Ungültige Ziele** (eigene Unterknoten, sich selbst) werden beim Ziehen gar nicht erst angeboten.
 - **Entwurf:** Änderungen sammeln sich lokal und werden erst mit «Speichern» geschrieben. Vor dem Speichern zeigt ein Dialog die Liste der Änderungen.
-- **Quellen:** In Phase 2 nur zur Anzeige, mit Link zu den Energie-Einstellungen von HA. Ab Phase 3 bearbeitbar (§8).
-- **Live-Werte:** Leistung (aus `stat_rate`, falls gesetzt) direkt aus `hass.states`.
-- **Zeitraum (Phase 3):** Umschalter «Jetzt / Heute / 7 Tage / 30 Tage» über dem Diagramm. «Jetzt» zeigt die Leistung, die anderen die Energie im Zeitraum (kWh, unter 1 kWh in Wh). Blöcke, «Nicht erfasst», «Zuhause» und die Pfeildicke folgen dem gewählten Wert; die Details zeigen beides. Die Werte liefert `energy_flow_mapper/energy` (§12) für den Entwurf. Zeiträume beginnen um Mitternacht (lokal): Heute aus den 5-Minuten-Statistiken, 7 Tage aus Stunden-, 30 Tage aus Tagesstatistiken (bis zur letzten vollen Stunde).
-- **Plausibilität (Phase 3):** Im Zeitraum markiert ein Warn-Symbol Geräte, deren untergeordnete Geräte mehr verbraucht haben (§9).
-- **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein gestrichelter Block «Nicht erfasst» mit `eigener Wert − Summe Kinder` (Leistung live, ab Phase 3 auch Energie im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
+- **Quellen:** bearbeitbar (§8), mit Link zu den Energie-Einstellungen von HA für Preise und Kosten.
+- **Live-Werte:** aus `stat_rate` (falls gesetzt) direkt aus `hass.states`: Strom als Leistung (W, ab 1000 W kW), Wasser als Durchfluss (L/min, mit US-Einheiten gal/min; jede Durchfluss-Einheit von HA wird umgerechnet).
+- **Zeitraum:** Umschalter «Jetzt / Heute / 7 Tage / 30 Tage» über dem Diagramm. «Jetzt» zeigt Leistung bzw. Durchfluss, die anderen den Verbrauch im Zeitraum: Strom in kWh (unter 1 kWh in Wh), Wasser in L (ab 1000 L in m³; mit US-Einheiten in gal). Blöcke, «Nicht erfasst», «Zuhause» und die Pfeildicke folgen dem gewählten Wert; die Details zeigen beides. Die Werte liefert `energy_flow_mapper/energy` (§12) für den Entwurf. Zeiträume beginnen um Mitternacht (lokal): Heute aus den 5-Minuten-Statistiken, 7 Tage aus Stunden-, 30 Tage aus Tagesstatistiken (bis zur letzten vollen Stunde).
+- **Plausibilität:** Im Zeitraum markiert ein Warn-Symbol Geräte, deren untergeordnete Geräte mehr verbraucht haben (§9).
+- **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein gestrichelter Block «Nicht erfasst» mit `eigener Wert − Summe Kinder` (live und im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
 
 ---
 
 ## 7. Freie Sensoren (`candidates.py`)
 
-**Energie-Sensoren** (Phase 2): Entities der Domain `sensor`, die
+**Energie-Sensoren** (Reiter Strom): Entities der Domain `sensor`, die
 
 - `device_class: energy` und `state_class: total` oder `total_increasing` haben,
 - nicht schon irgendwo in der Energie-Konfiguration vorkommen (Quellen oder Geräte),
@@ -224,9 +230,11 @@ Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. C
 
 Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungssensor desselben HA-Geräts (`device_class: power`) als `stat_rate` vorgeschlagen.
 
-**Externe Statistiken** (Phase 3): Statistiken vom Typ `sum` mit Energie-Einheit, die zu keiner Entity gehören (z. B. von Energieversorger-Portalen), aus `recorder/list_statistic_ids`.
+**Wasser-Zähler** (Reiter Wasser): gleich, aber mit `device_class: water`; vorgeschlagen wird ein Durchflusssensor desselben HA-Geräts (`device_class: volume_flow_rate`).
 
-**Nur Leistung** (Phase 3): `sensor`-Entities mit `device_class: power`, zu denen auf demselben HA-Gerät kein Energie-Sensor existiert und die nicht schon Quelle eines Integral-Helfers sind. Daneben ein Knopf «Zähler anlegen»:
+**Externe Statistiken:** Statistiken vom Typ `sum`, die zu keiner Entity gehören (z. B. von Energieversorger-Portalen), aus `recorder/list_statistic_ids`: mit Energie-Einheit im Reiter Strom, mit Wasser-Einheit (L, m³, gal, ft³, CCF, MCF) im Reiter Wasser. Eine Volumen-Statistik kann auch Gas messen; der Nutzer entscheidet.
+
+**Nur Leistung** (nur Reiter Strom): `sensor`-Entities mit `device_class: power`, zu denen auf demselben HA-Gerät kein Energie-Sensor existiert und die nicht schon Quelle eines Integral-Helfers sind. Daneben ein Knopf «Zähler anlegen»:
 
 - legt über den Config Flow der HA-Integration `integration` einen Integral-Helfer an (Methode `left`, Einheit kWh, Name «<Sensorname> Energie»),
 - hängt den neuen Energie-Sensor als Entwurfs-Änderung in den Baum, der Leistungssensor wird `stat_rate`.
@@ -236,18 +244,18 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 
 ---
 
-## 8. Quellen zuweisen (Phase 3)
+## 8. Quellen zuweisen
 
-- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen). Gas wird nur angezeigt (§2). Wasser wird bis v0.2.0 nur angezeigt; bearbeitbar ab Phase 4, v0.3.0 (siehe unten).
+- Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen), Wasser (ab v0.3.0). Gas wird nur angezeigt (§2).
 - **Netz:** Gibt es schon einen Netz-Eintrag, wird nur `stat_energy_from` bzw. `stat_energy_to` ersetzt. Alle anderen Felder (Preise, Vergütung, `power_config`, `cost_adjustment_day`, unbekannte Felder) bleiben unverändert. Gibt es noch keinen, wird einer ohne Kosten angelegt (`stat_cost` und Preise `null`, `cost_adjustment_day: 0`).
 - **Solar:** neuer Eintrag pro Sensor, `config_entry_solar_forecast: null`.
 - **Batterie:** Laden und Entladen werden als Paar zugewiesen. Ein Eintrag wird erst gespeichert, wenn beide gesetzt sind.
 - Eine Quelle entfernen entfernt nur den Sensor bzw. den Eintrag, nie andere Quellen.
-- **Wasser (Phase 4):** zuweisen, ersetzen und entfernen wie beim Netz: Beim Ersetzen wird nur `stat_energy_from` getauscht, Preise und Kosten-Felder (`stat_cost`, `entity_energy_price`, `number_energy_price`, `stat_rate`, unbekannte Felder) bleiben. Neue Einträge ohne Kosten. Die Einheit muss passen (Volumen); das prüfen HAs Schemas und eine eigene Warnung. Mehrere Wasser-Quellen bleiben möglich; `replace` wählt wie beim Netz den richtigen Eintrag.
+- **Wasser:** Beim Ersetzen (`replace`) wird nur `stat_energy_from` des genannten Wasser-Zählers getauscht; Preise und Kosten-Felder (`stat_cost`, `entity_energy_price`, `number_energy_price`, `stat_rate`, `name`, unbekannte Felder) bleiben. Ohne `replace` kommt ein neuer Eintrag ohne Kosten dazu. Entfernen entfernt den ganzen Eintrag. Mehrere Wasser-Zähler bleiben möglich. Angeboten werden nur Wasser-Zähler (§7); Wasser-Geräte mit einer anderen Einheit bekommen die Warnung `not_water_unit`.
 - Ein Sensor kann nicht gleichzeitig Quelle und Gerät sein; das Panel bietet das nicht an, das Backend prüft es.
 - Preise und Kosten bearbeitet der Editor nicht, dafür verlinkt er auf die Energie-Einstellungen von HA.
-- **Bedienung:** Freien Sensor auf einen Quellen-Block ziehen (Netz-Bezug/Einspeisung ersetzen den Zähler, Solar und Batterie fügen eine Quelle hinzu). Antippen eines Platzhalters öffnet die Auswahl der freien Sensoren; Antippen einer Quelle bietet «Sensor ersetzen/zuweisen», «Als Quelle entfernen» und «Energie-Einstellungen». Bei der Batterie fragt ein zweiter Schritt nach dem Zähler fürs Laden.
-- Änderungen: `assign_source` (`role`: `import`, `export`, `production`, `battery` mit `stat_to`) und `unassign_source` (`stat`). Ein Sensor in zwei Quellen ist ein Fehler (`duplicate_source`).
+- **Bedienung:** Freien Sensor auf einen Quellen-Block ziehen (Netz-Bezug, Einspeisung und Wasser ersetzen den Zähler, Solar und Batterie fügen eine Quelle hinzu). Antippen eines Platzhalters öffnet die Auswahl der freien Sensoren; Antippen einer Quelle bietet «Sensor ersetzen/zuweisen», «Als Quelle entfernen» und «Energie-Einstellungen». Bei der Batterie fragt ein zweiter Schritt nach dem Zähler fürs Laden.
+- Änderungen: `assign_source` (`role`: `import`, `export`, `production`, `battery` mit `stat_to`, `water`; optional `replace` für Netz und Wasser) und `unassign_source` (`stat`). Ein Sensor in zwei Quellen ist ein Fehler (`duplicate_source`).
 
 ---
 
@@ -256,6 +264,7 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 
 - `build_tree(devices)` liefert Knoten mit Kindern. Ein Gerät, dessen `included_in_stat` auf kein vorhandenes Gerät zeigt, landet oben mit Warnung «übergeordnetes Gerät fehlt».
+- Zwei Geräte-Listen (`DeviceKind`: `electricity` → `device_consumption`, `water` → `device_consumption_water`). Jede wird für sich geprüft; das übergeordnete Gerät muss in derselben Liste stehen. Prüfergebnisse und Diff-Einträge tragen `kind`.
 - `validate(prefs)` liefert Fehler, die das Speichern verhindern:
   - Kreis (A unter B unter A, auch über mehrere Ebenen)
   - Gerät ist sich selbst untergeordnet
@@ -264,12 +273,12 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
   - ein Sensor ist gleichzeitig Quelle und Gerät
 - Warnungen, die das Speichern nicht verhindern:
   - Statistik existiert nicht (mehr) im Recorder
-  - Einheit ist keine Energie-Einheit
-- `apply_changes(prefs, changes)` wendet Entwurfs-Änderungen an und **behält alle übrigen Felder jedes Eintrags bei**. Änderungsarten: `move` (neues `included_in_stat` oder keins), `add` (neuer Eintrag mit `stat_consumption`, optional `stat_rate`, `name`), `remove`, `rename`; ab Phase 3 `assign_source`, `unassign_source`.
+  - Einheit passt nicht zur Liste (`not_energy_unit` bzw. `not_water_unit`)
+- `apply_changes(prefs, changes)` wendet Entwurfs-Änderungen an und **behält alle übrigen Felder jedes Eintrags bei**. Änderungsarten: `move` (neues `included_in_stat` oder keins), `add` (neuer Eintrag mit `stat_consumption`, optional `stat_rate`, `name`), `remove`, `rename`, jeweils mit optionalem `kind` (ohne: Strom); dazu `assign_source`, `unassign_source`.
   - Wird ein Gerät entfernt, rutschen seine Kinder eine Ebene nach oben (sie erben das `included_in_stat` des entfernten Geräts).
 - `diff(old, new)` für den Bestätigungsdialog und die Sicherungsliste.
 - `untracked(tree, values)`: pro Gerät mit Kindern `eigener Wert − Summe Kinder`.
-- `plausibility(tree, energy_per_stat)`: Warnung, wenn `Summe Kinder − eigener Wert > 5 % des eigenen Werts` **und** `> 0,1 kWh` im gewählten Zeitraum.
+- `plausibility(tree, energy_per_stat)`: Warnung, wenn `Summe Kinder − eigener Wert > 5 % des eigenen Werts` **und** `> 0,1 kWh` (Wasser: `> 10 L`, bei Gallonen umgerechnet) im gewählten Zeitraum.
 
 ---
 
@@ -290,7 +299,7 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 - Es bleiben die letzten 20 Sicherungen (Option `max_backups`, 5–100, Optionen der Integration mit Neuladen des Eintrags). Ältere werden beim Anlegen einer neuen gelöscht; wird die Zahl verkleinert, gleich beim Laden.
 - «Rückgängig» im Panel stellt die letzte Sicherung wieder her. Die Liste «Sicherungen» erlaubt jede ältere. Auch das Wiederherstellen und der Import legen vorher eine Sicherung an.
 - **Kein frei wählbarer Speicherort** (entschieden 2026-10-24): `.storage` wird von HA sicher geschrieben und ist Teil jedes HA-Backups; ein externer Pfad brächte Ausfälle (nicht eingebundenes NAS), Sicherheitsfragen und fehlende Wiederherstellung mit sich. Wer eine Kopie woanders will, exportiert sie.
-- **Export/Import (`transfer.py`):** Datei-Format `{"format": "energy_flow_mapper", "version": 1, "exported", "source": "current" | "backup", "backup"?, "data": {energy_sources?, device_consumption?}}`. Beim Import zählt nur `data`; andere Listen (z. B. Wasser-Geräte) werden abgelehnt. Erst HAs eigene Schemas, dann die Hierarchie-Prüfung, dann Bestätigung im Panel. Sicherung mit Zusammenfassung `{"imported": 1}`.
+- **Export/Import (`transfer.py`):** Datei-Format `{"format": "energy_flow_mapper", "version": 1, "exported", "source": "current" | "backup", "backup"?, "data": {energy_sources?, device_consumption?, device_consumption_water?}}`. Beim Import zählt nur `data`; andere Listen werden abgelehnt. Dateien aus v0.2.0 haben keine Wasser-Geräte und lassen diese unverändert. Erst HAs eigene Schemas, dann die Hierarchie-Prüfung, dann Bestätigung im Panel. Sicherung mit Zusammenfassung `{"imported": 1}`.
 - Store-Format-Änderungen nur mit Migration.
 
 ---
@@ -301,13 +310,13 @@ Alle Befehle nur für Admins.
 
 | Befehl | Eingabe | Ausgabe |
 |---|---|---|
-| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren |
-| `energy_flow_mapper/validate` | `base_hash`, `changes` | Fehler und Warnungen für den Entwurf |
-| `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid` |
+| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`), Prüfergebnis |
+| `energy_flow_mapper/validate` | `base_hash`, `changes` | `valid`, Fehler und Warnungen, `rejected` (Meldung von HAs Schemas), `diff` |
+| `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid_changes` / `rejected_by_home_assistant` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
-| `energy_flow_mapper/energy` (Phase 3) | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (kWh pro Statistik, `null` ohne Daten), `untracked`, `issues` (Plausibilität) |
-| `energy_flow_mapper/create_integral` (Phase 3) | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
+| `energy_flow_mapper/energy` | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (pro Statistik: Strom in kWh, Wasser in `water_unit`; `null` ohne Daten), `water_unit` (`L` oder `gal`), `untracked`, `issues` (Plausibilität beider Listen) |
+| `energy_flow_mapper/create_integral` | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
 | `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
 | `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
 | `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
@@ -320,18 +329,18 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 - `ConfigEntry.runtime_data` mit typisiertem Entry-Alias, kein `hass.data`
 - Vollständig async, keine blockierenden Aufrufe im Event Loop
-- `diagnostics.py`: Anzahl Quellen und Geräte, Tiefe des Baums, Prüfergebnis, Anzahl Sicherungen. Keine Entity-IDs oder Namen
+- `diagnostics.py`: Anzahl Quellen, Geräte und Wasser-Geräte, Tiefe beider Bäume, Prüfergebnis, Anzahl und Grenze der Sicherungen, angelegte Helfer. Keine Entity-IDs oder Namen
 - `strings.json` plus `translations/{en,de,fr,it}.json` für Config Flow, Exceptions, Repair-Issues
 - `quality_scale.yaml` als interne Checkliste. Ziel: Silver vollständig, Gold soweit sinnvoll
 - mypy strict für eigene Module, Ruff
 
 ### Tests (`pytest-homeassistant-custom-component`)
 
-- `hierarchy.py` zuerst und vollständig: Kreise über mehrere Ebenen, fehlende übergeordnete Geräte, Entfernen mit Hochrutschen der Kinder, **unbekannte Felder bleiben erhalten**, nicht erfasst, Plausibilitäts-Schwelle (Grenzfälle 5 % / 0,1 kWh)
-- Quellen (Phase 3): bestehender Netz-Eintrag behält Preise und `power_config`, Batterie nur als Paar, Sensor nicht gleichzeitig Quelle und Gerät
-- `candidates.py`: Filter nach Domain, Klasse, Zustand, bereits verwendet; Leistungssensor-Vorschlag
+- `hierarchy.py` zuerst und vollständig: Kreise über mehrere Ebenen, fehlende übergeordnete Geräte, Entfernen mit Hochrutschen der Kinder, **unbekannte Felder bleiben erhalten**, nicht erfasst, Plausibilitäts-Schwelle (Grenzfälle 5 % / 0,1 kWh), beide Listen getrennt
+- Quellen: bestehender Netz- bzw. Wasser-Eintrag behält Preise und `power_config`, Batterie nur als Paar, Sensor nicht gleichzeitig Quelle und Gerät, Gas bleibt unverändert
+- `candidates.py`: Filter nach Domain, Klasse, Zustand, bereits verwendet; Vorschlag für Leistungs- bzw. Durchflusssensor
 - `energy_access.py` gegen eine echte `energy`-Integration im Test-HA: Lesen, Schreiben, nur geänderte Schlüssel, Konflikt, `data is None`
-- Sicherungen: Anlegen, Begrenzung auf 20, Wiederherstellen
+- Sicherungen: Anlegen, Begrenzung (Standard 20, Option), Wiederherstellen
 - WebSocket: Admin-Pflicht, alle Fehlerfälle
 - Testdaten mit tiefen Bäumen (≥ 4 Ebenen) und allen Quellen-Typen, weil die Instanz des Maintainers nur 2 Ebenen und keine Quellen hat
 - Ziel ≥ 90 % Coverage
@@ -343,8 +352,8 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 - **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren. Die HACS-Warnung «manifest has no categories» bleibt vorerst: Das Hassfest-Image der Action kennt den Manifest-Schlüssel `categories` noch nicht (Stand 2026-10-23). Sobald es ihn kennt, `"categories": ["energy"]` ergänzen.
 - **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version, damit Änderungen am Energie-Format früh auffallen.
-- **`scripts/release.sh`:** erstellt den Release erst, wenn main sauber und gepusht ist, der CHANGELOG-Abschnitt existiert und Validate/Tests für den Commit grün sind; die Release-Notes sind der CHANGELOG-Abschnitt.
-- **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat, hängt ein ZIP an.
+- **`scripts/release.sh`:** erstellt den Release erst, wenn main sauber und gepusht ist, der CHANGELOG-Abschnitt existiert und Validate/Tests für den Commit grün sind; die Release-Notes sind der CHANGELOG-Abschnitt. Es baut `energy_flow_mapper.zip` aus dem Integrations-Ordner des Commits (`git archive`, Dateien zuoberst) und hängt es gleich beim Erstellen an, damit HACS nie einen Release ohne ZIP sieht.
+- **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat; hängt das ZIP nur an, wenn der Release noch keines hat (ein vorhandenes wird nie ersetzt).
 - Releases sind echte GitHub-Releases mit Changelog (Release-Notes aus dem CHANGELOG-Abschnitt der Version), auch vor 1.0 **normale Releases, keine Pre-Releases**: HACS zeigt Pre-Releases nur mit Beta-Schalter an. Der Beta-Hinweis steht im README. SemVer; vor 1.0 dürfen Minor-Releases Breaking Changes enthalten, im CHANGELOG klar markiert.
 
 ---
@@ -364,7 +373,7 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 ## 16. Dev-Deploy
 
-Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_components/energy_flow_mapper/` per SSH auf die HA-Instanz (Variablen aus `.env`, in `.gitignore`) und startet HA optional per REST-API neu (`HA_TOKEN`).
+Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_components/energy_flow_mapper/` per SSH auf die HA-Instanz (Variablen aus `.env`, in `.gitignore`). Der Maintainer startet HA immer selbst neu, darum immer mit `--no-restart`. Seit v0.1.0 kommt die Integration auf der Instanz des Maintainers über HACS.
 
 ---
 
@@ -372,13 +381,11 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel, kopiert `custom_com
 
 1. **Phase 1 – Kern (privat):** Integration, `hierarchy.py` mit Tests, `candidates.py` (Energie-Sensoren), `energy_access.py`, Sicherungen, WebSocket-API, Übersetzungen EN/DE, Diagnostics, CI, `deploy.sh`. Prüfbar über Tests und die WebSocket-API.
 2. **Phase 2 – Panel, erste Testversion (privat):** Registrierung, Quellen (nur Anzeige), Baum, freie Energie-Sensoren, Ziehen und Menü, Entwurf mit Speichern/Verwerfen, Konfliktbehandlung, Rückgängig/Sicherungen, Live-Leistung mit «nicht erfasst», Light/Dark, Handy-Ansicht, i18n EN/DE. **(M)** Test auf der eigenen Instanz, Freigabe.
-3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(Stand 2026-10-23: v0.1.0 veröffentlicht, Installation über HACS «Custom repositories» getestet, PR hacs/default#12520 gestellt, alle Checks grün. Offen: Aufnahme durch HACS (Monate), **(M)** Forenbeiträge.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
+3. **Phase 3 – v0.1.0 (Beta, öffentlich):** *(v0.1.0 veröffentlicht 2026-10-23, Installation über HACS «Custom repositories» getestet. PR hacs/default#12520 gestellt, alle Checks grün; Stand 2026-10-25 noch nicht aufgenommen.)* Quellen zuweisen (§8), externe Statistiken als freie Sensoren, Integral-Helfer für Leistungssensoren, Energie im Zeitraum mit Plausibilitäts-Warnung, FR/IT, Brand-Icons, README mit Screenshots, CHANGELOG, Repo-Beschreibung und Topics, `hacs/action` ohne Ignores, **(M)** Repo öffentlich, normaler Release v0.1.0 (kein Pre-Release), Installation über HACS «Custom Repository» verifizieren. Direkt danach PR an `hacs/default` (vom Besitzer-Account Skylolerr, erst nach ausdrücklichem OK des Maintainers); bis zur Aufnahme wird über «Custom repositories» installiert.
 **Zwischen-Release v0.2.0** (veröffentlicht 2026-10-24, getestet mit HA 2026.10.3; Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Wasser rutscht dafür auf v0.3.0.
 
-4. **Phase 4 – v0.3.0:** Wasser-Hierarchie (`device_consumption_water`) als eigener Reiter; Wasser-Quellen zuweisen, ersetzen und entfernen (§8). Gas bleibt bei der Anzeige (§2).
+4. **Phase 4 – v0.3.0:** *(in Arbeit, Stand 2026-10-25)* Reiter «Strom» und «Wasser»; Wasser-Hierarchie (`device_consumption_water`) mit freien Wasser-Zählern, Durchfluss und Wasser im Zeitraum; Wasser-Quellen zuweisen, ersetzen und entfernen (§8); Export/Import mit Wasser-Geräten; `zip_release` (§4). Gas bleibt bei der Anzeige (§2).
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
-
-**Optional, irgendwann (unwichtig):** `hacs.json` um `"zip_release": true` und `"filename": "energy_flow_mapper.zip"` ergänzen. HACS installiert dann das ZIP des Releases, GitHub zählt die Downloads und HACS zeigt sie an. Viele grosse Integrationen machen das (HACS, Powercalc, Watchman, Alexa Media Player), andere nicht (Frigate, Adaptive Lighting). Wirkt erst ab dem nächsten Release; der Release-Workflow hängt das ZIP schon an.
 
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.
 
