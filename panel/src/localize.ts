@@ -2,7 +2,7 @@ import { de } from "./translations/de";
 import { en } from "./translations/en";
 import { fr } from "./translations/fr";
 import { it } from "./translations/it";
-import type { HomeAssistant } from "./types";
+import type { HomeAssistant, WSError } from "./types";
 
 export type StringKey = keyof typeof en;
 export type Translations = Record<StringKey, string>;
@@ -118,4 +118,17 @@ export function formatDateTime(hass: HomeAssistant | undefined, iso: string): st
   } catch {
     return iso;
   }
+}
+
+/** The error message of a failed WebSocket call, translated if possible. */
+export function errorText(hass: HomeAssistant | undefined, err: unknown): string {
+  const error = (err ?? {}) as WSError;
+  const key = `error_${error.translation_key ?? ""}`;
+  if (error.translation_key && hasKey(key)) {
+    const placeholders = Object.fromEntries(
+      Object.entries(error.translation_placeholders ?? {}).map(([k, v]) => [k, String(v)]),
+    );
+    return localize(hass, key, placeholders);
+  }
+  return localize(hass, "error_unknown", { message: error.message ?? String(err) });
 }

@@ -12,6 +12,19 @@ export const MARGIN = 24;
 
 export const HOME_ID = "home";
 
+/** CSS colour of a source edge or block by its role. */
+export const SOURCE_COLORS: Record<string, string> = {
+  import: "var(--energy-grid-consumption-color, #488fc2)",
+  export: "var(--energy-grid-return-color, #8353d1)",
+  production: "var(--energy-solar-color, #ff9800)",
+  battery: "var(--energy-battery-out-color, #4db6ac)",
+  discharge: "var(--energy-battery-out-color, #4db6ac)",
+  charge: "var(--energy-battery-in-color, #f06292)",
+  gas: "var(--energy-gas-color, #8e021b)",
+  water: "var(--energy-water-color, #00bcd4)",
+  consumption: "var(--energy-gas-color, #8e021b)",
+};
+
 export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked";
 
 export interface Block {
@@ -66,18 +79,16 @@ interface Item {
   children: Item[];
 }
 
-function items(
-  nodes: TreeNode[],
-  untracked: Map<string, number | null>,
-  collapsed: Set<string>,
-): Item[] {
+function items(nodes: TreeNode[], collapsed: Set<string>, showUntracked: boolean): Item[] {
   return nodes.map((node) => {
     const children =
       node.children.length === 0 || collapsed.has(node.stat)
         ? []
         : [
-            ...items(node.children, untracked, collapsed),
-            { id: untrackedId(node.stat), kind: "untracked" as const, stat: node.stat, children: [] },
+            ...items(node.children, collapsed, showUntracked),
+            ...(showUntracked
+              ? [{ id: untrackedId(node.stat), kind: "untracked" as const, stat: node.stat, children: [] }]
+              : []),
           ];
     return { id: node.stat, kind: "device" as const, stat: node.stat, node, children };
   });
@@ -94,7 +105,8 @@ function width(item: Item): number {
 /**
  * Lay out the diagram. `power` maps device statistics to their value (power
  * or flow), `untracked` the untracked value of each device with children.
- * `placeholders` are the source roles offered when no source fills them.
+ * `placeholders` are the source roles offered when no source fills them;
+ * without `showUntracked` the blocks for untracked consumption are left out.
  */
 export function layout(
   roots: TreeNode[],
@@ -103,6 +115,7 @@ export function layout(
   untracked: Map<string, number | null>,
   collapsed: Set<string> = new Set(),
   placeholders: readonly PlaceholderRole[] = PLACEHOLDER_ROLES,
+  showUntracked = true,
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
@@ -136,7 +149,7 @@ export function layout(
   const sourcesWidth = sourceBlocks.length * SOURCE_W + (sourceBlocks.length - 1) * H_GAP;
 
   // Device tree below Home.
-  const tree = items(roots, untracked, collapsed);
+  const tree = items(roots, collapsed, showUntracked);
   const treeWidth = tree.length
     ? tree.reduce((sum, item) => sum + width(item), 0) + H_GAP * (tree.length - 1)
     : BOX_W;

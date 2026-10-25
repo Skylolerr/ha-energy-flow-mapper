@@ -187,4 +187,12 @@ export const en = {
   find_none: "No match",
   find_count: "{index} of {count}",
   find_next: "Next",
+  card_empty: "No devices in the energy dashboard yet.",
+  card_root_missing: "This device is no longer in the energy dashboard. Pick another one in the card settings.",
+  card_root_all: "Whole home",
+  card_field_title: "Title (empty: no title)",
+  card_field_kind: "Show",
+  card_field_root: "Start at device",
+  card_field_show_sources: "Show sources",
+  card_field_show_untracked: "Show what is not tracked individually",
 };

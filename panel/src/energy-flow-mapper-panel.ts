@@ -23,10 +23,12 @@ import {
   HOME_ID,
   layout,
   PLACEHOLDER_ROLES,
+  SOURCE_COLORS,
   strokeWidth,
   WATER_PLACEHOLDER_ROLES,
 } from "./layout";
 import {
+  errorText,
   formatDateTime,
   formatEnergy,
   formatFlow,
@@ -59,6 +61,8 @@ import type {
   WSError,
 } from "./types";
 
+export { errorText };
+
 export const PANEL_TAG = "energy-flow-mapper-panel";
 export const DOMAIN = "energy_flow_mapper";
 export const TOAST_MS = 4000;
@@ -76,19 +80,6 @@ interface Zoom {
   y: number;
   k: number;
 }
-
-/** CSS colour of a source edge or block by its role. */
-const SOURCE_COLORS: Record<string, string> = {
-  import: "var(--energy-grid-consumption-color, #488fc2)",
-  export: "var(--energy-grid-return-color, #8353d1)",
-  production: "var(--energy-solar-color, #ff9800)",
-  battery: "var(--energy-battery-out-color, #4db6ac)",
-  discharge: "var(--energy-battery-out-color, #4db6ac)",
-  charge: "var(--energy-battery-in-color, #f06292)",
-  gas: "var(--energy-gas-color, #8e021b)",
-  water: "var(--energy-water-color, #00bcd4)",
-  consumption: "var(--energy-gas-color, #8e021b)",
-};
 
 export const TABS: DeviceKind[] = ["electricity", "water"];
 
@@ -129,19 +120,6 @@ export function assignRole(role: string | undefined): AssignRole | null {
     default:
       return null;
   }
-}
-
-/** The error message of a failed WebSocket call, translated if possible. */
-export function errorText(hass: HomeAssistant | undefined, err: unknown): string {
-  const error = (err ?? {}) as WSError;
-  const key = `error_${error.translation_key ?? ""}`;
-  if (error.translation_key && hasKey(key)) {
-    const placeholders = Object.fromEntries(
-      Object.entries(error.translation_placeholders ?? {}).map(([k, v]) => [k, String(v)]),
-    );
-    return localize(hass, key, placeholders);
-  }
-  return localize(hass, "error_unknown", { message: error.message ?? String(err) });
 }
 
 /** Local date and time for a file name, like 2026-10-24-09-30-00. */

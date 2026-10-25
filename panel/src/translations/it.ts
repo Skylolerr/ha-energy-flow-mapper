@@ -189,4 +189,12 @@ export const it: Translations = {
   find_none: "Nessun risultato",
   find_count: "{index} di {count}",
   find_next: "Avanti",
+  card_empty: "Ancora nessun dispositivo nella dashboard energia.",
+  card_root_missing: "Questo dispositivo non è più nella dashboard energia. Scegline un altro nelle impostazioni della scheda.",
+  card_root_all: "Tutta la casa",
+  card_field_title: "Titolo (vuoto: nessun titolo)",
+  card_field_kind: "Mostra",
+  card_field_root: "A partire dal dispositivo",
+  card_field_show_sources: "Mostra le fonti",
+  card_field_show_untracked: "Mostra ciò che non è misurato singolarmente",
 };

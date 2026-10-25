@@ -189,4 +189,12 @@ export const de: Translations = {
   find_none: "Kein Treffer",
   find_count: "{index} von {count}",
   find_next: "Weiter",
+  card_empty: "Noch keine Geräte im Energie-Dashboard.",
+  card_root_missing: "Dieses Gerät ist nicht mehr im Energie-Dashboard. Wähle in den Karten-Einstellungen ein anderes.",
+  card_root_all: "Ganzes Zuhause",
+  card_field_title: "Titel (leer: kein Titel)",
+  card_field_kind: "Anzeigen",
+  card_field_root: "Ab Gerät",
+  card_field_show_sources: "Quellen anzeigen",
+  card_field_show_untracked: "Nicht einzeln Erfasstes anzeigen",
 };
