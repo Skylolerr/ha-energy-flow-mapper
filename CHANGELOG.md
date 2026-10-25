@@ -7,6 +7,10 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-25
+
+Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
+
 ### Added
 
 - "Create meter" for flow sensors without a water meter in the Water tab: an integral
