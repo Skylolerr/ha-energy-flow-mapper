@@ -217,6 +217,24 @@ async def sensors(hass: HomeAssistant) -> None:
         domain="integration", title="PoE energy", options={"source": "sensor.poe_power"}
     ).add_to_hass(hass)
 
+    # Flow-only sensors: the tap has no water meter; mL/s cannot become one.
+    _meter(
+        hass,
+        "sensor.tap_flow",
+        device_class="volume_flow_rate",
+        unit="L/min",
+        state_class="measurement",
+        name="Tap flow",
+        state="6",
+    )
+    _meter(
+        hass,
+        "sensor.drip_flow",
+        device_class="volume_flow_rate",
+        unit="mL/s",
+        state_class="measurement",
+    )
+
 
 @pytest.fixture
 def config_entry() -> MockConfigEntry:

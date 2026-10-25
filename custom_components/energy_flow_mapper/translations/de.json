@@ -59,10 +59,10 @@
       "message": "{stat} ist keine Quelle im Energie-Dashboard."
     },
     "not_a_power_candidate": {
-      "message": "{entity_id} ist kein Leistungssensor ohne Energiezähler."
+      "message": "{entity_id} ist kein Leistungs- oder Durchflusssensor ohne Zähler."
     },
     "integral_failed": {
-      "message": "Der Helfer für den Energiezähler konnte nicht angelegt werden."
+      "message": "Der Helfer für den Zähler konnte nicht angelegt werden."
     }
   },
   "issues": {

@@ -59,10 +59,10 @@
       "message": "{stat} n’est pas une source du tableau de bord énergie."
     },
     "not_a_power_candidate": {
-      "message": "{entity_id} n’est pas un capteur de puissance sans compteur d’énergie."
+      "message": "{entity_id} n’est pas un capteur de puissance ou de débit sans compteur."
     },
     "integral_failed": {
-      "message": "L’entrée d’aide du compteur d’énergie n’a pas pu être créée."
+      "message": "L’assistant du compteur n’a pas pu être créé."
     }
   },
   "issues": {

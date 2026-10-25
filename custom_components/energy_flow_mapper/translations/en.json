@@ -59,10 +59,10 @@
       "message": "{stat} is not a source in the energy dashboard."
     },
     "not_a_power_candidate": {
-      "message": "{entity_id} is not a power sensor without an energy meter."
+      "message": "{entity_id} is not a power or flow sensor without a meter."
     },
     "integral_failed": {
-      "message": "The energy meter helper could not be created."
+      "message": "The helper for the meter could not be created."
     }
   },
   "issues": {

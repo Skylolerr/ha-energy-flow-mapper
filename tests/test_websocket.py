@@ -7,6 +7,8 @@ from typing import Any
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 from pytest_homeassistant_custom_component.typing import WebSocketGenerator
@@ -15,6 +17,7 @@ from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import websocket as websocket_module
 from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
+from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
 from .conftest import ENERGY_PREFS
 
@@ -695,9 +698,73 @@ async def test_create_integral(
     assert all(c["created_helper"] for c in created)
 
 
+async def test_create_water_meter(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A flow sensor gets an integral helper in litres, shown as water."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert [c["stat"] for c in response["result"]["flow_candidates"]] == [
+        "sensor.tap_flow"
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.tap_flow",
+        name="Tap water",
+    )
+    assert response["success"], response
+    result = response["result"]
+    assert result["kind"] == "water"
+    assert result["stat_rate"] == "sensor.tap_flow"
+    entries = hass.config_entries.async_entries("integration")
+    helper = next(e for e in entries if e.options.get("source") == "sensor.tap_flow")
+    assert helper.options["unit_time"] == "min"
+    assert "unit_prefix" not in helper.options
+    entity = er.async_get(hass).async_get(result["entity_id"])
+    assert entity is not None
+    assert entity.device_class == "water"
+    assert loaded_entry.runtime_data.helpers.entries() == [helper.entry_id]
+    # Once the flow changes, the meter counts litres and reads as water.
+    hass.states.async_set(
+        "sensor.tap_flow",
+        "6",
+        {"device_class": "volume_flow_rate", "unit_of_measurement": "L/min"},
+        force_update=True,
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get(result["entity_id"])
+    assert state is not None
+    assert state.attributes.get("device_class") == "water"
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["flow_candidates"] == []
+    # An electricity meter keeps the kind electricity.
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.ups_power",
+        name="UPS energy",
+    )
+    assert response["result"]["kind"] == "electricity"
+
+
+async def test_water_meter_needs_a_flow_unit(hass: HomeAssistant) -> None:
+    """A flow in a unit without matching water unit is refused."""
+    hass.states.async_set("sensor.drip_flow", "1", {"unit_of_measurement": "mL/s"})
+    with pytest.raises(HomeAssistantError) as err:
+        await integral_module.async_create_integral(
+            hass, "sensor.drip_flow", "Drip", DeviceKind.WATER
+        )
+    assert err.value.translation_key == "integral_failed"
+
+
 @pytest.mark.usefixtures("loaded_entry")
 @pytest.mark.parametrize(
-    "power", ["sensor.poe_power", "sensor.printer_power", "sensor.nope"]
+    "power",
+    ["sensor.poe_power", "sensor.printer_power", "sensor.nope", "sensor.drip_flow"],
 )
 async def test_create_integral_refuses_other_sensors(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, power: str

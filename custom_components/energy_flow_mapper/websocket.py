@@ -195,7 +195,8 @@ async def websocket_get(
 
     `candidates` are unused energy meters and external statistics,
     `water_candidates` the same for water, `power_candidates` power sensors
-    without an energy meter.
+    without an energy meter and `flow_candidates` flow sensors without a water
+    meter.
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -217,6 +218,7 @@ async def websocket_get(
             "candidates": candidates,
             "water_candidates": water,
             "power_candidates": async_power_candidates(hass, prefs),
+            "flow_candidates": async_power_candidates(hass, prefs, DeviceKind.WATER),
             "issues": [issue.as_dict() for issue in _issues(hass, prefs)],
         },
     )
@@ -391,21 +393,31 @@ async def websocket_restore(
 async def websocket_create_integral(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Create an integral helper for a power sensor without energy meter.
+    """Create an integral helper for a power or flow sensor without meter.
 
-    The helper is created at once, not on save; the panel then adds its
-    energy sensor to the draft.
+    The helper is created at once, not on save; the panel then adds its meter
+    to the draft, in the list `kind` names.
     """
     runtime = _runtime(hass)
     power = msg[ATTR_POWER_ENTITY_ID]
     prefs = await energy_access.async_get_prefs(hass)
-    if power not in {c["stat"] for c in async_power_candidates(hass, prefs)}:
+    kind = next(
+        (
+            kind
+            for kind in DeviceKind
+            if power in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
+        ),
+        None,
+    )
+    if kind is None:
         raise _error("not_a_power_candidate", entity_id=power)
     entry_id, entity_id = await async_create_integral(
-        hass, power, msg[ATTR_NAME].strip() or power
+        hass, power, msg[ATTR_NAME].strip() or power, kind
     )
     await runtime.helpers.async_add(entry_id)
-    connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": power})
+    connection.send_result(
+        msg["id"], {"entity_id": entity_id, "stat_rate": power, "kind": kind}
+    )
 
 
 @websocket_command(

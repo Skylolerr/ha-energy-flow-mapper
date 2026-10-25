@@ -216,6 +216,38 @@ async def test_power_candidates(hass: HomeAssistant) -> None:
 
 
 @pytest.mark.usefixtures("sensors")
+async def test_flow_candidates(hass: HomeAssistant) -> None:
+    """Flow sensors without water meter, in a unit that can become one."""
+    candidates = async_power_candidates(hass, ENERGY_PREFS, DeviceKind.WATER)
+    assert [c["stat"] for c in candidates] == ["sensor.tap_flow"]
+    # A device with a water meter needs no new one.
+    config_entry = MockConfigEntry(domain="test")
+    config_entry.add_to_hass(hass)
+    tap = dr.async_get(hass).async_get_or_create(
+        config_entry_id=config_entry.entry_id, identifiers={("test", "garden")}
+    )
+    _meter(
+        hass, "sensor.garden_water", device_class="water", unit="L", device_id=tap.id
+    )
+    _meter(
+        hass,
+        "sensor.garden_flow",
+        device_class="volume_flow_rate",
+        unit="m³/h",
+        state_class="measurement",
+        device_id=tap.id,
+    )
+    stats = [
+        c["stat"] for c in async_power_candidates(hass, ENERGY_PREFS, DeviceKind.WATER)
+    ]
+    assert stats == ["sensor.tap_flow"]
+    # Power sensors are no flow candidates and the other way round.
+    assert "sensor.tap_flow" not in {
+        c["stat"] for c in async_power_candidates(hass, ENERGY_PREFS)
+    }
+
+
+@pytest.mark.usefixtures("sensors")
 async def test_power_candidate_used_as_rate(hass: HomeAssistant) -> None:
     """A power sensor already used as stat_rate is not offered."""
     prefs = deepcopy(ENERGY_PREFS)

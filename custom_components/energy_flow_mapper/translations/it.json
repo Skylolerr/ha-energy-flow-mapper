@@ -59,10 +59,10 @@
       "message": "{stat} non è una fonte della dashboard energia."
     },
     "not_a_power_candidate": {
-      "message": "{entity_id} non è un sensore di potenza senza contatore di energia."
+      "message": "{entity_id} non è un sensore di potenza o di portata senza contatore."
     },
     "integral_failed": {
-      "message": "Non è stato possibile creare l’aiutante del contatore di energia."
+      "message": "Non è stato possibile creare l’helper del contatore."
     }
   },
   "issues": {

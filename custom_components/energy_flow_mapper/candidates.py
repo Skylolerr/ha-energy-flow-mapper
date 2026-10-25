@@ -18,6 +18,7 @@ from homeassistant.const import (
     UnitOfEnergy,
     UnitOfPower,
     UnitOfVolume,
+    UnitOfVolumeFlowRate,
 )
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers import area_registry as ar
@@ -44,6 +45,26 @@ WATER_UNITS = frozenset(
 UNITS: dict[DeviceKind, frozenset[str]] = {
     DeviceKind.ELECTRICITY: ENERGY_UNITS,
     DeviceKind.WATER: WATER_UNITS,
+}
+# Flow units an integral helper turns into a water unit, with the time unit it
+# integrates over: L/min over minutes gives L. mL/s is left out, mL being no
+# water unit of the energy dashboard.
+FLOW_TIME_UNITS: dict[str, str] = {
+    UnitOfVolumeFlowRate.LITERS_PER_SECOND: "s",
+    UnitOfVolumeFlowRate.LITERS_PER_MINUTE: "min",
+    UnitOfVolumeFlowRate.LITERS_PER_HOUR: "h",
+    UnitOfVolumeFlowRate.CUBIC_METERS_PER_SECOND: "s",
+    UnitOfVolumeFlowRate.CUBIC_METERS_PER_MINUTE: "min",
+    UnitOfVolumeFlowRate.CUBIC_METERS_PER_HOUR: "h",
+    UnitOfVolumeFlowRate.CUBIC_FEET_PER_MINUTE: "min",
+    UnitOfVolumeFlowRate.GALLONS_PER_MINUTE: "min",
+    UnitOfVolumeFlowRate.GALLONS_PER_HOUR: "h",
+    UnitOfVolumeFlowRate.GALLONS_PER_DAY: "d",
+}
+# Units of the rate sensors a meter can be created for.
+RATE_UNITS: dict[DeviceKind, frozenset[str]] = {
+    DeviceKind.ELECTRICITY: POWER_UNITS,
+    DeviceKind.WATER: frozenset(FLOW_TIME_UNITS),
 }
 # Device class of a meter, and of the sensor suggested as its `stat_rate`.
 METER_CLASSES: dict[DeviceKind, tuple[SensorDeviceClass, SensorDeviceClass]] = {
@@ -296,15 +317,17 @@ def async_integral_sources(hass: HomeAssistant) -> set[str]:
     }
 
 
-def _has_meter(hass: HomeAssistant, device_id: str | None) -> bool:
-    """Return True if a device already has an energy meter."""
+def _has_meter(
+    hass: HomeAssistant, device_id: str | None, meter_class: SensorDeviceClass
+) -> bool:
+    """Return True if a device already has a meter of that class."""
     if device_id is None:
         return False
     for entry in er.async_entries_for_device(er.async_get(hass), device_id):
         state = hass.states.get(entry.entity_id)
         if (
             state is not None
-            and state.attributes.get(ATTR_DEVICE_CLASS) == SensorDeviceClass.ENERGY
+            and state.attributes.get(ATTR_DEVICE_CLASS) == meter_class
             and state.attributes.get(ATTR_STATE_CLASS) in METER_STATE_CLASSES
         ):
             return True
@@ -312,24 +335,30 @@ def _has_meter(hass: HomeAssistant, device_id: str | None) -> bool:
 
 
 @callback
-def async_power_candidates(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, Any]]:
-    """Return power sensors that have no energy meter yet.
+def async_power_candidates(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    kind: DeviceKind = DeviceKind.ELECTRICITY,
+) -> list[dict[str, Any]]:
+    """Return power (or flow) sensors that have no meter yet.
 
     Left out: sensors used anywhere in the preferences, sensors of a device
-    that has an energy meter, and sensors that already feed an integral helper.
+    that has a meter of the kind, sensors in a unit no meter can be made of,
+    and sensors that already feed an integral helper.
     """
+    meter_class, rate_class = METER_CLASSES[kind]
     used = used_stats(prefs) | async_integral_sources(hass)
     registry = er.async_get(hass)
     candidates = []
     for state in hass.states.async_all("sensor"):
         if (
             state.entity_id in used
-            or state.attributes.get(ATTR_DEVICE_CLASS) != SensorDeviceClass.POWER
-            or state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) not in POWER_UNITS
+            or state.attributes.get(ATTR_DEVICE_CLASS) != rate_class
+            or state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) not in RATE_UNITS[kind]
         ):
             continue
         entry = registry.async_get(state.entity_id)
-        if _has_meter(hass, entry.device_id if entry else None):
+        if _has_meter(hass, entry.device_id if entry else None, meter_class):
             continue
         candidates.append(async_stat_info(hass, state.entity_id))
     return _sorted(candidates)
