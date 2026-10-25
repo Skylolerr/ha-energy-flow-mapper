@@ -211,7 +211,8 @@ HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt 
 - **Ziehen:** Gerät auf ein anderes Gerät ziehen = darunter hängen. Auf «Zuhause» ziehen = oberste Ebene. Freien Sensor in den Baum ziehen = als Gerät hinzufügen. Freien Sensor auf ein Quellen-Feld ziehen = als Quelle zuweisen.
 - **Ohne Ziehen:** Jedes Gerät hat ein Menü «Verschieben nach …», «Umbenennen», «Aus dem Energie-Dashboard entfernen». Ziehen per HTML5 funktioniert auf Touch-Geräten nicht zuverlässig, darum ist das Menü der Hauptweg auf dem Handy und für Tastatur-Bedienung.
 - **Ungültige Ziele** (eigene Unterknoten, sich selbst) werden beim Ziehen gar nicht erst angeboten.
-- **Entwurf:** Änderungen sammeln sich lokal und werden erst mit «Speichern» geschrieben. Vor dem Speichern zeigt ein Dialog die Liste der Änderungen.
+- **Entwurf:** Änderungen sammeln sich lokal und werden erst mit «Speichern» geschrieben. Vor dem Speichern zeigt ein Dialog die Liste der Änderungen. «Änderung zurücknehmen» in der Leiste unten (und Strg+Z bzw. Cmd+Z ausserhalb von Textfeldern und Dialogen) nimmt die letzte Änderung zurück; ein schon angelegter Integral-Helfer bleibt dabei bestehen.
+- **Gerät suchen:** Ein Suchfeld über dem Diagramm sucht im Reiter nach Name, Bereich und Statistik (ohne Domain, damit «sensor» nicht alles trifft). Treffer werden hervorgehoben, die übrigen Geräte abgeblendet; der aktuelle Treffer wird ausgewählt, zugeklappte übergeordnete Geräte öffnen sich, und das Diagramm zoomt (mindestens 0,9) auf ihn. Enter oder «Weiter» springt zum nächsten Treffer.
 - **Quellen:** bearbeitbar (§8), mit Link zu den Energie-Einstellungen von HA für Preise und Kosten.
 - **Live-Werte:** aus `stat_rate` (falls gesetzt) direkt aus `hass.states`: Strom als Leistung (W, ab 1000 W kW), Wasser als Durchfluss (L/min, mit US-Einheiten gal/min; jede Durchfluss-Einheit von HA wird umgerechnet).
 - **Zeitraum:** Umschalter «Jetzt / Heute / 7 Tage / 30 Tage» über dem Diagramm. «Jetzt» zeigt Leistung bzw. Durchfluss, die anderen den Verbrauch im Zeitraum: Strom in kWh (unter 1 kWh in Wh), Wasser in L (ab 1000 L in m³; mit US-Einheiten in gal). Blöcke, «Nicht erfasst», «Zuhause» und die Pfeildicke folgen dem gewählten Wert; die Details zeigen beides. Die Werte liefert `energy_flow_mapper/energy` (§12) für den Entwurf. Zeiträume beginnen um Mitternacht (lokal): Heute aus den 5-Minuten-Statistiken, 7 Tage aus Stunden-, 30 Tage aus Tagesstatistiken (bis zur letzten vollen Stunde).
@@ -233,6 +234,8 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 **Wasser-Zähler** (Reiter Wasser): gleich, aber mit `device_class: water`; vorgeschlagen wird ein Durchflusssensor desselben HA-Geräts (`device_class: volume_flow_rate`).
 
 **Externe Statistiken:** Statistiken vom Typ `sum`, die zu keiner Entity gehören (z. B. von Energieversorger-Portalen), aus `recorder/list_statistic_ids`: mit Energie-Einheit im Reiter Strom, mit Wasser-Einheit (L, m³, gal, ft³, CCF, MCF) im Reiter Wasser. Eine Volumen-Statistik kann auch Gas messen; der Nutzer entscheidet.
+
+**Nur Durchfluss** (nur Reiter Wasser, ab v0.4.0): `sensor`-Entities mit `device_class: volume_flow_rate` in einer Einheit pro Zeit, deren Volumen ein Wasser-Zähler sein kann (L, m³, ft³, gal pro s/min/h/d; nicht mL/s), ohne Wasser-Zähler auf demselben HA-Gerät und nicht schon Quelle eines Integral-Helfers. «Zähler anlegen» legt den Integral-Helfer ohne Präfix über die Zeiteinheit des Durchflusses an (L/min über Minuten ergibt L). Weil der Helfer aus einem Durchfluss keine Geräteklasse ableitet, setzt Energy Flow Mapper sie im Entitäten-Register auf `water` (wie «Anzeigen als» in HA); sonst lehnt das Energie-Dashboard den Zähler ab. Name «<Sensorname> Wasser».
 
 **Nur Leistung** (nur Reiter Strom): `sensor`-Entities mit `device_class: power`, zu denen auf demselben HA-Gerät kein Energie-Sensor existiert und die nicht schon Quelle eines Integral-Helfers sind. Daneben ein Knopf «Zähler anlegen»:
 
@@ -310,13 +313,13 @@ Alle Befehle nur für Admins.
 
 | Befehl | Eingabe | Ausgabe |
 |---|---|---|
-| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`), Prüfergebnis |
+| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`, `flow_candidates`), Prüfergebnis |
 | `energy_flow_mapper/validate` | `base_hash`, `changes` | `valid`, Fehler und Warnungen, `rejected` (Meldung von HAs Schemas), `diff` |
 | `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid_changes` / `rejected_by_home_assistant` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
 | `energy_flow_mapper/energy` | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (pro Statistik: Strom in kWh, Wasser in `water_unit`; `null` ohne Daten), `water_unit` (`L` oder `gal`), `untracked`, `issues` (Plausibilität beider Listen) |
-| `energy_flow_mapper/create_integral` | `power_entity_id`, `name` | `entity_id` des neuen Zählers, `stat_rate` |
+| `energy_flow_mapper/create_integral` | `power_entity_id` (Leistungs- oder Durchflusssensor), `name` | `entity_id` des neuen Zählers, `stat_rate`, `kind` (Liste, in die er gehört) |
 | `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
 | `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
 | `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
@@ -385,6 +388,8 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 **Zwischen-Release v0.2.0** (veröffentlicht 2026-10-24, getestet mit HA 2026.10.3; Wunsch des Maintainers): Anzahl Sicherungen in den Optionen einstellbar, Export/Import von Einstellungen und Sicherungen als Datei, README-Abschnitt zu Sicherungen (§11). Wasser rutscht dafür auf v0.3.0.
 
 4. **Phase 4 – v0.3.0:** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4)* Reiter «Strom» und «Wasser»; Wasser-Hierarchie (`device_consumption_water`) mit freien Wasser-Zählern, Durchfluss und Wasser im Zeitraum; Wasser-Quellen zuweisen, ersetzen und entfernen (§8); Export/Import mit Wasser-Geräten; `zip_release` (§4). Gas bleibt bei der Anzeige (§2).
+**v0.4.0** *(in Arbeit, Stand 2026-10-25; Wunsch des Maintainers)*: «Zähler anlegen» für Durchflusssensoren (§7), «Änderung zurücknehmen» im Entwurf und «Gerät suchen» im Diagramm (§6). Danach entscheidet der Maintainer über eine Dashboard-Karte (nur Anzeige; braucht einen Lese-Befehl ohne Admin-Pflicht, eine Abweichung von §2 und §12).
+
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.

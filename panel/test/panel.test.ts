@@ -1552,3 +1552,148 @@ describe("water", () => {
     );
   });
 });
+
+describe("meters for flow sensors", () => {
+  function flowMock(): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.flow_candidates = [
+      info("sensor.tap_flow", "Tap flow", { unit: "L/min", device_class: "volume_flow_rate", area_name: "Garden" }),
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.responses["energy_flow_mapper/create_integral"] = {
+      entity_id: "sensor.tap_flow_water",
+      stat_rate: "sensor.tap_flow",
+      kind: "water",
+    };
+    return mock;
+  }
+
+  it("creates a water meter in the water tab and adds it there", async () => {
+    const mock = flowMock();
+    const el = await mount(mock);
+    expect(text(el)).not.toContain("Tap flow");
+    el.setTab("water");
+    await settle(el);
+    expect(text(el)).toContain("Flow only");
+    expect(text(el)).toContain("These flow sensors have no water meter.");
+    root(el).querySelector<HTMLButtonElement>('.power-only li[data-stat="sensor.tap_flow"] button')!.click();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!.textContent!;
+    expect(dialog).toContain("Create a water meter for Tap flow?");
+    expect(dialog).toContain("“Tap flow Water”");
+    root(el).querySelector<HTMLButtonElement>("dialog button.primary")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_integral")).toMatchObject({
+      power_entity_id: "sensor.tap_flow",
+      name: "Tap flow Water",
+    });
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.tap_flow_water", parent: null, stat_rate: "sensor.tap_flow", kind: "water" },
+    ]);
+    expect(el._selected).toBe("sensor.tap_flow_water");
+  });
+});
+
+describe("undo in the draft", () => {
+  it("takes back the last change with the button and Ctrl+Z", async () => {
+    const mock = mockHass();
+    const el = await mount(mock);
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    await settle(el);
+    const validations = mock.calls.filter((c) => c.type === "energy_flow_mapper/validate").length;
+    buttonWith(el, "Undo change").click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "move", stat: "sensor.tv", parent: "sensor.server" }]);
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/validate").length).toBe(validations + 1);
+    expect(root(el).querySelector(".toast")!.textContent).toContain("Last change taken back.");
+    // Ctrl+Z in a text field is the field's own undo.
+    const input = root(el).querySelector<HTMLInputElement>('input[type="search"]')!;
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true, bubbles: true, composed: true }));
+    expect(el._changes.length).toBe(1);
+    // Not while a dialog is open, then outside: the draft is empty again.
+    el._dialog = { kind: "menu" };
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true }));
+    expect(el._changes.length).toBe(1);
+    el._dialog = null;
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "Z", metaKey: true }));
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    expect(root(el).querySelector(".footer")).toBeNull();
+    // Nothing left: Ctrl+Z and the method do nothing.
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true }));
+    el._undoChange();
+    expect(el._changes).toEqual([]);
+    // After removal the shortcut is gone.
+    el.remove();
+    el._change({ type: "remove", stat: "sensor.tv" });
+    window.dispatchEvent(new KeyboardEvent("keydown", { key: "z", ctrlKey: true }));
+    expect(el._changes.length).toBe(1);
+  });
+});
+
+describe("find in the diagram", () => {
+  function sizeViewport(el: EnergyFlowMapperPanel): void {
+    const viewport = root(el).querySelector<HTMLElement>(".viewport")!;
+    Object.defineProperty(viewport, "clientWidth", { value: 800, configurable: true });
+    Object.defineProperty(viewport, "clientHeight", { value: 600, configurable: true });
+  }
+
+  it("highlights matches, cycles through them and centres the current one", async () => {
+    const el = await mount(mockHass());
+    sizeViewport(el);
+    const input = root(el).querySelector<HTMLInputElement>(".find input")!;
+    input.value = "o";
+    input.dispatchEvent(new Event("input"));
+    await settle(el);
+    // "Server & co" (Office) and "Sonos amp" match; "sensor." does not count.
+    expect(el.findMatches()).toEqual(["sensor.server", "sensor.sonos"]);
+    expect(root(el).querySelector(".find-count")!.textContent).toContain("1 of 2");
+    expect(node(el, "sensor.server").classList.contains("current")).toBe(true);
+    expect(node(el, "sensor.tv").classList.contains("dim")).toBe(true);
+    expect(el._selected).toBe("sensor.server");
+    expect(el._autoFit).toBe(false);
+    expect(el._zoom.k).toBeGreaterThanOrEqual(0.9);
+    const block = el.diagramLayout().blocks.find((b) => b.stat === "sensor.server")!;
+    expect(el._zoom.x + (block.x + block.w / 2) * el._zoom.k).toBeCloseTo(400);
+    expect(el._zoom.y + (block.y + block.h / 2) * el._zoom.k).toBeCloseTo(300);
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter" }));
+    await settle(el);
+    expect(root(el).querySelector(".find-count")!.textContent).toContain("2 of 2");
+    expect(el._selected).toBe("sensor.sonos");
+    buttonWith(el, "Next").click();
+    await settle(el);
+    expect(root(el).querySelector(".find-count")!.textContent).toContain("1 of 2");
+    // Other keys do nothing.
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "a" }));
+    expect(el._findIndex).toBe(0);
+  });
+
+  it("opens collapsed devices, reports no match and clears", async () => {
+    const el = await mount(mockHass());
+    el._collapsed = new Set(["sensor.server"]);
+    await settle(el);
+    expect(root(el).querySelector('.node[data-stat="sensor.sonos"]')).toBeNull();
+    el.setFind("amp");
+    await settle(el);
+    expect(el._collapsed.has("sensor.server")).toBe(false);
+    expect(node(el, "sensor.sonos").classList.contains("match")).toBe(true);
+    // Without a sized viewport nothing moves.
+    expect(el._autoFit).toBe(true);
+    el.setFind("zzz");
+    await settle(el);
+    expect(root(el).querySelector(".find-count")!.textContent).toContain("No match");
+    el.nextMatch();
+    expect(el._findIndex).toBe(0);
+    el.setFind("");
+    await settle(el);
+    expect(root(el).querySelector(".find-count")).toBeNull();
+    expect(root(el).querySelector(".block.dim")).toBeNull();
+    // The area counts too, and switching tabs clears the search.
+    el.setFind("office");
+    expect(el.findMatches()).toEqual(["sensor.server"]);
+    el.setTab("water");
+    expect(el._find).toBe("");
+  });
+});

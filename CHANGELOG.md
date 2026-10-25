@@ -7,6 +7,21 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+### Added
+
+- "Create meter" for flow sensors without a water meter in the Water tab: an integral
+  helper that counts litres (or the unit of the flow) and is shown as water.
+- "Undo change" in the bar at the bottom, and Ctrl+Z, take back the last change of the
+  draft.
+- "Find device" above the diagram: matching devices are highlighted, collapsed parents
+  open, and Enter moves from match to match.
+
+### Fixed
+
+- A zoom made before the diagram had its size is no longer replaced by the first fit.
+- The diagram fits into the window again; since the tabs came in 0.3.0 it reached
+  below the bottom edge.
+
 ## [0.3.0] - 2026-10-25
 
 Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.

@@ -65,6 +65,8 @@ export const TOAST_MS = 4000;
 const HOME = "__home__";
 export const MIN_ZOOM = 0.1;
 export const MAX_ZOOM = 2.5;
+/** Zoom the search uses at least, so the found device is readable. */
+export const FIND_ZOOM = 0.9;
 /** Minimum scale and lift (px above the finger) of the drag image on touch. */
 export const TOUCH_DRAG_SCALE = 0.8;
 export const TOUCH_DRAG_LIFT = 48;
@@ -194,6 +196,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _period: { state: true },
     _energy: { state: true },
     _tab: { state: true },
+    _find: { state: true },
+    _findIndex: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -222,6 +226,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _energy: EnergyResult | null;
   /** The device list shown: electricity or water. */
   declare _tab: DeviceKind;
+  /** Text searched in the diagram, and which match is shown. */
+  declare _find: string;
+  declare _findIndex: number;
 
   private _loading = false;
   private _validateRequest = 0;
@@ -257,6 +264,29 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._period = "now";
     this._energy = null;
     this._tab = "electricity";
+    this._find = "";
+    this._findIndex = 0;
+  }
+
+  /** Ctrl+Z (Cmd+Z) takes back the last change of the draft, outside text fields. */
+  private _onKeyDown = (event: KeyboardEvent): void => {
+    const target = event.composedPath()[0] as HTMLElement | undefined;
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      !event.shiftKey &&
+      event.key.toLowerCase() === "z" &&
+      !this._dialog &&
+      this._changes.length > 0 &&
+      !(target && ["INPUT", "TEXTAREA"].includes(target.tagName))
+    ) {
+      event.preventDefault();
+      this._undoChange();
+    }
+  };
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    window.addEventListener("keydown", this._onKeyDown);
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -326,6 +356,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     this._tab = tab;
     this._selected = null;
+    this._find = "";
+    this._findIndex = 0;
     this._autoFit = true;
     this._fitted = false;
   }
@@ -388,7 +420,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     return (
       this._snapshot?.stats[stat] ??
       [...this._candidates("electricity"), ...this._candidates("water")].find((c) => c.stat === stat) ??
-      this._snapshot?.power_candidates?.find((c) => c.stat === stat)
+      this._snapshot?.power_candidates?.find((c) => c.stat === stat) ??
+      this._snapshot?.flow_candidates?.find((c) => c.stat === stat)
     );
   }
 
@@ -451,6 +484,17 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._snapshot = null;
       await this._load();
     }
+  }
+
+  /** Take back the last change of the draft. */
+  _undoChange(): void {
+    if (this._changes.length === 0) {
+      return;
+    }
+    this._changes = this._changes.slice(0, -1);
+    this._showToast(this._t("change_undone"));
+    void this._validate();
+    void this._loadEnergy();
   }
 
   _discard(): void {
@@ -622,6 +666,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
+    window.removeEventListener("keydown", this._onKeyDown);
     clearTimeout(this._toastTimer);
     this._resizeObserver?.disconnect();
     this._observed = null;
@@ -802,27 +847,40 @@ export class EnergyFlowMapperPanel extends LitElement {
     return used;
   }
 
-  /** Power sensors without meter that the draft does not use yet. */
+  /** Power (water tab: flow) sensors without meter that the draft does not use yet. */
   _freePowerSensors(): StatInfo[] {
     const used = this._usedInDraft();
-    return (this._snapshot?.power_candidates ?? []).filter((c) => !used.has(c.stat));
+    const sensors =
+      (this._tab === "water" ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? [];
+    return sensors.filter((c) => !used.has(c.stat));
+  }
+
+  /** Name of the meter helper for a power or flow sensor. */
+  private _meterName(stat: string): string {
+    return `${this._info(stat)?.name || stat} ${this._t(this._tab === "water" ? "water_suffix" : "energy_suffix")}`;
   }
 
   async _createMeter(stat: string): Promise<void> {
     if (!this.hass) {
       return;
     }
-    const name = `${this._info(stat)?.name || stat} ${this._t("energy_suffix")}`;
+    const name = this._meterName(stat);
     this._busy = true;
     try {
-      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string }>({
+      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string; kind?: DeviceKind }>({
         type: `${DOMAIN}/create_integral`,
         power_entity_id: stat,
         name,
       });
       this._dialog = null;
       await this._load();
-      this._change({ type: "add", stat: result.entity_id, parent: null, stat_rate: result.stat_rate });
+      this._change({
+        type: "add",
+        stat: result.entity_id,
+        parent: null,
+        stat_rate: result.stat_rate,
+        ...(result.kind === "water" ? { kind: "water" as const } : {}),
+      });
       this._selected = result.entity_id;
       this._showToast(this._t("meter_created", { name }));
     } catch (err) {
@@ -850,7 +908,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- rendering ------------------------------------------------------------
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (!this._fitted && this._snapshot && this._view === "diagram") {
+    // The first fit waits for a sized viewport; a zoom or search before it wins.
+    if (!this._fitted && this._autoFit && this._snapshot && this._view === "diagram") {
       this._fitted = this.fit();
     }
     this._observeViewport();
@@ -977,6 +1036,88 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   private _viewport(): HTMLElement | null {
     return this.renderRoot.querySelector<HTMLElement>(".viewport");
+  }
+
+  /**
+   * Devices of the tab whose name, area or statistic contains the search text.
+   * Only the part of the statistic after the domain counts, so "sensor" does
+   * not match every device.
+   */
+  findMatches(query: string = this._find): string[] {
+    const text = query.trim().toLowerCase();
+    if (!text) {
+      return [];
+    }
+    const devices = this.draft;
+    return devices
+      .map((d) => d.stat_consumption)
+      .filter((stat) =>
+        [this._name(stat, devices), stat.slice(stat.indexOf(".") + 1), this._info(stat)?.area_name].some((v) =>
+          v?.toLowerCase().includes(text),
+        ),
+      );
+  }
+
+  /** Search the diagram and show the first match. */
+  setFind(query: string): void {
+    this._find = query;
+    this._findIndex = 0;
+    this._showMatch();
+  }
+
+  /** Show the next match (Enter in the search field). */
+  nextMatch(): void {
+    const count = this.findMatches().length;
+    if (count > 0) {
+      this._findIndex = (this._findIndex + 1) % count;
+      this._showMatch();
+    }
+  }
+
+  /**
+   * Open the collapsed devices above the current match, select it and move it
+   * to the middle of the viewport, zooming in if the diagram is very small.
+   */
+  private _showMatch(): void {
+    const stat = this.findMatches()[this._findIndex];
+    if (stat === undefined) {
+      return;
+    }
+    const devices = this.draft;
+    const collapsed = new Set(this._collapsed);
+    let parent = devices.find((d) => d.stat_consumption === stat)?.included_in_stat;
+    const seen = new Set<string>();
+    while (parent && !seen.has(parent)) {
+      seen.add(parent);
+      collapsed.delete(parent);
+      parent = devices.find((d) => d.stat_consumption === parent)?.included_in_stat;
+    }
+    this._collapsed = collapsed;
+    this._selected = stat;
+    const block = this.diagramLayout().blocks.find((b) => b.kind === "device" && b.stat === stat);
+    const viewport = this._viewport();
+    if (!block || !viewport?.clientWidth) {
+      return;
+    }
+    this._autoFit = false;
+    const k = Math.min(MAX_ZOOM, Math.max(this._zoom.k, FIND_ZOOM));
+    this._zoom = {
+      k,
+      x: viewport.clientWidth / 2 - (block.x + block.w / 2) * k,
+      y: viewport.clientHeight / 2 - (block.y + block.h / 2) * k,
+    };
+  }
+
+  /** CSS class of a device block while searching: the current match, another match, or dimmed. */
+  private _findClass(stat: string): string {
+    if (!this._find.trim()) {
+      return "";
+    }
+    const matches = this.findMatches();
+    if (!matches.includes(stat)) {
+      return "dim";
+    }
+    return matches[this._findIndex] === stat ? "match current" : "match";
   }
 
   /** Fit the whole diagram into the viewport; false while it has no size yet. */
@@ -1125,6 +1266,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             ? html`<span class="loading">${this._t("energy_loading")}</span>`
             : nothing}
         </p>
+        ${this._renderFind()}
         <div
           class="viewport ${this._dragged ? "dragging" : ""}"
           @wheel=${(e: WheelEvent) => this._onWheel(e)}
@@ -1145,6 +1287,39 @@ export class EnergyFlowMapperPanel extends LitElement {
         </div>
       </section>
     `;
+  }
+
+  private _renderFind(): TemplateResult {
+    const matches = this.findMatches();
+    const searching = this._find.trim() !== "";
+    return html`<div class="find">
+      <input
+        type="search"
+        placeholder=${this._t("find_device")}
+        aria-label=${this._t("find_device")}
+        .value=${this._find}
+        @input=${(e: Event) => this.setFind((e.target as HTMLInputElement).value)}
+        @keydown=${(e: KeyboardEvent) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            this.nextMatch();
+          }
+        }}
+      />
+      ${searching
+        ? html`<span class="find-count" role="status">
+              ${matches.length === 0
+                ? this._t("find_none")
+                : this._t("find_count", {
+                    index: formatNumber(this.hass, this._findIndex + 1),
+                    count: formatNumber(this.hass, matches.length),
+                  })}
+            </span>
+            ${matches.length > 1
+              ? html`<button class="find-next" @click=${() => this.nextMatch()}>${this._t("find_next")}</button>`
+              : nothing}`
+        : nothing}
+    </div>`;
   }
 
   private _edgeColor(edge: Edge, blocks: Map<string, Block>): string {
@@ -1285,7 +1460,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       .join(" · ");
     const collapsed = this._collapsed.has(stat);
     return html`<div
-      class="block device node ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
+      class="block device node ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
       stat
         ? "drop"
         : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""} ${this._dragged?.stat ===
@@ -1563,13 +1738,13 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   private _renderPowerSensors(): TemplateResult | typeof nothing {
-    // Meters can only be created for power sensors, not for flow.
-    const sensors = this._tab === "water" ? [] : this._freePowerSensors();
+    const sensors = this._freePowerSensors();
     if (sensors.length === 0) {
       return nothing;
     }
-    return html`<h3>${this._t("power_only")}</h3>
-      <p class="hint">${this._t("power_only_hint")}</p>
+    const water = this._tab === "water";
+    return html`<h3>${this._t(water ? "flow_only" : "power_only")}</h3>
+      <p class="hint">${this._t(water ? "flow_only_hint" : "power_only_hint")}</p>
       <ul class="candidates power-only">
         ${sensors.map(
           (s) => html`<li data-stat=${s.stat}>
@@ -1649,6 +1824,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           ? this._t("change_one")
           : this._t("change_other", { count: formatNumber(this.hass, count) })}</span
       >
+      <button class="undo-change" title=${this._t("undo_change_hint")} @click=${() => this._undoChange()}>
+        ${icon("undo")} ${this._t("undo_change")}
+      </button>
       <button @click=${() => this._discard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
     </div>`;
@@ -2051,8 +2229,13 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>`;
       case "integral": {
         const name = this._info(dialog.stat)?.name || dialog.stat;
-        return html`<h2>${this._t("create_meter_title", { name })}</h2>
-          <p>${this._t("create_meter_text", { helper: `${name} ${this._t("energy_suffix")}` })}</p>
+        const water = this._tab === "water";
+        return html`<h2>${this._t(water ? "create_water_meter_title" : "create_meter_title", { name })}</h2>
+          <p>
+            ${this._t(water ? "create_water_meter_text" : "create_meter_text", {
+              helper: this._meterName(dialog.stat),
+            })}
+          </p>
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
             <button
@@ -2492,7 +2675,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       --canvas-bg: color-mix(in srgb, var(--primary-text-color) 4%, var(--primary-background-color));
       position: relative;
       overflow: hidden;
-      height: calc(100vh - 250px);
+      /* Window height minus header, tabs, card header, hint and search. */
+      height: calc(100vh - 365px);
       min-height: 360px;
       margin: 8px -16px 0;
       border-top: 1px solid var(--divider-color);
@@ -2506,7 +2690,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       background-size: 20px 20px;
     }
     .narrow .viewport {
-      height: calc(100vh - 230px);
+      height: calc(100vh - 290px);
     }
     .canvas {
       position: absolute;
@@ -2630,6 +2814,30 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .block.has-error {
       border-color: var(--error-color);
+    }
+    .block.dim {
+      opacity: 0.35;
+    }
+    .block.match {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 3px;
+    }
+    .block.match.current {
+      outline-width: 4px;
+    }
+    .find {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .find input {
+      flex: 0 1 260px;
+      min-width: 0;
+    }
+    .find-count {
+      color: var(--secondary-text-color);
+      font-size: 13px;
     }
     /* Sticks to the bottom of the panel, next to (not under) the sidebar. */
     .footer {

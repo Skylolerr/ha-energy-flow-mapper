@@ -41,8 +41,11 @@ yet. Electricity and water each have their own tab.
   the same way, with water meters as sources (their prices stay too). Flow now, and water
   per period in litres and m³ (gallons with US units); a warning when sub-devices used
   more than 5 % and 10 L more than their device.
-- **Meters for power sensors:** for power sensors without an energy meter (a UPS, PoE
-  ports, …) "Create meter" adds an ordinary integral helper and puts it into the diagram.
+- **Meters for power and flow sensors:** for power sensors without an energy meter (a
+  UPS, PoE ports, …) and flow sensors without a water meter, "Create meter" adds an
+  ordinary integral helper and puts it into the diagram.
+- **Find a device:** the search field above the diagram highlights matching devices,
+  opens collapsed ones and moves to them.
 - **Safe saving:** changes are collected in a draft and checked (loops, missing parents,
   duplicates, a sensor used twice) before anything is written. Every save first stores a
   backup; "Undo last save" and "Backups" restore an earlier state.
@@ -113,6 +116,9 @@ Settings → Devices & services → Energy Flow Mapper → **Configure**:
 | Replace or remove a source | Tap the source block |
 | Edit water devices and meters | Open the *Water* tab; everything works as for electricity |
 | Get a meter for a power sensor | *Power only* → *Create meter* |
+| Get a water meter for a flow sensor | *Water* tab → *Flow only* → *Create meter* |
+| Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
+| Take back a change of the draft | *Undo change* in the bar at the bottom, or Ctrl+Z |
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
 | Save | *Save* in the bar at the bottom, check the list of changes, confirm |
 | Go back | *Undo last save* or *Backups* → *Restore* |
@@ -122,10 +128,13 @@ Settings → Devices & services → Energy Flow Mapper → **Configure**:
 Good to know:
 
 - **Nothing is written until you save.** The bar at the bottom shows how many changes
-  your draft has; *Discard* throws the draft away.
+  your draft has; *Undo change* takes back the last one, *Discard* throws the draft away.
 - **"Create meter" acts at once:** the integral helper is created immediately (not on
   save) and appears under Settings → Helpers. It is an ordinary Home Assistant helper and
-  keeps working without Energy Flow Mapper; the panel labels helpers it created.
+  keeps working without Energy Flow Mapper; the panel labels helpers it created. Undoing
+  the change in the draft does not delete the helper; it stays a free sensor. A water
+  meter counts in the unit of the flow (L/min gives litres, m³/h gives m³) and is shown
+  as water, so the energy dashboard accepts it.
 - **Energy values** come from the Home Assistant statistics, like in the energy
   dashboard: *Today* is at most a few minutes old, *7 days* and *30 days* go up to the
   last full hour. New meters only have values from the time they were created.
@@ -169,7 +178,8 @@ Good to know:
   not in the panel.
 - Gas sources are shown only; Home Assistant has no gas devices, so there is nothing
   to arrange.
-- "Create meter" is offered for power sensors only, not for water flow sensors.
+- "Create meter" needs a flow in litres, m³, ft³ or gallons per time unit; mL/s has no
+  matching water unit.
 - An external statistic in m³ is offered as free water meter; it may also measure gas.
 - Dragging works with a mouse and with a long press on phones; the ⋮ menu offers the
   same actions.

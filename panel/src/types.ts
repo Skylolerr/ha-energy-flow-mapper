@@ -103,6 +103,8 @@ export interface Snapshot {
   water_candidates: Candidate[];
   /** Power sensors without an energy meter. */
   power_candidates: StatInfo[];
+  /** Flow sensors without a water meter. */
+  flow_candidates?: StatInfo[];
   issues: Issue[];
 }
 
