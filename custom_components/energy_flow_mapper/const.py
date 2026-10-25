@@ -20,6 +20,8 @@ MAX_BACKUPS: Final = 100
 # (both limits must be exceeded): metering plugs are not exact.
 PLAUSIBILITY_RATIO: Final = 0.05
 PLAUSIBILITY_MIN_KWH: Final = 0.1
+# The same for water, in litres (converted for gallons).
+PLAUSIBILITY_MIN_LITERS: Final = 10.0
 
 ISSUE_UNSUPPORTED_ENERGY_API: Final = "unsupported_energy_api"
 

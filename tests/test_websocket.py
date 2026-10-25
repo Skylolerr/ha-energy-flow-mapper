@@ -57,6 +57,7 @@ async def test_get(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> N
         "sensor.attic_energy",
         "sensor.printer_energy",
     ]
+    assert [c["stat"] for c in result["water_candidates"]] == ["sensor.water_meter"]
     assert result["issues"] == []
 
 
@@ -114,8 +115,95 @@ async def test_validate(
         "type": "added",
         "stat": "sensor.printer_energy",
         "parent": None,
+        "kind": "electricity",
     }
     assert await current_hash(hass_ws_client, hass) == base_hash
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_save_water(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Water devices and a water meter are saved; electricity stays as it is."""
+    hass.states.async_set(
+        "sensor.tap_water",
+        "1",
+        {"device_class": "water", "unit_of_measurement": "L"},
+    )
+    base_hash = await current_hash(hass_ws_client, hass)
+    changes = [
+        {"type": "assign_source", "role": "water", "stat": "sensor.water_meter"},
+        {"type": "add", "stat": "sensor.tap_water", "kind": "water"},
+        {"type": "rename", "stat": "sensor.tap_water", "name": "Tap", "kind": "water"},
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    result = response["result"]
+    assert result["valid"], result
+    assert {(e["type"], e.get("kind")) for e in result["diff"]} == {
+        ("source_added", None),
+        ("added", "water"),
+    }
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["device_consumption_water"] == [
+        {"stat_consumption": "sensor.tap_water", "name": "Tap"}
+    ]
+    assert prefs["energy_sources"][-1] == {
+        "type": "water",
+        "stat_energy_from": "sensor.water_meter",
+        "stat_cost": None,
+        "entity_energy_price": None,
+        "number_energy_price": None,
+    }
+    assert prefs["device_consumption"] == ENERGY_PREFS["device_consumption"]
+    # The backup holds the lists as they were before.
+    runtime = hass.config_entries.async_loaded_entries(DOMAIN)[0].runtime_data
+    backup = runtime.backups.get(response["result"]["backup_id"])
+    assert backup["data"] == {
+        "energy_sources": ENERGY_PREFS["energy_sources"],
+        "device_consumption_water": [],
+    }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_water_unit_warning_and_unknown_kind(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """An energy meter in the water list gets a warning; other kinds are refused."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[{"type": "add", "stat": "sensor.attic_energy", "kind": "water"}],
+    )
+    result = response["result"]
+    assert result["valid"]
+    assert [(i["code"], i["kind"]) for i in result["issues"]] == [
+        ("not_water_unit", "water")
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[{"type": "add", "stat": "sensor.attic_energy", "kind": "gas"}],
+    )
+    assert response["error"]["code"] == "invalid_format"
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -722,8 +810,10 @@ async def test_energy(
             "severity": "warning",
             "stat": "sensor.kitchen_energy",
             "details": {"parent": 8.0, "children": 9.0, "excess": 1.0},
+            "kind": "electricity",
         }
     ]
+    assert result["water_unit"] == "L"
     stats, period = energy_values["_calls"][0]
     assert period == "week"
     assert stats[:5] == [
@@ -734,6 +824,50 @@ async def test_energy(
         "sensor.garage_energy",
     ]
     assert "sensor.solar_energy" in stats
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_of_water_devices(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Water devices get untracked values and their own warning limit (10 L)."""
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption_water": [
+                {"stat_consumption": "sensor.house_water"},
+                {
+                    "stat_consumption": "sensor.garden_water",
+                    "included_in_stat": "sensor.house_water",
+                },
+                {"stat_consumption": "sensor.shed_water"},
+                {
+                    "stat_consumption": "sensor.hose_water",
+                    "included_in_stat": "sensor.shed_water",
+                },
+            ]
+        },
+    )
+    energy_values.update(
+        {
+            # 8 L more than the house: below the limit of 10 L.
+            "sensor.house_water": 100.0,
+            "sensor.garden_water": 108.0,
+            # 12 L more than the shed: a warning.
+            "sensor.shed_water": 100.0,
+            "sensor.hose_water": 112.0,
+        }
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    result = response["result"]
+    assert result["untracked"]["sensor.house_water"] == -8.0
+    assert result["untracked"]["sensor.shed_water"] == -12.0
+    assert [(i["stat"], i["kind"]) for i in result["issues"]] == [
+        ("sensor.kitchen_energy", "electricity"),
+        ("sensor.shed_water", "water"),
+    ]
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -792,6 +926,7 @@ async def test_export_current_and_backup(
     assert document["data"] == {
         "energy_sources": ENERGY_PREFS["energy_sources"],
         "device_consumption": ENERGY_PREFS["device_consumption"],
+        "device_consumption_water": [],
     }
 
     base_hash = await current_hash(hass_ws_client, hass)

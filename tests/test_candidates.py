@@ -14,6 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper.candidates import (
     ENERGY_UNITS,
+    WATER_UNITS,
     async_candidates,
     async_external_candidates,
     async_external_statistics,
@@ -24,8 +25,9 @@ from custom_components.energy_flow_mapper.candidates import (
     async_stat_units,
     async_stats_info,
 )
+from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
-from .conftest import ENERGY_PREFS
+from .conftest import ENERGY_PREFS, _meter
 
 
 @pytest.mark.usefixtures("sensors")
@@ -118,6 +120,15 @@ async def test_stat_units(hass: HomeAssistant) -> None:
     assert "sensor.gone" not in units
     assert "kWh" in ENERGY_UNITS
     assert "W" not in ENERGY_UNITS
+    assert {"L", "m³", "gal"} <= WATER_UNITS
+    assert "kWh" not in WATER_UNITS
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_stat_units_cover_water_devices(hass: HomeAssistant) -> None:
+    prefs = deepcopy(ENERGY_PREFS)
+    prefs["device_consumption_water"] = [{"stat_consumption": "sensor.water_meter"}]
+    assert async_stat_units(hass, prefs)["sensor.water_meter"] == "m³"
 
 
 @pytest.mark.usefixtures("sensors")
@@ -149,6 +160,40 @@ async def test_candidates_exclude_sources_and_devices(hass: HomeAssistant) -> No
     assert "sensor.energy_today" not in stats
     assert "sensor.water_meter" not in stats
     assert "sensor.main_power" not in stats
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_water_candidates(hass: HomeAssistant) -> None:
+    """Unused water meters, with a flow sensor of the same device."""
+    config_entry = MockConfigEntry(domain="test")
+    config_entry.add_to_hass(hass)
+    tap = dr.async_get(hass).async_get_or_create(
+        config_entry_id=config_entry.entry_id,
+        identifiers={("test", "tap")},
+        name="Garden tap",
+    )
+    _meter(hass, "sensor.tap_water", device_class="water", unit="L", device_id=tap.id)
+    _meter(
+        hass,
+        "sensor.tap_flow",
+        device_class="volume_flow_rate",
+        unit="L/min",
+        state_class="measurement",
+        device_id=tap.id,
+    )
+    candidates = async_candidates(hass, ENERGY_PREFS, DeviceKind.WATER)
+    assert [(c["stat"], c["power"]) for c in candidates] == [
+        ("sensor.tap_water", "sensor.tap_flow"),
+        ("sensor.water_meter", None),
+    ]
+    prefs = deepcopy(ENERGY_PREFS)
+    prefs["device_consumption_water"] = [{"stat_consumption": "sensor.water_meter"}]
+    assert [c["stat"] for c in async_candidates(hass, prefs, DeviceKind.WATER)] == [
+        "sensor.tap_water"
+    ]
+    # Water meters are no energy candidates.
+    stats = {c["stat"] for c in async_candidates(hass, ENERGY_PREFS)}
+    assert "sensor.tap_water" not in stats
 
 
 @pytest.mark.usefixtures("sensors")
@@ -217,7 +262,7 @@ async def test_external_statistics(
     monkeypatch.setattr(candidates_module, "async_list_statistic_ids", fake_list)
     hass.config.components.add("recorder")
     external = await async_external_statistics(hass)
-    assert list(external) == ["portal:import", "portal:used"]
+    assert list(external) == ["portal:import", "portal:gas", "portal:used"]
 
     prefs = deepcopy(ENERGY_PREFS)
     prefs["device_consumption"].append({"stat_consumption": "portal:used"})
@@ -227,6 +272,10 @@ async def test_external_statistics(
     assert candidates[0]["unit"] == "kWh"
     assert candidates[0]["external"] is True
     assert candidates[0]["entity_id"] is None
+
+    # A volume statistic is offered for water (it may also be gas).
+    water = async_external_candidates(hass, prefs, external, DeviceKind.WATER)
+    assert [(c["stat"], c["device_class"]) for c in water] == [("portal:gas", "water")]
 
     info = async_stats_info(hass, prefs, external)
     assert info["portal:used"]["unit"] == "Wh"

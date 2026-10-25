@@ -15,6 +15,7 @@ import {
   strokeWidth,
   untrackedId,
   V_GAP,
+  WATER_PLACEHOLDER_ROLES,
 } from "../src/layout";
 import type { Device } from "../src/types";
 
@@ -122,6 +123,17 @@ describe("layout", () => {
     expect(Math.max(...result.blocks.map((b) => b.y))).toBe(
       MARGIN + 5 * (BOX_H + V_GAP), // sources, Home, a, b, f, g
     );
+  });
+});
+
+describe("water layout", () => {
+  it("offers a water meter as placeholder and lets water flow into Home", () => {
+    const empty = layout(buildTree(DEVICES), [], new Map(), new Map(), new Set(), WATER_PLACEHOLDER_ROLES);
+    expect(empty.blocks.filter((b) => b.kind === "placeholder").map((b) => b.role)).toEqual(["water"]);
+    const rows = sourceRows([{ type: "water", stat_energy_from: "meter" }]);
+    const result = layout(buildTree(DEVICES), rows, new Map(), new Map(), new Set(), WATER_PLACEHOLDER_ROLES);
+    expect(result.blocks.some((b) => b.kind === "placeholder")).toBe(false);
+    expect(result.edges).toContainEqual({ from: "source:0", to: HOME_ID, kind: "source", power: null });
   });
 });
 

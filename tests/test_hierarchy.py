@@ -9,7 +9,9 @@ import pytest
 
 from custom_components.energy_flow_mapper.hierarchy import (
     NEW_GRID,
+    NEW_WATER,
     ChangeError,
+    DeviceKind,
     IssueCode,
     Node,
     Severity,
@@ -31,6 +33,8 @@ from custom_components.energy_flow_mapper.hierarchy import (
 )
 
 ENERGY_UNITS = ("Wh", "kWh", "MWh")
+WATER_UNITS = ("L", "m³", "gal")
+UNITS = {DeviceKind.ELECTRICITY: ENERGY_UNITS, DeviceKind.WATER: WATER_UNITS}
 
 
 def device(stat: str, parent: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -214,6 +218,7 @@ def test_validate_errors() -> None:
         "severity": "error",
         "stat": "sensor.orphan",
         "details": {"parent": "sensor.gone"},
+        "kind": "electricity",
     }
     assert has_errors(issues)
 
@@ -241,7 +246,7 @@ def test_validate_warnings_for_units() -> None:
             "sensor.wrong": "W",
             "ext:portal": None,
         },
-        energy_units=ENERGY_UNITS,
+        units=UNITS,
     )
     assert codes(issues) == [
         ("not_energy_unit", "sensor.wrong"),
@@ -253,6 +258,55 @@ def test_validate_warnings_for_units() -> None:
 
 def test_validate_without_device_list() -> None:
     assert validate({"energy_sources": []}) == []
+
+
+def test_validate_water_devices_on_their_own() -> None:
+    """Water devices are checked in their own list, with their own units."""
+    data = prefs(
+        [device("sensor.tap")],
+        energy_sources=[{"type": "water", "stat_energy_from": "sensor.main_water"}],
+        device_consumption_water=[
+            device("sensor.garden", "sensor.house_water"),
+            device("sensor.tap"),
+            device("sensor.main_water"),
+            device("sensor.litres"),
+            device("sensor.kwh"),
+            device("sensor.loop", "sensor.loop"),
+        ],
+    )
+    issues = validate(
+        data,
+        stat_units={
+            "sensor.tap": "kWh",
+            "sensor.garden": "m³",
+            "sensor.main_water": "m³",
+            "sensor.litres": "L",
+            "sensor.kwh": "kWh",
+            "sensor.loop": "L",
+        },
+        units=UNITS,
+    )
+    # The same statistic in both lists is no duplicate, but kWh is no water
+    # unit; the parent must be a water device.
+    assert [(i.code.value, i.stat, i.kind) for i in issues] == [
+        ("missing_parent", "sensor.garden", DeviceKind.WATER),
+        ("self_parent", "sensor.loop", DeviceKind.WATER),
+        ("source_and_device", "sensor.main_water", DeviceKind.WATER),
+        ("not_water_unit", "sensor.tap", DeviceKind.WATER),
+        ("not_water_unit", "sensor.kwh", DeviceKind.WATER),
+    ]
+    assert issues[-1].as_dict()["kind"] == "water"
+    assert issues[-1].details == {"unit": "kWh"}
+
+
+def test_validate_units_only_for_given_lists() -> None:
+    data = prefs([device("sensor.a")], device_consumption_water=[device("sensor.w")])
+    issues = validate(
+        data,
+        stat_units={"sensor.a": "W", "sensor.w": "W"},
+        units={DeviceKind.ELECTRICITY: ENERGY_UNITS},
+    )
+    assert codes(issues) == [("not_energy_unit", "sensor.a")]
 
 
 # --- changes ----------------------------------------------------------------
@@ -332,6 +386,51 @@ def test_apply_creates_device_list() -> None:
     assert new["device_consumption"] == [{"stat_consumption": "sensor.a"}]
 
 
+def test_apply_water_changes() -> None:
+    """Device changes with `kind: water` go to the water list only."""
+    old = prefs(
+        device_consumption_water=[
+            device("sensor.house", name="House"),
+            device("sensor.garden", "sensor.house", future_field=1),
+            device("sensor.hose", "sensor.garden"),
+        ]
+    )
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "add",
+                "stat": "sensor.tap",
+                "parent": "sensor.house",
+                "kind": "water",
+            },
+            {"type": "rename", "stat": "sensor.house", "name": "Main", "kind": "water"},
+            {"type": "move", "stat": "sensor.hose", "parent": None, "kind": "water"},
+            {"type": "remove", "stat": "sensor.garden", "kind": "water"},
+            {"type": "add", "stat": "sensor.tap", "kind": "electricity"},
+        ],
+    )
+    assert new["device_consumption_water"] == [
+        device("sensor.house", name="Main"),
+        device("sensor.hose"),
+        device("sensor.tap", "sensor.house"),
+    ]
+    assert new["device_consumption"] == [*deep_devices(), device("sensor.tap")]
+    # A water change never matches an electricity device.
+    with pytest.raises(ChangeError) as err:
+        apply_changes(old, [{"type": "remove", "stat": "sensor.main", "kind": "water"}])
+    assert err.value.code == "unknown_device"
+
+
+def test_apply_creates_water_list() -> None:
+    new = apply_changes(
+        {"energy_sources": []},
+        [{"type": "add", "stat": "sensor.w", "kind": "water"}],
+    )
+    assert new["device_consumption_water"] == [{"stat_consumption": "sensor.w"}]
+    assert new["device_consumption"] == []
+
+
 @pytest.mark.parametrize(
     ("change", "code"),
     [
@@ -377,22 +476,26 @@ def test_diff_and_summary() -> None:
     )
     new["device_consumption"][0]["stat_rate"] = "sensor.other_power"
     entries = diff(old, new)
+    electricity = {"kind": "electricity"}
     assert entries == [
-        {"type": "added", "stat": "sensor.tv", "parent": "sensor.garage"},
-        {"type": "renamed", "stat": "sensor.main", "from": "Main", "to": "House"},
+        {"type": "added", "stat": "sensor.tv", "parent": "sensor.garage"} | electricity,
+        {"type": "renamed", "stat": "sensor.main", "from": "Main", "to": "House"}
+        | electricity,
         {
             "type": "rate",
             "stat": "sensor.main",
             "from": "sensor.main_power",
             "to": "sensor.other_power",
-        },
+        }
+        | electricity,
         {
             "type": "moved",
             "stat": "sensor.coffee",
             "from": "sensor.kitchen",
             "to": "sensor.main",
-        },
-        {"type": "removed", "stat": "sensor.office"},
+        }
+        | electricity,
+        {"type": "removed", "stat": "sensor.office"} | electricity,
     ]
     assert summarize(entries) == {
         "added": 1,
@@ -403,6 +506,38 @@ def test_diff_and_summary() -> None:
     }
     assert diff(old, old) == []
     assert summarize([]) == {}
+
+
+def test_diff_water_devices() -> None:
+    old = prefs(device_consumption_water=[device("sensor.house"), device("sensor.tap")])
+    new = apply_changes(
+        old,
+        [
+            {"type": "add", "stat": "sensor.garden", "kind": "water"},
+            {
+                "type": "move",
+                "stat": "sensor.tap",
+                "parent": "sensor.house",
+                "kind": "water",
+            },
+            {"type": "remove", "stat": "sensor.garage"},
+            {"type": "assign_source", "role": "water", "stat": "sensor.meter"},
+        ],
+    )
+    assert diff(old, new) == [
+        {"type": "added", "stat": "sensor.garden", "parent": None, "kind": "water"},
+        {"type": "source_added", "stat": "sensor.meter", "role": "water"},
+        {"type": "removed", "stat": "sensor.garage", "kind": "electricity"},
+        {
+            "type": "moved",
+            "stat": "sensor.tap",
+            "from": None,
+            "to": "sensor.house",
+            "kind": "water",
+        },
+    ]
+    # Without a water list on either side there is nothing to compare.
+    assert diff({"device_consumption": []}, {"device_consumption": []}) == []
 
 
 # --- untracked and plausibility --------------------------------------------
@@ -457,6 +592,18 @@ def test_plausibility_limits(parent: float, children: float, warn: bool) -> None
         assert issue.details["excess"] == pytest.approx(children - parent)
 
 
+def test_plausibility_for_water() -> None:
+    """Water uses its own minimum (in litres) and marks the issue as water."""
+    roots = build_tree([device("sensor.p"), device("sensor.c", "sensor.p")])
+    values = {"sensor.p": 100.0, "sensor.c": 108.0}
+    assert plausibility(roots, values, min_amount=10.0, kind=DeviceKind.WATER) == []
+    (issue,) = plausibility(
+        roots, values | {"sensor.c": 111.0}, min_amount=10.0, kind=DeviceKind.WATER
+    )
+    assert issue.kind is DeviceKind.WATER
+    assert issue.as_dict()["kind"] == "water"
+
+
 def test_plausibility_skips_unknown_values() -> None:
     roots = build_tree([device("sensor.p"), device("sensor.c", "sensor.p")])
     assert plausibility(roots, {"sensor.c": 5.0}) == []
@@ -502,6 +649,7 @@ def test_source_roles() -> None:
             "stat_energy_to": "sensor.in",
         },
         {"type": "gas", "stat_energy_from": "sensor.gas"},
+        {"type": "water", "stat_energy_from": "sensor.water"},
         {"type": "heat", "stat_energy_from": "sensor.heat"},
     ]
     assert source_roles(sources) == [
@@ -509,7 +657,8 @@ def test_source_roles() -> None:
         ("production", "sensor.pv"),
         ("discharge", "sensor.out"),
         ("charge", "sensor.in"),
-        ("consumption", "sensor.gas"),
+        ("gas", "sensor.gas"),
+        ("water", "sensor.water"),
     ]
 
 
@@ -656,19 +805,82 @@ def test_unassign_sources() -> None:
     assert err.value.code == "unknown_source"
 
 
-def test_gas_and_water_sources_cannot_be_unassigned() -> None:
-    """Gas and water are only shown; removing them is refused."""
+def test_gas_sources_cannot_be_unassigned() -> None:
+    """Gas is only shown; removing it is refused."""
     sources = [
         {"type": "gas", "stat_energy_from": "sensor.gas", "stat_cost": "sensor.cost"},
-        {"type": "water", "stat_energy_from": "sensor.water"},
     ]
-    for stat in ("sensor.gas", "sensor.water"):
-        with pytest.raises(ChangeError) as err:
-            apply_changes(
-                prefs(energy_sources=deepcopy(sources)),
-                [{"type": "unassign_source", "stat": stat}],
-            )
-        assert err.value.code == "unknown_source"
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            prefs(energy_sources=deepcopy(sources)),
+            [{"type": "unassign_source", "stat": "sensor.gas"}],
+        )
+    assert err.value.code == "unknown_source"
+
+
+WATER_WITH_PRICE = {
+    "type": "water",
+    "stat_energy_from": "sensor.water_a",
+    "stat_rate": "sensor.water_flow",
+    "stat_cost": None,
+    "entity_energy_price": None,
+    "number_energy_price": 2.1,
+    "name": "House",
+    "future_field": True,
+}
+
+
+def test_assign_water_adds_or_replaces() -> None:
+    """A new water meter has no costs; replacing one keeps its other fields."""
+    gas = {"type": "gas", "stat_energy_from": "sensor.gas"}
+    second = NEW_WATER | {"stat_energy_from": "sensor.water_b"}
+    old = prefs(energy_sources=[deepcopy(gas), deepcopy(WATER_WITH_PRICE), second])
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "assign_source",
+                "role": "water",
+                "stat": "sensor.water_c",
+                "replace": "sensor.water_b",
+            },
+            {
+                "type": "assign_source",
+                "role": "water",
+                "stat": "sensor.water_d",
+                "replace": "sensor.water_a",
+            },
+            {"type": "assign_source", "role": "water", "stat": "sensor.water_e"},
+        ],
+    )
+    assert new["energy_sources"] == [
+        gas,
+        WATER_WITH_PRICE | {"stat_energy_from": "sensor.water_d"},
+        NEW_WATER | {"stat_energy_from": "sensor.water_c"},
+        NEW_WATER | {"stat_energy_from": "sensor.water_e"},
+    ]
+    # The template is not shared between calls.
+    assert NEW_WATER["stat_energy_from"] is None
+    # Only water meters can be replaced this way.
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            old,
+            [
+                {
+                    "type": "assign_source",
+                    "role": "water",
+                    "stat": "sensor.x",
+                    "replace": "sensor.gas",
+                }
+            ],
+        )
+    assert (err.value.code, err.value.stat) == ("unknown_source", "sensor.gas")
+
+
+def test_unassign_water() -> None:
+    old = prefs(energy_sources=[deepcopy(WATER_WITH_PRICE)])
+    new = apply_changes(old, [{"type": "unassign_source", "stat": "sensor.water_a"}])
+    assert new["energy_sources"] == []
 
 
 def test_validate_duplicate_source() -> None:
@@ -683,6 +895,14 @@ def test_validate_duplicate_source() -> None:
         ]
     )
     assert codes(validate(data)) == [("duplicate_source", "sensor.a")]
+    water = prefs(
+        energy_sources=[
+            {"type": "water", "stat_energy_from": "sensor.w"},
+            {"type": "water", "stat_energy_from": "sensor.w"},
+        ]
+    )
+    (issue,) = validate(water)
+    assert (issue.code, issue.kind) == (IssueCode.DUPLICATE_SOURCE, DeviceKind.WATER)
 
 
 def test_diff_sources() -> None:

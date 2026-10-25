@@ -1,9 +1,9 @@
 """Export and import of energy settings as files.
 
-An export holds the energy sources and devices, either as they are now or as
-a backup kept them. Importing one goes through the same checks, confirmation
-and backup as any other save. No Home Assistant imports, so it can be tested
-in isolation.
+An export holds the energy sources and both device lists (electricity and
+water), either as they are now or as a backup kept them. Importing one goes
+through the same checks, confirmation and backup as any other save. No Home
+Assistant imports, so it can be tested in isolation.
 """
 
 from __future__ import annotations
@@ -13,19 +13,20 @@ from typing import Any
 
 import probatio as vol
 
-from .hierarchy import KEY_DEVICES, KEY_SOURCES
+from .hierarchy import KEY_DEVICES, KEY_DEVICES_WATER, KEY_SOURCES
 
 EXPORT_FORMAT = "energy_flow_mapper"
 EXPORT_VERSION = 1
 
-# Keys an export may contain; water devices follow in phase 4.
-TRANSFER_KEYS = (KEY_SOURCES, KEY_DEVICES)
+# Keys an export may contain. Files from 0.2.0 have no water devices; they
+# import as they are and leave the water devices alone.
+TRANSFER_KEYS = (KEY_SOURCES, KEY_DEVICES, KEY_DEVICES_WATER)
 
 _DOCUMENT_SCHEMA = vol.Schema(
     {
         vol.Required("format"): EXPORT_FORMAT,
         vol.Required("version"): vol.In([EXPORT_VERSION]),
-        # Only the known lists; anything else (like water devices) is refused.
+        # Only the known lists; anything else is refused.
         vol.Required("data"): vol.All(
             vol.Schema(
                 {vol.Optional(key): [dict] for key in TRANSFER_KEYS},

@@ -45,10 +45,14 @@ export interface Layout {
   height: number;
 }
 
-/** Roles shown as placeholders when no source fills them. */
+/** Roles shown as placeholders when no source fills them (electricity tab). */
 export const PLACEHOLDER_ROLES = ["import", "production", "battery", "export"] as const;
+/** The same for the water tab. */
+export const WATER_PLACEHOLDER_ROLES = ["water"] as const;
 
-const INTO_HOME: SourceRole[] = ["import", "production", "discharge", "consumption"];
+type PlaceholderRole = SourceRole | "battery";
+
+const INTO_HOME: SourceRole[] = ["import", "production", "discharge", "gas", "water", "consumption"];
 
 export function untrackedId(stat: string): string {
   return `untracked:${stat}`;
@@ -88,8 +92,9 @@ function width(item: Item): number {
 }
 
 /**
- * Lay out the diagram. `power` maps device statistics to their power in W,
- * `untracked` the untracked power of each device with children.
+ * Lay out the diagram. `power` maps device statistics to their value (power
+ * or flow), `untracked` the untracked value of each device with children.
+ * `placeholders` are the source roles offered when no source fills them.
  */
 export function layout(
   roots: TreeNode[],
@@ -97,6 +102,7 @@ export function layout(
   power: Map<string, number | null>,
   untracked: Map<string, number | null>,
   collapsed: Set<string> = new Set(),
+  placeholders: readonly PlaceholderRole[] = PLACEHOLDER_ROLES,
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
@@ -114,7 +120,7 @@ export function layout(
     role: source.role,
     source,
   }));
-  for (const role of PLACEHOLDER_ROLES) {
+  for (const role of placeholders) {
     if (!roles.has(role)) {
       sourceBlocks.push({
         id: `placeholder:${role}`,

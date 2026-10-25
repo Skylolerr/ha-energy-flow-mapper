@@ -21,7 +21,11 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
                 {"stat_consumption": "sensor.a"},
                 {"stat_consumption": "sensor.b", "included_in_stat": "sensor.a"},
                 {"stat_consumption": "sensor.c", "included_in_stat": "sensor.gone"},
-            ]
+            ],
+            "device_consumption_water": [
+                {"stat_consumption": "sensor.w1"},
+                {"stat_consumption": "sensor.w2", "included_in_stat": "sensor.w1"},
+            ],
         },
     )
     result = await async_get_config_entry_diagnostics(hass, loaded_entry)
@@ -32,8 +36,9 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
         "created_helpers": 0,
         "sources": {"grid": 1, "solar": 1, "battery": 1},
         "devices": 3,
-        "water_devices": 0,
+        "water_devices": 2,
         "tree_depth": 2,
+        "water_tree_depth": 2,
         "issues": {"missing_parent": 1},
     }
     assert "sensor." not in str(result)

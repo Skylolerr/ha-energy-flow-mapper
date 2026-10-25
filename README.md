@@ -10,8 +10,8 @@ energy dashboard.
 Energy Flow Mapper adds an admin panel to Home Assistant. It shows your energy
 configuration as a diagram – sources at the top, your home in the middle, devices below –
 and lets you change it by drag and drop: which device is included in which, which sensor
-is your grid import, export, solar or battery meter, and which energy meters are not used
-yet.
+is your grid import, export, solar, battery or water meter, and which meters are not used
+yet. Electricity and water each have their own tab.
 
 > **Beta.** Breaking changes are possible before 1.0. Every save keeps a backup of your
 > previous energy settings, so you can always go back.
@@ -37,6 +37,10 @@ yet.
   portals) that are not in the energy dashboard yet; add them with one drag.
 - **Sources:** drop a sensor onto grid import, grid export, solar or battery. Existing
   prices and compensations of your grid connection stay as they are.
+- **Water tab:** the water devices of the energy dashboard as their own diagram, edited
+  the same way, with water meters as sources (their prices stay too). Flow now, and water
+  per period in litres and m³ (gallons with US units); a warning when sub-devices used
+  more than 5 % and 10 L more than their device.
 - **Meters for power sensors:** for power sensors without an energy meter (a UPS, PoE
   ports, …) "Create meter" adds an ordinary integral helper and puts it into the diagram.
 - **Safe saving:** changes are collected in a draft and checked (loops, missing parents,
@@ -52,6 +56,8 @@ yet.
 | *30 days:* energy per device, consumption not tracked individually and a warning | *Drag and drop:* the possible targets are highlighted |
 | ![The list of changes shown before saving](docs/images/save.png) | ![The list of backups with restore buttons](docs/images/backups.png) |
 | *Saving:* every change is listed before anything is written | *Backups:* restore an earlier state |
+| ![The water tab over 30 days: water meter, Home and water devices in litres and m³](docs/images/water-dark.png) | ![The water tab now: flow of each water device in L/min](docs/images/water-light.png) |
+| *Water, 30 days:* water devices with litres and m³, and what is not tracked individually | *Water, now:* the flow of each device |
 
 <p>
   <img alt="The panel on a phone, dark theme" src="docs/images/phone-dark.png" width="260">
@@ -105,6 +111,7 @@ Settings → Devices & services → Energy Flow Mapper → **Configure**:
 | Add an energy meter as device | Drag it from *Free sensors* into the diagram, or *Add* |
 | Assign a source | Drag a free sensor onto *+ Grid import*, *+ Solar*, … or tap the source |
 | Replace or remove a source | Tap the source block |
+| Edit water devices and meters | Open the *Water* tab; everything works as for electricity |
 | Get a meter for a power sensor | *Power only* → *Create meter* |
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
 | Save | *Save* in the bar at the bottom, check the list of changes, confirm |
@@ -128,8 +135,8 @@ Good to know:
 ## Backups
 
 - **When:** before every save, restore and import, Energy Flow Mapper backs up the
-  previous content of the energy settings it changes (sources and/or devices), with the
-  time, the user and a short summary.
+  previous content of the energy settings it changes (sources, devices and/or water
+  devices), with the time, the user and a short summary.
 - **Where:** in `/config/.storage/energy_flow_mapper.backups`, next to Home Assistant's own
   energy settings (`/config/.storage/energy`). Both are part of every **Home Assistant
   backup**, so to keep them off the device, use a Home Assistant backup location such as a
@@ -137,12 +144,13 @@ Good to know:
 - **How many:** the last 20 by default; set 5 to 100 in the [options](#options).
 - **Restore:** *Undo last save* restores the newest backup, *Backups* → *Restore* any of
   them. The current settings are backed up first.
-- **Export:** *Backups* → *Export current settings* downloads the energy sources and
-  devices as a JSON file; *Export* next to a backup downloads that backup. Keep it
-  wherever you like.
+- **Export:** *Backups* → *Export current settings* downloads the energy sources,
+  devices and water devices as a JSON file; *Export* next to a backup downloads that
+  backup. Keep it wherever you like.
 - **Import:** *Backups* → *Import from file …* reads such a file, checks it like a draft
   (including what Home Assistant itself would reject) and shows the list of changes
-  before anything is written. Only files exported by Energy Flow Mapper are accepted.
+  before anything is written. Only files exported by Energy Flow Mapper are accepted;
+  files from 0.2.0 (without water devices) leave the water devices as they are.
 - **Removal:** the backups are deleted with the integration; exported files stay.
 
 ## How it works
@@ -160,7 +168,9 @@ Good to know:
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.
 - Gas sources are shown only; Home Assistant has no gas devices, so there is nothing
-  to arrange. Editing water sources and the water device hierarchy are planned for 0.3.0.
+  to arrange.
+- "Create meter" is offered for power sensors only, not for water flow sensors.
+- An external statistic in m³ is offered as free water meter; it may also measure gas.
 - Dragging works with a mouse and with a long press on phones; the ⋮ menu offers the
   same actions.
 

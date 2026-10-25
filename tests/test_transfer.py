@@ -19,12 +19,14 @@ SOURCES = [{"type": "solar", "stat_energy_from": "sensor.pv"}]
 
 
 def test_export_current_settings() -> None:
-    """Only sources and devices are exported, unknown fields included."""
+    """Sources and both device lists are exported, unknown fields included."""
+    water = [{"stat_consumption": "sensor.w"}]
     document = build_export(
         {
             "energy_sources": SOURCES,
             "device_consumption": DEVICES,
-            "device_consumption_water": [{"stat_consumption": "sensor.w"}],
+            "device_consumption_water": water,
+            "other_key": [],
         },
         "2026-10-24T10:00:00+00:00",
     )
@@ -33,7 +35,11 @@ def test_export_current_settings() -> None:
         "version": EXPORT_VERSION,
         "exported": "2026-10-24T10:00:00+00:00",
         "source": "current",
-        "data": {"energy_sources": SOURCES, "device_consumption": DEVICES},
+        "data": {
+            "energy_sources": SOURCES,
+            "device_consumption": DEVICES,
+            "device_consumption_water": water,
+        },
     }
 
 
@@ -60,8 +66,15 @@ def test_export_backup_names_it() -> None:
 
 def test_round_trip() -> None:
     """An export reads back to the same lists."""
-    data = {"energy_sources": SOURCES, "device_consumption": DEVICES}
+    data = {
+        "energy_sources": SOURCES,
+        "device_consumption": DEVICES,
+        "device_consumption_water": [{"stat_consumption": "sensor.w"}],
+    }
     assert parse_import(build_export(data, "now")) == data
+    # A file from 0.2.0 has no water devices; it imports as it is.
+    old = {"energy_sources": SOURCES, "device_consumption": DEVICES}
+    assert parse_import(build_export(old, "now")) == old
 
 
 @pytest.mark.parametrize(
@@ -79,7 +92,7 @@ def test_round_trip() -> None:
         {
             "format": EXPORT_FORMAT,
             "version": 1,
-            "data": {"device_consumption_water": []},
+            "data": {"device_consumption_gas": []},
         },
     ],
 )

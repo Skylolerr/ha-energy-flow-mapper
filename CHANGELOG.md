@@ -7,6 +7,17 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+### Added
+
+- **Water** tab: the water devices of the energy dashboard as their own diagram, edited
+  like electricity devices (include, move to the top level, rename, remove, add free
+  water meters and external volume statistics with their flow sensor).
+- Water meters as sources: assign, replace (prices stay) and remove.
+- Flow now, and water per period in litres and m³ (gallons with US units). Warnings
+  when sub-devices used more than 5 % and 10 L more than their device.
+- Export and import include the water devices; files exported with 0.2.0 still import
+  and leave the water devices as they are.
+
 ## [0.2.0] - 2026-10-24
 
 Tested with Home Assistant 2026.10.3; the minimum stays 2026.10.0.

@@ -72,6 +72,12 @@ function snapshot(): Snapshot {
       { ...info("sensor.attic", "Attic"), power: null },
       { ...info("portal:import", "Portal import", { entity_id: null }), power: null, external: true },
     ],
+    water_candidates: [
+      {
+        ...info("sensor.tap", "Garden tap", { unit: "L", device_class: "water" }),
+        power: "sensor.tap_flow",
+      },
+    ],
     power_candidates: [info("sensor.ups_power", "UPS power", { unit: "W", device_class: "power" })],
     issues: [],
   };
@@ -1140,7 +1146,7 @@ describe("sources", () => {
     root(el).querySelector<HTMLButtonElement>('.block.source[data-role="production"]:not(.placeholder)')!.click();
     await settle(el);
     expect(root(el).querySelector("dialog")!.textContent).toContain("Assign sensor");
-    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="consumption"]')!.click();
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="gas"]')!.click();
     await settle(el);
     const dialog = root(el).querySelector("dialog")!.textContent!;
     expect(dialog).toContain("Gas");
@@ -1326,5 +1332,223 @@ describe("energy in a period", () => {
     el._discard();
     await settle(el);
     expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/energy").length).toBe(before + 2);
+  });
+});
+
+describe("water", () => {
+  function waterMock(): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({
+      type: "water",
+      stat_energy_from: "sensor.water_main",
+      stat_cost: null,
+      number_energy_price: 2,
+    });
+    snap.prefs.device_consumption_water = [
+      { stat_consumption: "sensor.house_water", stat_rate: "sensor.house_flow" },
+      {
+        stat_consumption: "sensor.shower",
+        stat_rate: "sensor.shower_flow",
+        included_in_stat: "sensor.house_water",
+      },
+    ];
+    const water = { unit: "m³", device_class: "water" };
+    snap.stats["sensor.water_main"] = info("sensor.water_main", "Water main", water);
+    snap.stats["sensor.house_water"] = info("sensor.house_water", "House water", water);
+    snap.stats["sensor.shower"] = info("sensor.shower", "Shower", water);
+    mock.responses["energy_flow_mapper/get"] = snap;
+    // 0.5 m³/h are 8.33 L/min.
+    mock.hass.states["sensor.house_flow"] = entity("sensor.house_flow", "0.5", "m³/h");
+    mock.hass.states["sensor.shower_flow"] = entity("sensor.shower_flow", "6", "L/min");
+    return mock;
+  }
+
+  async function waterTab(mock: Mock): Promise<EnergyFlowMapperPanel> {
+    const el = await mount(mock);
+    root(el).querySelector<HTMLButtonElement>('.tabs button[data-tab="water"]')!.click();
+    await settle(el);
+    return el;
+  }
+
+  it("shows water devices, meters and free water meters in their own tab", async () => {
+    const mock = waterMock();
+    const el = await mount(mock);
+    expect(root(el).querySelector('.block.source[data-role="water"]')).toBeNull();
+    const tab = root(el).querySelector<HTMLButtonElement>('.tabs button[data-tab="water"]')!;
+    expect(tab.getAttribute("aria-selected")).toBe("false");
+    el._selected = "sensor.server";
+    tab.click();
+    await settle(el);
+    expect(tab.getAttribute("aria-selected")).toBe("true");
+    expect(el._selected).toBeNull();
+    expect(root(el).querySelector(".diagram-card h2")!.textContent).toBe("Water flow");
+    expect(node(el, "sensor.house_water").textContent).toContain("8.33 L/min");
+    expect(node(el, "sensor.shower").textContent).toContain("6 L/min");
+    expect(root(el).querySelector(".untracked")!.textContent).toContain("2.33 L/min");
+    expect(root(el).querySelector('.node[data-stat="sensor.server"]')).toBeNull();
+    // The water meter flows into Home; with a meter there is no placeholder.
+    expect(root(el).querySelector('.block.source[data-role="water"]')!.textContent).toContain("Water main");
+    expect(root(el).querySelectorAll(".placeholder").length).toBe(0);
+    expect(text(el)).toContain("Water meters that are not in the energy dashboard yet.");
+    expect(text(el)).toContain("Garden tap");
+    expect(text(el)).not.toContain("3D printer");
+    expect(text(el)).not.toContain("Power only");
+    node(el, "sensor.house_water").click();
+    await settle(el);
+    expect(text(el)).toContain("Flow sensor sensor.house_flow");
+    expect(text(el)).toContain("Flow now 8.33 L/min");
+    // Switching to the same tab changes nothing.
+    el.setTab("water");
+    expect(el._selected).toBe("sensor.house_water");
+  });
+
+  it("adds and moves water devices in the water list", async () => {
+    const el = await waterTab(waterMock());
+    const tap = root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.tap"]')!;
+    drag(tap, node(el, "sensor.shower"));
+    await settle(el);
+    drag(node(el, "sensor.shower"), root(el).querySelector<HTMLElement>(".block.home")!);
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.tap", parent: "sensor.shower", stat_rate: "sensor.tap_flow", kind: "water" },
+      { type: "move", stat: "sensor.shower", parent: null, kind: "water" },
+    ]);
+    expect(node(el, "sensor.tap")).not.toBeNull();
+    // The add dialog names the flow sensor.
+    el._changes = [];
+    await settle(el);
+    root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.tap"] button')!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Flow sensor: sensor.tap_flow");
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="__home__"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.tap", parent: null, stat_rate: "sensor.tap_flow", kind: "water" },
+    ]);
+    // Electricity is not touched by water changes.
+    el.setTab("electricity");
+    await settle(el);
+    expect(root(el).querySelector('.node[data-stat="sensor.tap"]')).toBeNull();
+    expect(node(el, "sensor.server")).not.toBeNull();
+  });
+
+  it("renames and removes water devices with the menu", async () => {
+    const el = await waterTab(waterMock());
+    const actions = () =>
+      node(el, "sensor.shower").querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!;
+    actions().click();
+    await settle(el);
+    buttonWith(el, "Move to").click();
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="__home__"]')!.click();
+    await settle(el);
+    actions().click();
+    await settle(el);
+    buttonWith(el, "Rename").click();
+    await settle(el);
+    el._renameValue = "Bath";
+    buttonWith(el, "OK").click();
+    await settle(el);
+    actions().click();
+    await settle(el);
+    buttonWith(el, "Remove from the energy dashboard").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "move", stat: "sensor.shower", parent: null, kind: "water" },
+      { type: "rename", stat: "sensor.shower", name: "Bath", kind: "water" },
+      { type: "remove", stat: "sensor.shower", kind: "water" },
+    ]);
+  });
+
+  it("replaces, removes and assigns water meters", async () => {
+    const el = await waterTab(waterMock());
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="water"]')!.click();
+    await settle(el);
+    buttonWith(el, "Replace sensor").click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Pick a free water meter.");
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.tap"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "assign_source", role: "water", stat: "sensor.tap", replace: "sensor.water_main" },
+    ]);
+    // The draft already shows the new meter; remove it again.
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="water"]')!.click();
+    await settle(el);
+    buttonWith(el, "Remove as source").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.tap" });
+    // Without a water meter the placeholder offers one; dropping adds it.
+    const placeholder = root(el).querySelector<HTMLElement>('.block.placeholder[data-role="water"]')!;
+    expect(placeholder.textContent!.trim()).toBe("+ Water");
+    drag(root(el).querySelector<HTMLElement>('.candidate[data-stat="sensor.tap"]')!, placeholder);
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "assign_source", role: "water", stat: "sensor.tap" });
+  });
+
+  it("shows water in litres and m³ for a period, or in gallons", async () => {
+    const mock = waterMock();
+    mock.responses["energy_flow_mapper/energy"] = (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      energy: { "sensor.house_water": 1500, "sensor.shower": 400 },
+      water_unit: "L",
+      untracked: { "sensor.house_water": 1100 },
+      issues: [
+        {
+          code: "children_exceed_parent",
+          severity: "warning",
+          stat: "sensor.server",
+          details: {},
+          kind: "electricity",
+        },
+      ],
+    });
+    const el = await waterTab(mock);
+    el.setPeriod("week");
+    await settle(el);
+    expect(node(el, "sensor.house_water").textContent).toContain("1.5 m³");
+    expect(node(el, "sensor.shower").textContent).toContain("400 L");
+    expect(root(el).querySelector(".untracked")!.textContent).toContain("1.1 m³");
+    node(el, "sensor.shower").click();
+    await settle(el);
+    expect(text(el)).toContain("Water in period 400 L");
+    // An electricity warning does not mark a water device.
+    expect(root(el).querySelector(".badge")).toBeNull();
+
+    const us = waterMock();
+    us.hass.config = { unit_system: { volume: "gal" } };
+    const el2 = await waterTab(us);
+    expect(node(el2, "sensor.shower").textContent).toContain("1.59 gal/min");
+  });
+
+  it("marks issues and diff lines of water devices", async () => {
+    const mock = waterMock();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.issues = [
+      { code: "not_water_unit", severity: "warning", stat: "sensor.shower", details: { unit: "kWh" }, kind: "water" },
+    ];
+    const el = await waterTab(mock);
+    expect(node(el, "sensor.shower").querySelector(".badge")!.getAttribute("title")).toBe(
+      "Unit kWh is not a water unit",
+    );
+    expect(el._diffText({ type: "added", stat: "sensor.tap", parent: null, kind: "water" })).toBe(
+      "Water: Garden tap added",
+    );
+    expect(el._diffText({ type: "rate", stat: "sensor.shower", kind: "water" })).toBe(
+      "Water: Flow sensor of Shower changed",
+    );
+    expect(el._diffText({ type: "removed", stat: "sensor.house_water", kind: "water" })).toBe(
+      "Water: House water removed",
+    );
+    expect(el._diffText({ type: "source_added", stat: "sensor.tap", role: "water" })).toBe(
+      "Garden tap assigned as Water",
+    );
+    // Electricity entries read as before.
+    expect(el._diffText({ type: "rate", stat: "sensor.tv", kind: "electricity" })).toBe(
+      "Power sensor of TV changed",
+    );
   });
 });

@@ -4,11 +4,16 @@ import {
   applyChanges,
   applySourceChanges,
   buildTree,
+  changeKind,
+  flowInLitresPerMinute,
   NEW_GRID,
+  NEW_WATER,
   canMove,
   displayName,
   moveTargets,
   powerInWatts,
+  rateValue,
+  sourceKind,
   sourceRows,
   subtree,
   type TreeNode,
@@ -124,6 +129,26 @@ describe("applyChanges", () => {
     expect(result).toEqual(deep());
   });
 
+  it("applies each change to its own list", () => {
+    const water = [device("house"), device("tap", "house")];
+    const changes = [
+      { type: "remove", stat: "tap", kind: "water" },
+      { type: "add", stat: "shower", parent: "house", kind: "water" },
+      { type: "rename", stat: "main", name: "Main board", kind: "electricity" },
+      { type: "remove", stat: "garage" },
+    ] as const;
+    expect(applyChanges(water, [...changes], "water")).toEqual([
+      device("house"),
+      device("shower", "house"),
+    ]);
+    const electricity = applyChanges(deep(), [...changes]);
+    expect(electricity.map((d) => d.stat_consumption)).not.toContain("garage");
+    expect(electricity[0].name).toBe("Main board");
+    expect(changeKind(changes[0])).toBe("water");
+    expect(changeKind(changes[3])).toBe("electricity");
+    expect(changeKind({ type: "unassign_source", stat: "x" })).toBeNull();
+  });
+
   it("skips changes that do not fit", () => {
     const result = applyChanges(deep(), [
       { type: "add", stat: "main" },
@@ -180,6 +205,33 @@ describe("names and power", () => {
     expect(powerInWatts(hass, undefined)).toBeNull();
   });
 
+  it("converts flow to L/min", () => {
+    const state = (unit: string | undefined, value = "2") => ({
+      entity_id: "x",
+      state: value,
+      attributes: unit ? { unit_of_measurement: unit } : {},
+    });
+    const hass = {
+      states: {
+        "sensor.lmin": state("L/min"),
+        "sensor.m3h": state("m³/h", "0.6"),
+        "sensor.gal": state("gal/min", "1"),
+        "sensor.none": state(undefined),
+        "sensor.bad": state("W"),
+        "sensor.w": state("W", "50"),
+      },
+    } as unknown as HomeAssistant;
+    expect(flowInLitresPerMinute(hass, "sensor.lmin")).toBe(2);
+    expect(flowInLitresPerMinute(hass, "sensor.m3h")).toBeCloseTo(10);
+    expect(flowInLitresPerMinute(hass, "sensor.gal")).toBeCloseTo(3.785);
+    expect(flowInLitresPerMinute(hass, "sensor.none")).toBe(2);
+    expect(flowInLitresPerMinute(hass, "sensor.bad")).toBeNull();
+    expect(flowInLitresPerMinute(hass, undefined)).toBeNull();
+    expect(rateValue(hass, "sensor.w", "electricity")).toBe(50);
+    expect(rateValue(hass, "sensor.w", "water")).toBeNull();
+    expect(rateValue(hass, "sensor.lmin", "water")).toBe(2);
+  });
+
   it("computes untracked consumption", () => {
     const roots = buildTree(deep());
     const values = new Map<string, number | null>([
@@ -210,6 +262,7 @@ describe("sourceRows", () => {
         { type: "solar", stat_energy_from: "pv", name: "Roof" },
         { type: "battery", stat_energy_from: "out", stat_energy_to: "in" },
         { type: "gas", stat_energy_from: "gas" },
+        { type: "water", stat_energy_from: "water" },
         { type: "heat", stat_energy_from: "heat" },
       ]),
     ).toEqual([
@@ -219,9 +272,22 @@ describe("sourceRows", () => {
       { type: "solar", role: "production", stat: "pv", name: "Roof" },
       { type: "battery", role: "discharge", stat: "out", name: undefined },
       { type: "battery", role: "charge", stat: "in", name: undefined },
-      { type: "gas", role: "consumption", stat: "gas", name: undefined },
+      { type: "gas", role: "gas", stat: "gas", name: undefined },
+      { type: "water", role: "water", stat: "water", name: undefined },
       { type: "heat", role: "consumption", stat: "heat", name: undefined },
     ]);
+  });
+
+  it("lists the sources of one tab", () => {
+    const sources = [
+      { type: "grid", stat_energy_from: "imp" },
+      { type: "gas", stat_energy_from: "gas" },
+      { type: "water", stat_energy_from: "water" },
+    ];
+    expect(sourceRows(sources, "water").map((r) => r.stat)).toEqual(["water"]);
+    expect(sourceRows(sources, "electricity").map((r) => r.stat)).toEqual(["imp", "gas"]);
+    expect(sourceKind(sources[2])).toBe("water");
+    expect(sourceKind(sources[1])).toBe("electricity");
   });
 });
 
@@ -291,9 +357,29 @@ describe("applySourceChanges", () => {
     expect(result).toEqual([grid, { ...second, stat_energy_from: "c" }]);
   });
 
-  it("keeps gas and water sources", () => {
+  it("keeps gas sources", () => {
     const gas = { type: "gas", stat_energy_from: "g" };
     expect(applySourceChanges([gas], [{ type: "unassign_source", stat: "g" }])).toEqual([gas]);
+  });
+
+  it("adds, replaces and removes water meters", () => {
+    const water = { type: "water", stat_energy_from: "w1", number_energy_price: 2 };
+    const result = applySourceChanges(
+      [water],
+      [
+        { type: "assign_source", role: "water", stat: "w2", replace: "w1" },
+        { type: "assign_source", role: "water", stat: "w3", replace: "nope" },
+        { type: "assign_source", role: "water", stat: "w4" },
+      ],
+    );
+    expect(result).toEqual([
+      { ...water, stat_energy_from: "w2" },
+      { ...NEW_WATER, stat_energy_from: "w4" },
+    ]);
+    expect(NEW_WATER.stat_energy_from).toBeNull();
+    expect(applySourceChanges(result, [{ type: "unassign_source", stat: "w4" }])).toEqual([
+      { ...water, stat_energy_from: "w2" },
+    ]);
   });
 
   it("ignores device changes", () => {

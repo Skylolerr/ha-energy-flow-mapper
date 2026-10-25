@@ -17,6 +17,7 @@ from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     UnitOfEnergy,
     UnitOfPower,
+    UnitOfVolume,
 )
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
 from homeassistant.helpers import area_registry as ar
@@ -24,10 +25,31 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 
-from .hierarchy import KEY_DEVICES, STAT, Prefs, used_stats
+from .hierarchy import DEVICE_KEYS, STAT, DeviceKind, Prefs, used_stats
 
 ENERGY_UNITS = frozenset(unit.value for unit in UnitOfEnergy)
 POWER_UNITS = frozenset(unit.value for unit in UnitOfPower)
+# The units Home Assistant accepts for water meters.
+WATER_UNITS = frozenset(
+    unit.value
+    for unit in (
+        UnitOfVolume.CENTUM_CUBIC_FEET,
+        UnitOfVolume.CUBIC_FEET,
+        UnitOfVolume.CUBIC_METERS,
+        UnitOfVolume.GALLONS,
+        UnitOfVolume.LITERS,
+        UnitOfVolume.MILLE_CUBIC_FEET,
+    )
+)
+UNITS: dict[DeviceKind, frozenset[str]] = {
+    DeviceKind.ELECTRICITY: ENERGY_UNITS,
+    DeviceKind.WATER: WATER_UNITS,
+}
+# Device class of a meter, and of the sensor suggested as its `stat_rate`.
+METER_CLASSES: dict[DeviceKind, tuple[SensorDeviceClass, SensorDeviceClass]] = {
+    DeviceKind.ELECTRICITY: (SensorDeviceClass.ENERGY, SensorDeviceClass.POWER),
+    DeviceKind.WATER: (SensorDeviceClass.WATER, SensorDeviceClass.VOLUME_FLOW_RATE),
+}
 METER_STATE_CLASSES = (SensorStateClass.TOTAL, SensorStateClass.TOTAL_INCREASING)
 INTEGRATION_DOMAIN = "integration"
 
@@ -71,7 +93,8 @@ def async_stat_info(
     """Return name, unit, device, area and floor of a statistic.
 
     Statistics that are not entities (external statistics) get name and unit
-    from the recorder metadata in `external`, if known.
+    from the recorder metadata in `external`, if known, and the device class
+    that fits the unit.
     """
     info: dict[str, Any] = {
         "stat": stat,
@@ -91,7 +114,11 @@ def async_stat_info(
         if meta is not None:
             info["name"] = meta.get("name")
             info["unit"] = meta.get("statistics_unit_of_measurement")
-            info["device_class"] = SensorDeviceClass.ENERGY.value
+            info["device_class"] = (
+                SensorDeviceClass.WATER.value
+                if info["unit"] in WATER_UNITS
+                else SensorDeviceClass.ENERGY.value
+            )
         return info
 
     state = hass.states.get(stat)
@@ -142,14 +169,15 @@ def async_stats_info(
 
 @callback
 def async_stat_units(hass: HomeAssistant, prefs: Prefs) -> dict[str, str | None]:
-    """Return the unit of each device statistic that exists.
+    """Return the unit of each device statistic (both lists) that exists.
 
     Missing statistics are left out (they get a warning); external statistics
     map to None because their unit is not known here.
     """
     registry = er.async_get(hass)
     units: dict[str, str | None] = {}
-    for device in prefs.get(KEY_DEVICES, []):
+    devices = [device for key in DEVICE_KEYS.values() for device in prefs.get(key, [])]
+    for device in devices:
         stat = device[STAT]
         if not valid_entity_id(stat):
             units[stat] = None
@@ -163,8 +191,10 @@ def async_stat_units(hass: HomeAssistant, prefs: Prefs) -> dict[str, str | None]
     return units
 
 
-def _power_sensor(hass: HomeAssistant, device_id: str | None) -> str | None:
-    """Return the first power sensor of a device, if any."""
+def _rate_sensor(
+    hass: HomeAssistant, device_id: str | None, device_class: SensorDeviceClass
+) -> str | None:
+    """Return the first sensor of a device with that class (power, flow)."""
     if device_id is None:
         return None
     entries = er.async_entries_for_device(er.async_get(hass), device_id)
@@ -173,30 +203,36 @@ def _power_sensor(hass: HomeAssistant, device_id: str | None) -> str | None:
             entry.entity_id
             for entry in sorted(entries, key=lambda e: e.entity_id)
             if entry.domain == "sensor"
-            and _device_class(hass, entry.entity_id) == SensorDeviceClass.POWER
+            and _device_class(hass, entry.entity_id) == device_class
         ),
         None,
     )
 
 
 @callback
-def async_candidates(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, Any]]:
-    """Return energy meters that are not used in the energy dashboard yet.
+def async_candidates(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    kind: DeviceKind = DeviceKind.ELECTRICITY,
+) -> list[dict[str, Any]]:
+    """Return energy (or water) meters that are not used in the dashboard yet.
 
-    Each candidate suggests a power sensor of the same device as `stat_rate`.
-    Disabled entities have no state and are therefore never listed.
+    Each candidate suggests a power (or flow) sensor of the same device as
+    `stat_rate`, in its field `power`. Disabled entities have no state and are
+    therefore never listed.
     """
+    meter_class, rate_class = METER_CLASSES[kind]
     used = used_stats(prefs)
     candidates = []
     for state in hass.states.async_all("sensor"):
         if (
             state.entity_id in used
-            or state.attributes.get(ATTR_DEVICE_CLASS) != SensorDeviceClass.ENERGY
+            or state.attributes.get(ATTR_DEVICE_CLASS) != meter_class
             or state.attributes.get(ATTR_STATE_CLASS) not in METER_STATE_CLASSES
         ):
             continue
         info = async_stat_info(hass, state.entity_id)
-        info["power"] = _power_sensor(hass, info["device_id"])
+        info["power"] = _rate_sensor(hass, info["device_id"], rate_class)
         candidates.append(info)
     return _sorted(candidates)
 
@@ -212,7 +248,7 @@ def _sorted(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 async def async_external_statistics(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
-    """Return external statistics with a sum in an energy unit, by ID.
+    """Return external statistics with a sum in an energy or water unit, by ID.
 
     External statistics (e.g. from energy supplier portals) belong to no
     entity; their ID contains a colon. Without a recorder there are none.
@@ -224,7 +260,7 @@ async def async_external_statistics(hass: HomeAssistant) -> dict[str, dict[str, 
         meta["statistic_id"]: meta
         for meta in statistics
         if not valid_entity_id(meta["statistic_id"])
-        and meta.get("statistics_unit_of_measurement") in ENERGY_UNITS
+        and meta.get("statistics_unit_of_measurement") in ENERGY_UNITS | WATER_UNITS
     }
 
 
@@ -233,14 +269,19 @@ def async_external_candidates(
     hass: HomeAssistant,
     prefs: Prefs,
     external: Mapping[str, Mapping[str, Any]],
+    kind: DeviceKind = DeviceKind.ELECTRICITY,
 ) -> list[dict[str, Any]]:
-    """Return external energy statistics that are not used yet."""
+    """Return external energy (or water) statistics that are not used yet.
+
+    A volume statistic may also measure gas; the user decides.
+    """
     used = used_stats(prefs)
     return _sorted(
         [
             async_stat_info(hass, stat, external) | {"power": None, "external": True}
-            for stat in external
+            for stat, meta in external.items()
             if stat not in used
+            and meta.get("statistics_unit_of_measurement") in UNITS[kind]
         ]
     )
 

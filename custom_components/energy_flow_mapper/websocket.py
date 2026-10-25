@@ -16,10 +16,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_conversion import VolumeConverter
 
 from . import energy_access
 from .candidates import (
-    ENERGY_UNITS,
+    UNITS,
     async_candidates,
     async_external_candidates,
     async_external_statistics,
@@ -28,15 +29,18 @@ from .candidates import (
     async_stat_units,
     async_stats_info,
 )
-from .const import DOMAIN
-from .energy_stats import PERIODS, async_energy, period_range
+from .const import DOMAIN, PLAUSIBILITY_MIN_KWH, PLAUSIBILITY_MIN_LITERS
+from .energy_stats import PERIODS, async_energy, period_range, water_unit
 from .hierarchy import (
+    DEVICE_KEYS,
     KEY_DEVICES,
+    KEY_DEVICES_WATER,
     KEY_SOURCES,
     STAT,
     AssignRole,
     ChangeError,
     ChangeType,
+    DeviceKind,
     Prefs,
     Severity,
     apply_changes,
@@ -62,10 +66,13 @@ ATTR_NAME = "name"
 ATTR_PERIOD = "period"
 ATTR_DOCUMENT = "document"
 
-# Keys the panel may change; water devices follow in phase 4.
-EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES)
+# Keys the panel may change.
+EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES, KEY_DEVICES_WATER)
 
 _OPTIONAL_TEXT = vol.Any(str, None)
+# Device changes name their list; without `kind` they change electricity.
+_KIND = vol.Optional("kind")
+_KINDS = vol.In([kind.value for kind in DeviceKind])
 CHANGE_SCHEMA = cv.key_value_schemas(
     "type",
     {
@@ -76,6 +83,7 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Optional("parent"): _OPTIONAL_TEXT,
                 vol.Optional("name"): _OPTIONAL_TEXT,
                 vol.Optional("stat_rate"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
             }
         ),
         ChangeType.MOVE.value: vol.Schema(
@@ -83,6 +91,7 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("type"): ChangeType.MOVE.value,
                 vol.Required("stat"): str,
                 vol.Required("parent"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
             }
         ),
         ChangeType.RENAME.value: vol.Schema(
@@ -90,12 +99,14 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("type"): ChangeType.RENAME.value,
                 vol.Required("stat"): str,
                 vol.Required("name"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
             }
         ),
         ChangeType.REMOVE.value: vol.Schema(
             {
                 vol.Required("type"): ChangeType.REMOVE.value,
                 vol.Required("stat"): str,
+                _KIND: _KINDS,
             }
         ),
         ChangeType.ASSIGN_SOURCE.value: vol.Schema(
@@ -152,7 +163,7 @@ def _runtime(hass: HomeAssistant) -> EnergyFlowMapperData:
 
 
 def _issues(hass: HomeAssistant, prefs: Prefs) -> list[Any]:
-    return validate(prefs, async_stat_units(hass, prefs), ENERGY_UNITS)
+    return validate(prefs, async_stat_units(hass, prefs), UNITS)
 
 
 async def _async_current(hass: HomeAssistant, base_hash: str) -> dict[str, Any]:
@@ -183,17 +194,20 @@ async def websocket_get(
     """Return the preferences with metadata, issues and unused sensors.
 
     `candidates` are unused energy meters and external statistics,
-    `power_candidates` power sensors without an energy meter.
+    `water_candidates` the same for water, `power_candidates` power sensors
+    without an energy meter.
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
     external = await async_external_statistics(hass)
     stats = async_stats_info(hass, prefs, external)
-    candidates = async_candidates(hass, prefs) + async_external_candidates(
-        hass, prefs, external
+    candidates, water = (
+        async_candidates(hass, prefs, kind)
+        + async_external_candidates(hass, prefs, external, kind)
+        for kind in (DeviceKind.ELECTRICITY, DeviceKind.WATER)
     )
     created = runtime.helpers.entries()
-    async_mark_created(hass, [*stats.values(), *candidates], created)
+    async_mark_created(hass, [*stats.values(), *candidates, *water], created)
     connection.send_result(
         msg["id"],
         {
@@ -201,6 +215,7 @@ async def websocket_get(
             "hash": prefs_hash(prefs),
             "stats": stats,
             "candidates": candidates,
+            "water_candidates": water,
             "power_candidates": async_power_candidates(hass, prefs),
             "issues": [issue.as_dict() for issue in _issues(hass, prefs)],
         },
@@ -408,9 +423,10 @@ async def websocket_energy(
 ) -> None:
     """Return the energy of devices and sources in a period.
 
-    With a draft (`base_hash` and `changes`), untracked energy and warnings
-    follow the draft's tree. Warnings flag devices whose children used clearly
-    more energy than they did.
+    Electricity is in kWh, water in `water_unit` (litres or gallons). With a
+    draft (`base_hash` and `changes`), untracked values and warnings follow
+    the draft's trees. Warnings flag devices whose children used clearly more
+    than they did.
     """
     _runtime(hass)
     if ATTR_CHANGES in msg:
@@ -419,12 +435,27 @@ async def websocket_energy(
         )
     else:
         prefs = await energy_access.async_get_prefs(hass)
-    devices = prefs.get(KEY_DEVICES, [])
-    stats = [device[STAT] for device in devices]
+    lists = {kind: prefs.get(key, []) for kind, key in DEVICE_KEYS.items()}
+    stats = list(dict.fromkeys(d[STAT] for devices in lists.values() for d in devices))
     stats += sorted(source_energy_stats(prefs.get(KEY_SOURCES, [])) - set(stats))
     now = dt_util.now()
     energy = await async_energy(hass, stats, msg[ATTR_PERIOD], now)
-    roots = build_tree(devices)
+    unit = water_unit(hass)
+    minimum = {
+        DeviceKind.ELECTRICITY: PLAUSIBILITY_MIN_KWH,
+        DeviceKind.WATER: VolumeConverter.convert(PLAUSIBILITY_MIN_LITERS, "L", unit),
+    }
+    rest: dict[str, float | None] = {}
+    issues: list[dict[str, Any]] = []
+    for kind, devices in lists.items():
+        roots = build_tree(devices)
+        rest |= untracked(roots, energy)
+        issues += [
+            issue.as_dict()
+            for issue in plausibility(
+                roots, energy, min_amount=minimum[kind], kind=kind
+            )
+        ]
     start, end = period_range(msg[ATTR_PERIOD], now)
     connection.send_result(
         msg["id"],
@@ -433,8 +464,9 @@ async def websocket_energy(
             "start": start.isoformat(),
             "end": end.isoformat(),
             "energy": energy,
-            "untracked": untracked(roots, energy),
-            "issues": [issue.as_dict() for issue in plausibility(roots, energy)],
+            "water_unit": unit,
+            "untracked": rest,
+            "issues": issues,
         },
     )
 

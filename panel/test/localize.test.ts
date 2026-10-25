@@ -1,6 +1,15 @@
 import { afterEach, describe, expect, it } from "vitest";
 
-import { formatEnergy, formatNumber, formatPower, hasKey, LANGUAGES, localize } from "../src/localize";
+import {
+  formatEnergy,
+  formatFlow,
+  formatNumber,
+  formatPower,
+  formatVolume,
+  hasKey,
+  LANGUAGES,
+  localize,
+} from "../src/localize";
 import { de } from "../src/translations/de";
 import { en } from "../src/translations/en";
 import type { HomeAssistant } from "../src/types";
@@ -71,6 +80,15 @@ describe("formatting", () => {
     expect(formatEnergy(hass("en"), 1.234)).toBe("1.23 kWh");
     expect(formatEnergy(hass("en"), 1234.5)).toBe("1,235 kWh");
     expect(formatEnergy(hass("en"), -1.5)).toBe("-1.5 kWh");
+  });
+
+  it("formats water in L, m³ and gallons", () => {
+    expect(formatVolume(hass("en"), 42.42, "L")).toBe("42.4 L");
+    expect(formatVolume(hass("en"), 1500, "L")).toBe("1.5 m³");
+    expect(formatVolume(hass("en"), -2345, "L")).toBe("-2.35 m³");
+    expect(formatVolume(hass("en"), 1500, "gal")).toBe("1,500 gal");
+    expect(formatFlow(hass("en"), 8.333, "L")).toBe("8.33 L/min");
+    expect(formatFlow(hass("en"), 37.85411784, "gal")).toBe("10 gal/min");
   });
 
   it("formats power in W and kW", () => {

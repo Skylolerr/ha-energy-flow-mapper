@@ -8,11 +8,13 @@ from typing import Any
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 from custom_components.energy_flow_mapper import energy_stats
 from custom_components.energy_flow_mapper.energy_stats import (
     async_energy,
     period_range,
+    water_unit,
 )
 
 ZURICH = "Europe/Zurich"
@@ -83,8 +85,18 @@ async def test_energy_sums_changes(
     assert (start, end) == period_range("week", now)
     assert ids == {"sensor.a", "sensor.b", "portal:x", "sensor.none"}
     assert resolution == "hour"
-    assert units == {"energy": "kWh"}
+    assert units == {"energy": "kWh", "volume": "L"}
     assert types == {"change"}
+
+
+async def test_water_in_gallons_for_us_units(
+    hass: HomeAssistant, statistics: list[tuple[Any, ...]]
+) -> None:
+    """With US units, water comes in gallons."""
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    assert water_unit(hass) == "gal"
+    await async_energy(hass, ["sensor.a"], "today", dt_util.now())
+    assert statistics[0][5] == {"energy": "kWh", "volume": "gal"}
 
 
 @pytest.mark.parametrize(

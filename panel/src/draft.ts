@@ -1,7 +1,7 @@
 // Pure draft logic of the panel. It mirrors hierarchy.py so the tree can be
 // shown and edited before anything is sent; the backend checks again on save.
 
-import type { Change, Device, HomeAssistant, Source, StatInfo } from "./types";
+import type { Change, Device, DeviceKind, HomeAssistant, Source, StatInfo } from "./types";
 
 /** A grid connection without costs, as the energy settings page creates it. */
 export const NEW_GRID: Source = {
@@ -15,6 +15,15 @@ export const NEW_GRID: Source = {
   entity_energy_price_export: null,
   number_energy_price_export: null,
   cost_adjustment_day: 0,
+};
+
+/** A water meter without costs, as the energy settings page creates it. */
+export const NEW_WATER: Source = {
+  type: "water",
+  stat_energy_from: null,
+  stat_cost: null,
+  entity_energy_price: null,
+  number_energy_price: null,
 };
 
 export interface TreeNode {
@@ -31,6 +40,8 @@ export type SourceRole =
   | "production"
   | "discharge"
   | "charge"
+  | "gas"
+  | "water"
   | "consumption";
 
 export interface SourceRow {
@@ -49,10 +60,28 @@ function setOptional(device: Device, key: string, value: unknown): void {
   }
 }
 
-/** Apply changes in order to a copy; changes that do not fit are skipped. */
-export function applyChanges(devices: Device[], changes: Change[]): Device[] {
+/** The device list a change belongs to, or null for a source change. */
+export function changeKind(change: Change): DeviceKind | null {
+  if (change.type === "assign_source" || change.type === "unassign_source") {
+    return null;
+  }
+  return change.kind ?? "electricity";
+}
+
+/**
+ * Apply the device changes of one list (`kind`) in order to a copy; changes
+ * that do not fit are skipped.
+ */
+export function applyChanges(
+  devices: Device[],
+  changes: Change[],
+  kind: DeviceKind = "electricity",
+): Device[] {
   const result: Device[] = structuredClone(devices);
   for (const change of changes) {
+    if (changeKind(change) !== kind) {
+      continue;
+    }
     const index = result.findIndex((d) => d.stat_consumption === change.stat);
     if (change.type === "add") {
       if (index !== -1) {
@@ -205,18 +234,60 @@ export function displayName(
 
 const POWER_FACTORS: Record<string, number> = { mW: 0.001, W: 1, kW: 1000, MW: 1e6 };
 
-/** Current power of an entity in W, or null if unknown. */
-export function powerInWatts(hass: HomeAssistant, entityId: string | undefined): number | null {
+const GALLON = 3.785411784;
+/** Flow units of Home Assistant, in L/min. */
+const FLOW_FACTORS: Record<string, number> = {
+  "mL/s": 0.06,
+  "L/s": 60,
+  "L/min": 1,
+  "L/h": 1 / 60,
+  "m³/s": 60000,
+  "m³/min": 1000,
+  "m³/h": 1000 / 60,
+  "ft³/min": 28.316846592,
+  "gal/min": GALLON,
+  "gal/h": GALLON / 60,
+  "gal/d": GALLON / 1440,
+};
+
+function stateValue(
+  hass: HomeAssistant,
+  entityId: string | undefined,
+  factors: Record<string, number>,
+  unit: string,
+): number | null {
   const state = entityId ? hass.states[entityId] : undefined;
   if (state === undefined) {
     return null;
   }
   const value = Number.parseFloat(state.state);
-  const factor = POWER_FACTORS[state.attributes.unit_of_measurement ?? "W"];
+  const factor = factors[state.attributes.unit_of_measurement ?? unit];
   if (!Number.isFinite(value) || factor === undefined) {
     return null;
   }
   return value * factor;
+}
+
+/** Current power of an entity in W, or null if unknown. */
+export function powerInWatts(hass: HomeAssistant, entityId: string | undefined): number | null {
+  return stateValue(hass, entityId, POWER_FACTORS, "W");
+}
+
+/** Current flow of an entity in L/min, or null if unknown. */
+export function flowInLitresPerMinute(
+  hass: HomeAssistant,
+  entityId: string | undefined,
+): number | null {
+  return stateValue(hass, entityId, FLOW_FACTORS, "L/min");
+}
+
+/** Power in W (electricity) or flow in L/min (water) of a rate sensor. */
+export function rateValue(
+  hass: HomeAssistant,
+  entityId: string | undefined,
+  kind: DeviceKind,
+): number | null {
+  return kind === "water" ? flowInLitresPerMinute(hass, entityId) : powerInWatts(hass, entityId);
 }
 
 /** Own value minus children for each node with children (null if unknown). */
@@ -245,14 +316,22 @@ const SOURCE_ROLES: Record<string, [SourceRole, SourceRole | null]> = {
   grid: ["import", "export"],
   solar: ["production", null],
   battery: ["discharge", "charge"],
-  gas: ["consumption", null],
-  water: ["consumption", null],
+  gas: ["gas", null],
+  water: ["water", null],
 };
 
-/** One row per energy statistic of the sources. */
-export function sourceRows(sources: Source[]): SourceRow[] {
+/** The tab a source is shown in: water on its own, everything else with electricity. */
+export function sourceKind(source: Source): DeviceKind {
+  return source.type === "water" ? "water" : "electricity";
+}
+
+/** One row per energy statistic of the sources (of one tab, if `kind` is given). */
+export function sourceRows(sources: Source[], kind?: DeviceKind): SourceRow[] {
   const rows: SourceRow[] = [];
   for (const source of sources) {
+    if (kind !== undefined && sourceKind(source) !== kind) {
+      continue;
+    }
     const [from, to] = SOURCE_ROLES[source.type] ?? ["consumption", null];
     if (source.stat_energy_from) {
       rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name });
@@ -266,13 +345,14 @@ export function sourceRows(sources: Source[]): SourceRow[] {
 
 const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
 
-/** Source types the panel may change; gas and water are only shown. */
-const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery"];
+/** Source types the panel may change; gas is only shown. */
+const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "water"];
 
 /**
  * Apply the source changes of a draft to a copy, like hierarchy.py: grid
  * import/export replace the meter given as `replace`, or else that of the
- * first grid connection (keeping its prices), solar and battery add a source.
+ * first grid connection (keeping its prices); a water meter replaces the one
+ * given as `replace`, or else is added; solar and battery add a source.
  * Changes that do not fit are skipped.
  */
 export function applySourceChanges(sources: Source[], changes: Change[]): Source[] {
@@ -299,6 +379,18 @@ export function applySourceChanges(sources: Source[], changes: Change[]): Source
         });
       } else if (change.role === "battery" && change.stat_to) {
         result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
+      } else if (change.role === "water") {
+        let water = change.replace
+          ? result.find((s) => s.type === "water" && s.stat_energy_from === change.replace)
+          : undefined;
+        if (water === undefined) {
+          if (change.replace) {
+            continue;
+          }
+          water = structuredClone(NEW_WATER);
+          result.push(water);
+        }
+        water.stat_energy_from = change.stat;
       }
     } else if (change.type === "unassign_source") {
       const index = result.findIndex(

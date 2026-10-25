@@ -7,9 +7,11 @@ from datetime import datetime, timedelta
 from typing import Final, Literal
 
 from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.recorder import get_instance
 from homeassistant.util import dt as dt_util
+from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 type Resolution = Literal["5minute", "hour", "day"]
 
@@ -21,6 +23,13 @@ PERIODS: Final[dict[str, tuple[int, Resolution]]] = {
     "week": (6, "hour"),
     "month": (29, "day"),
 }
+
+
+def water_unit(hass: HomeAssistant) -> str:
+    """Return the unit water is shown in: gallons for US units, else litres."""
+    if hass.config.units is US_CUSTOMARY_SYSTEM:
+        return UnitOfVolume.GALLONS.value
+    return UnitOfVolume.LITERS.value
 
 
 def period_range(period: str, now: datetime) -> tuple[datetime, datetime]:
@@ -36,7 +45,7 @@ async def async_energy(
     period: str,
     now: datetime,
 ) -> dict[str, float | None]:
-    """Return the energy in kWh of each statistic in the period.
+    """Return the energy in kWh (water in `water_unit`) of each statistic.
 
     A statistic without data in the period maps to None. Without a recorder
     every value is None.
@@ -52,7 +61,7 @@ async def async_energy(
         end,
         set(stats),
         resolution,
-        {"energy": "kWh"},
+        {"energy": "kWh", "volume": water_unit(hass)},
         {"change"},
     )
     result: dict[str, float | None] = {}

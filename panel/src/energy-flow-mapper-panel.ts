@@ -7,7 +7,7 @@ import {
   canMove,
   displayName,
   moveTargets,
-  powerInWatts,
+  rateValue,
   sourceRows,
   type TreeNode,
   untracked,
@@ -22,13 +22,17 @@ import {
   edgePath,
   HOME_ID,
   layout,
+  PLACEHOLDER_ROLES,
   strokeWidth,
+  WATER_PLACEHOLDER_ROLES,
 } from "./layout";
 import {
   formatDateTime,
   formatEnergy,
+  formatFlow,
   formatNumber,
   formatPower,
+  formatVolume,
   hasKey,
   localize,
   type StringKey,
@@ -41,6 +45,7 @@ import type {
   Candidate,
   Change,
   Device,
+  DeviceKind,
   DiffEntry,
   EnergyResult,
   HomeAssistant,
@@ -78,8 +83,12 @@ const SOURCE_COLORS: Record<string, string> = {
   battery: "var(--energy-battery-out-color, #4db6ac)",
   discharge: "var(--energy-battery-out-color, #4db6ac)",
   charge: "var(--energy-battery-in-color, #f06292)",
+  gas: "var(--energy-gas-color, #8e021b)",
+  water: "var(--energy-water-color, #00bcd4)",
   consumption: "var(--energy-gas-color, #8e021b)",
 };
+
+export const TABS: DeviceKind[] = ["electricity", "water"];
 
 type Dragged = { kind: "device" | "candidate"; stat: string };
 
@@ -110,6 +119,7 @@ export function assignRole(role: string | undefined): AssignRole | null {
     case "export":
     case "production":
     case "battery":
+    case "water":
       return role;
     case "discharge":
     case "charge":
@@ -183,6 +193,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _zoom: { state: true },
     _period: { state: true },
     _energy: { state: true },
+    _tab: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -209,6 +220,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _period: Period;
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
+  /** The device list shown: electricity or water. */
+  declare _tab: DeviceKind;
 
   private _loading = false;
   private _validateRequest = 0;
@@ -243,6 +256,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._zoom = { x: 0, y: 0, k: 1 };
     this._period = "now";
     this._energy = null;
+    this._tab = "electricity";
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -305,23 +319,64 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Values shown in the diagram: power in W, or energy in kWh for a period. */
+  /** Switch between the electricity and the water devices. */
+  setTab(tab: DeviceKind): void {
+    if (tab === this._tab) {
+      return;
+    }
+    this._tab = tab;
+    this._selected = null;
+    this._autoFit = true;
+    this._fitted = false;
+  }
+
+  /**
+   * Values shown in the diagram: power in W (water: flow in L/min), or for a
+   * period energy in kWh (water in the unit of the energy result).
+   */
   _values(devices: Device[]): Map<string, number | null> {
     if (this._period === "now") {
-      return this._powerMap(devices);
+      return this._rateMap(devices);
     }
     const energy = this._energy?.energy ?? {};
     return new Map(devices.map((d) => [d.stat_consumption, energy[d.stat_consumption] ?? null]));
   }
 
-  /** Format a value of `_values` for the current period. */
+  /** "L" or "gal": how water is shown. */
+  _waterUnit(): string {
+    return this._energy?.water_unit ?? (this.hass?.config?.unit_system?.volume === "gal" ? "gal" : "L");
+  }
+
+  /** Format a value of `_values` for the current period and tab. */
   _formatValue(value: number): string {
+    if (this._tab === "water") {
+      return this._period === "now"
+        ? formatFlow(this.hass, value, this._waterUnit())
+        : formatVolume(this.hass, value, this._waterUnit());
+    }
     return this._period === "now" ? formatPower(this.hass, value) : formatEnergy(this.hass, value);
   }
 
-  /** The device list with the draft applied. */
+  /** The device list of a tab with the draft applied. */
+  draftOf(kind: DeviceKind): Device[] {
+    const prefs = this._snapshot?.prefs;
+    const devices = kind === "water" ? prefs?.device_consumption_water : prefs?.device_consumption;
+    return applyChanges(devices ?? [], this._changes, kind);
+  }
+
+  /** The device list of the current tab with the draft applied. */
   get draft(): Device[] {
-    return applyChanges(this._snapshot?.prefs.device_consumption ?? [], this._changes);
+    return this.draftOf(this._tab);
+  }
+
+  /** Device changes of the water tab name their list. */
+  private _kind(): { kind?: DeviceKind } {
+    return this._tab === "water" ? { kind: "water" } : {};
+  }
+
+  /** Free meters of a tab, as the backend found them. */
+  _candidates(kind: DeviceKind = this._tab): Candidate[] {
+    return (kind === "water" ? this._snapshot?.water_candidates : this._snapshot?.candidates) ?? [];
   }
 
   /** The sources with the draft applied. */
@@ -332,15 +387,20 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _info(stat: string): StatInfo | undefined {
     return (
       this._snapshot?.stats[stat] ??
-      this._snapshot?.candidates.find((c) => c.stat === stat) ??
+      [...this._candidates("electricity"), ...this._candidates("water")].find((c) => c.stat === stat) ??
       this._snapshot?.power_candidates?.find((c) => c.stat === stat)
     );
   }
 
-  private _name(stat: string, devices: Device[] = this.draft): string {
+  /** Display name; devices of the current tab come first, then the other tab. */
+  private _name(
+    stat: string,
+    devices: Device[] = [...this.draft, ...this.draftOf(this._tab === "water" ? "electricity" : "water")],
+  ): string {
+    const candidates = [...this._candidates("electricity"), ...this._candidates("water")];
     return displayName(stat, devices, {
       ...this._snapshot?.stats,
-      ...Object.fromEntries((this._snapshot?.candidates ?? []).map((c) => [c.stat, c])),
+      ...Object.fromEntries(candidates.map((c) => [c.stat, c])),
     });
   }
 
@@ -349,8 +409,11 @@ export class EnergyFlowMapperPanel extends LitElement {
     return this._period === "now" ? base : [...base, ...(this._energy?.issues ?? [])];
   }
 
+  /** Issues of a device in the current tab. */
   private _issuesFor(stat: string): Issue[] {
-    return this._issues().filter((issue) => issue.stat === stat);
+    return this._issues().filter(
+      (issue) => issue.stat === stat && (issue.kind ?? "electricity") === this._tab,
+    );
   }
 
   _change(change: Change): void {
@@ -623,7 +686,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (dragged.kind === "candidate") {
       this._addCandidate(dragged.stat, parent);
     } else {
-      this._change({ type: "move", stat: dragged.stat, parent });
+      this._change({ type: "move", stat: dragged.stat, parent, ...this._kind() });
     }
   }
 
@@ -698,20 +761,21 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   _addCandidate(stat: string, parent: string | null): void {
-    const candidate = this._snapshot?.candidates.find((c) => c.stat === stat);
+    const candidate = this._candidates().find((c) => c.stat === stat);
     this._change({
       type: "add",
       stat,
       parent,
       stat_rate: candidate?.power ?? null,
+      ...this._kind(),
     });
     this._selected = stat;
   }
 
   /**
    * Assign a free sensor to a source role; a battery asks for its second
-   * meter. `replace` names the grid meter it replaces, so that the right grid
-   * connection changes when there are several.
+   * meter. `replace` names the grid or water meter it replaces, so that the
+   * right source changes when there are several.
    */
   _assign(role: AssignRole, stat: string, replace: string | null = null): void {
     if (role === "battery") {
@@ -719,14 +783,14 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     this._dialog = null;
-    const grid = role === "import" || role === "export";
-    this._change({ type: "assign_source", role, stat, ...(grid && replace ? { replace } : {}) });
+    const replaces = role === "import" || role === "export" || role === "water";
+    this._change({ type: "assign_source", role, stat, ...(replaces && replace ? { replace } : {}) });
   }
 
-  /** Statistics used by the draft's devices and sources. */
+  /** Statistics used by the draft's devices (both tabs) and sources. */
   private _usedInDraft(): Set<string> {
     const used = new Set<string>();
-    for (const device of this.draft) {
+    for (const device of [...this.draftOf("electricity"), ...this.draftOf("water")]) {
       used.add(device.stat_consumption);
       if (device.stat_rate) {
         used.add(device.stat_rate);
@@ -769,11 +833,11 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Free sensors that are not added in the draft yet, matching `search`. */
+  /** Free sensors of the tab that are not added in the draft yet, matching `search`. */
   _freeCandidates(search: string = this._search): Candidate[] {
     const used = this._usedInDraft();
     search = search.trim().toLowerCase();
-    return (this._snapshot?.candidates ?? []).filter(
+    return this._candidates().filter(
       (c) =>
         !used.has(c.stat) &&
         (!search ||
@@ -862,6 +926,19 @@ export class EnergyFlowMapperPanel extends LitElement {
       return html`<div class="message">${this._t("loading")}</div>`;
     }
     return html`
+      <div class="tabs" role="tablist" aria-label=${this._t("tabs_label")}>
+        ${TABS.map(
+          (tab) => html`<button
+            role="tab"
+            class=${this._tab === tab ? "active" : ""}
+            aria-selected=${String(this._tab === tab)}
+            data-tab=${tab}
+            @click=${() => this.setTab(tab)}
+          >
+            ${icon(tab === "water" ? "water" : "flash")} ${this._t(`tab_${tab}`)}
+          </button>`,
+        )}
+      </div>
       <div class="content ${this.narrow ? "narrow" : ""}">
         ${this.narrow ? nothing : html`<aside class="column free">${this._renderCandidates()}</aside>`}
         <main class="column main">
@@ -876,23 +953,25 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   // --- diagram --------------------------------------------------------------
 
-  private _powerMap(devices: Device[]): Map<string, number | null> {
+  /** Power in W, or for water flow in L/min, of each device's rate sensor. */
+  private _rateMap(devices: Device[]): Map<string, number | null> {
     return new Map(
-      devices.map((d) => [d.stat_consumption, this.hass ? powerInWatts(this.hass, d.stat_rate) : null]),
+      devices.map((d) => [d.stat_consumption, this.hass ? rateValue(this.hass, d.stat_rate, this._tab) : null]),
     );
   }
 
-  /** The diagram layout of the current draft. */
+  /** The diagram layout of the current draft and tab. */
   diagramLayout() {
     const devices = this.draft;
     const roots = buildTree(devices);
     const values = this._values(devices);
     return layout(
       roots,
-      sourceRows(this.draftSources),
+      sourceRows(this.draftSources, this._tab),
       values,
       untracked(roots, values),
       this._collapsed,
+      this._tab === "water" ? WATER_PLACEHOLDER_ROLES : PLACEHOLDER_ROLES,
     );
   }
 
@@ -1000,7 +1079,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`
       <section class="card diagram-card">
         <div class="card-header">
-          <h2>${this._t("diagram")}</h2>
+          <h2>${this._t(this._tab === "water" ? "diagram_water" : "diagram")}</h2>
           <div class="periods" role="group" aria-label=${this._t("period_label")}>
             ${(["now", "today", "week", "month"] as const).map(
               (period) => html`<button
@@ -1200,8 +1279,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const handlers = this._dragHandlers(stat);
     const device = devices.find((d) => d.stat_consumption === stat);
     const value = device ? (this._values([device]).get(stat) ?? null) : null;
-    const info =
-      this._snapshot?.stats[stat] ?? this._snapshot?.candidates.find((c) => c.stat === stat);
+    const info = this._info(stat);
     const sub = [value === null ? null : this._formatValue(value), info?.area_name]
       .filter(Boolean)
       .join(" · ");
@@ -1282,7 +1360,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- list (hidden, kept for later use) --------------------------------------
 
   private _renderSources(): TemplateResult {
-    const rows = sourceRows(this.draftSources);
+    const rows = sourceRows(this.draftSources, this._tab);
     return html`
       <section class="card">
         <div class="card-header">
@@ -1315,9 +1393,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _renderTree(): TemplateResult {
     const devices = this.draft;
     const roots = buildTree(devices);
-    const power = new Map<string, number | null>(
-      devices.map((d) => [d.stat_consumption, this.hass ? powerInWatts(this.hass, d.stat_rate) : null]),
-    );
+    const power = this._rateMap(devices);
     const rest = untracked(roots, power);
     const home = this._dragHandlers(HOME);
     return html`
@@ -1405,7 +1481,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 >!</span
               >`
             : nothing}
-          <span class="node-power">${watts === null ? nothing : formatPower(this.hass, watts)}</span>
+          <span class="node-power">${watts === null ? nothing : this._formatValue(watts)}</span>
           <button
             class="icon"
             aria-label=${this._t("actions", { name })}
@@ -1425,7 +1501,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                     <span class="toggle"></span>
                     <span class="node-name">${this._t("untracked")}</span>
                     <span class="node-power"
-                      >${untrackedWatts === null ? this._t("none") : formatPower(this.hass, untrackedWatts)}</span
+                      >${untrackedWatts === null ? this._t("none") : this._formatValue(untrackedWatts)}</span
                     >
                   </li>`
                 : nothing}
@@ -1440,7 +1516,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`
       <section class="card">
         <div class="card-header"><h2>${this._t("free_sensors")}</h2></div>
-        <p class="hint">${this._t("free_sensors_hint")}</p>
+        <p class="hint">${this._t(this._tab === "water" ? "free_sensors_hint_water" : "free_sensors_hint")}</p>
         <input
           type="search"
           placeholder=${this._t("search")}
@@ -1449,7 +1525,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           @input=${(e: Event) => (this._search = (e.target as HTMLInputElement).value)}
         />
         ${candidates.length === 0
-          ? html`<p class="empty">${this._t("no_candidates")}</p>`
+          ? html`<p class="empty">${this._t(this._tab === "water" ? "no_candidates_water" : "no_candidates")}</p>`
           : html`<ul class="candidates">
               ${candidates.map(
                 (c) => html`<li
@@ -1487,7 +1563,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   private _renderPowerSensors(): TemplateResult | typeof nothing {
-    const sensors = this._freePowerSensors();
+    // Meters can only be created for power sensors, not for flow.
+    const sensors = this._tab === "water" ? [] : this._freePowerSensors();
     if (sensors.length === 0) {
       return nothing;
     }
@@ -1518,8 +1595,15 @@ export class EnergyFlowMapperPanel extends LitElement {
         <p class="empty">${this._t("select_hint")}</p>
       </section>`;
     }
-    const info = this._snapshot?.stats[stat] ?? this._snapshot?.candidates.find((c) => c.stat === stat);
-    const watts = this.hass ? powerInWatts(this.hass, device.stat_rate) : null;
+    const info = this._info(stat);
+    const water = this._tab === "water";
+    const rate = this.hass ? rateValue(this.hass, device.stat_rate, this._tab) : null;
+    const rateText =
+      rate === null
+        ? null
+        : water
+          ? formatFlow(this.hass, rate, this._waterUnit())
+          : formatPower(this.hass, rate);
     const roots = buildTree(devices);
     const values = this._values(devices);
     const rest = untracked(roots, values).get(stat);
@@ -1532,11 +1616,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       <section class="card">
         <div class="card-header"><h2>${this._name(stat, devices)}</h2></div>
         <dl>
-          ${row("detail_statistic", stat)} ${row("detail_power_sensor", device.stat_rate)}
+          ${row("detail_statistic", stat)}
+          ${row(water ? "detail_flow_sensor" : "detail_power_sensor", device.stat_rate)}
           ${row("detail_device", info?.device_name)} ${row("detail_area", info?.area_name)}
-          ${row("detail_power", watts === null ? null : formatPower(this.hass, watts))}
+          ${row(water ? "detail_flow" : "detail_power", rateText)}
           ${energy !== undefined
-            ? row("detail_energy", energy === null ? null : formatEnergy(this.hass, energy))
+            ? row(water ? "detail_volume" : "detail_energy", energy === null ? null : this._formatValue(energy))
             : nothing}
           ${info?.created_helper ? row("detail_helper", this._t("created_by")) : nothing}
           ${rest !== undefined
@@ -1576,24 +1661,32 @@ export class EnergyFlowMapperPanel extends LitElement {
       : issue.code;
   }
 
+  /** One line of a diff; water devices are marked as such. */
   _diffText(entry: DiffEntry): string {
-    const name = this._name(entry.stat);
-    const to = entry.to ? this._name(entry.to) : "";
+    const text = this._diffLine(entry);
+    return entry.kind === "water" ? this._t("diff_water", { text }) : text;
+  }
+
+  private _diffLine(entry: DiffEntry): string {
+    const kind = entry.kind ?? "electricity";
+    const devices = this.draftOf(kind);
+    const saved = (kind === "water"
+      ? this._snapshot?.prefs.device_consumption_water
+      : this._snapshot?.prefs.device_consumption) ?? [];
+    const name = this._name(entry.stat, entry.kind ? devices : undefined);
+    const to = entry.to ? this._name(entry.to, devices) : "";
     switch (entry.type) {
       case "added":
         return entry.parent
-          ? this._t("diff_added_under", { name, to: this._name(entry.parent) })
+          ? this._t("diff_added_under", { name, to: this._name(entry.parent, devices) })
           : this._t("diff_added", { name });
       case "removed":
-        return this._t("diff_removed", {
-          name: this._name(entry.stat, this._snapshot?.prefs.device_consumption),
-        });
+        return this._t("diff_removed", { name: this._name(entry.stat, saved) });
       case "moved":
         return entry.to ? this._t("diff_moved", { name, to }) : this._t("diff_moved_top", { name });
       case "renamed": {
         // The draft already carries the new name, so name the device as saved.
-        const before =
-          entry.from || this._name(entry.stat, this._snapshot?.prefs.device_consumption);
+        const before = entry.from || this._name(entry.stat, saved);
         return entry.to
           ? this._t("diff_renamed", { name: before, to: entry.to })
           : this._t("diff_renamed_reset", { name: before });
@@ -1605,7 +1698,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           role: this._roleLabel(entry.role),
         });
       default:
-        return this._t("diff_rate", { name });
+        return this._t(kind === "water" ? "diff_rate_water" : "diff_rate", { name });
     }
   }
 
@@ -1723,7 +1816,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 if (this._selected === dialog.stat) {
                   this._selected = null;
                 }
-                this._change({ type: "remove", stat: dialog.stat });
+                this._change({ type: "remove", stat: dialog.stat, ...this._kind() });
               }}
             >
               ${this._t("remove")}
@@ -1743,19 +1836,21 @@ export class EnergyFlowMapperPanel extends LitElement {
         return html`<h2>${this._t("move_title", { name })}</h2>
           ${this._targetList(targets, (parent) => {
             this._close();
-            this._change({ type: "move", stat: dialog.stat, parent });
+            this._change({ type: "move", stat: dialog.stat, parent, ...this._kind() });
           })}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
           </div>`;
       }
       case "add": {
-        const candidate = this._snapshot?.candidates.find((c) => c.stat === dialog.stat);
+        const candidate = this._candidates().find((c) => c.stat === dialog.stat);
         const name = candidate?.name || dialog.stat;
         const targets: (string | null)[] = [null, ...devices.map((d) => d.stat_consumption)];
         return html`<h2>${this._t("add_title", { name })}</h2>
           ${candidate?.power
-            ? html`<p class="hint">${this._t("with_power", { entity: candidate.power })}</p>`
+            ? html`<p class="hint">
+                ${this._t(this._tab === "water" ? "with_flow" : "with_power", { entity: candidate.power })}
+              </p>`
             : nothing}
           ${this._targetList(targets, (parent) => {
             this._close();
@@ -1784,7 +1879,12 @@ export class EnergyFlowMapperPanel extends LitElement {
               class="primary"
               @click=${() => {
                 this._close();
-                this._change({ type: "rename", stat: dialog.stat, name: this._renameValue.trim() || null });
+                this._change({
+                  type: "rename",
+                  stat: dialog.stat,
+                  name: this._renameValue.trim() || null,
+                  ...this._kind(),
+                });
               }}
             >
               ${this._t("ok")}
@@ -1882,9 +1982,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>`;
       }
       case "source": {
-        // Gas and water are only shown: no assign role, nothing to change.
+        // Gas is only shown: no assign role, nothing to change.
         const assign = assignRole(dialog.role);
-        const grid = assign === "import" || assign === "export";
+        const replaces = assign === "import" || assign === "export" || assign === "water";
         const source = this.draftSources.find(
           (s) => s.stat_energy_from === dialog.stat || s.stat_energy_to === dialog.stat,
         );
@@ -1900,7 +2000,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             ${assign
               ? html`<button
                   @click=${() =>
-                    (this._dialog = { kind: "assign", role: assign, replace: grid ? dialog.stat : null })}
+                    (this._dialog = { kind: "assign", role: assign, replace: replaces ? dialog.stat : null })}
                 >
                   ${this._t(dialog.stat && assign !== "production" && assign !== "battery" ? "source_replace" : "source_assign")}
                 </button>`
@@ -1929,7 +2029,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "assign":
         return html`<h2>${this._t("assign_title", { role: this._roleLabel(dialog.role) })}</h2>
-          <p class="hint">${this._t("assign_hint")}</p>
+          <p class="hint">${this._t(dialog.role === "water" ? "assign_hint_water" : "assign_hint")}</p>
           ${this._sensorList([], (stat) => this._assign(dialog.role, stat, dialog.replace ?? null))}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
@@ -2093,6 +2193,22 @@ export class EnergyFlowMapperPanel extends LitElement {
       border: none;
       padding: 0;
       text-decoration: underline;
+    }
+    .tabs {
+      display: flex;
+      gap: 4px;
+      padding: 12px 16px 0;
+    }
+    .tabs button {
+      border: none;
+      border-bottom: 2px solid transparent;
+      border-radius: 0;
+      color: var(--secondary-text-color);
+      padding: 8px 12px;
+    }
+    .tabs button.active {
+      color: var(--primary-color);
+      border-bottom-color: var(--primary-color);
     }
     .content {
       flex: 1;

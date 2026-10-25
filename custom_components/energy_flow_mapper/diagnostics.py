@@ -43,5 +43,6 @@ async def async_get_config_entry_diagnostics(
         "devices": len(devices),
         "water_devices": len(prefs[KEY_DEVICES_WATER]),
         "tree_depth": tree_depth(build_tree(devices)),
+        "water_tree_depth": tree_depth(build_tree(prefs[KEY_DEVICES_WATER])),
         "issues": dict(Counter(issue.code.value for issue in validate(prefs))),
     }

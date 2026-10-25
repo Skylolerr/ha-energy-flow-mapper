@@ -88,6 +88,26 @@ export function formatEnergy(hass: HomeAssistant | undefined, kwh: number): stri
   return `${formatNumber(hass, kwh, abs < 10 ? 2 : abs < 100 ? 1 : 0)} kWh`;
 }
 
+/** Format water given in `unit` ("L" or "gal"); litres switch to m³ from 1000 L. */
+export function formatVolume(hass: HomeAssistant | undefined, value: number, unit: string): string {
+  if (unit === "L" && Math.abs(value) >= 1000) {
+    return `${formatNumber(hass, value / 1000, significant(value / 1000))} m³`;
+  }
+  return `${formatNumber(hass, value, significant(value))} ${unit}`;
+}
+
+/** Format a flow given in L/min, as gal/min when water is shown in gallons. */
+export function formatFlow(hass: HomeAssistant | undefined, litresPerMinute: number, unit: string): string {
+  const value = unit === "gal" ? litresPerMinute / 3.785411784 : litresPerMinute;
+  return `${formatNumber(hass, value, significant(value))} ${unit}/min`;
+}
+
+/** Decimals for about three significant digits: 1.23, 12.3, 123. */
+function significant(value: number): number {
+  const abs = Math.abs(value);
+  return abs < 10 ? 2 : abs < 100 ? 1 : 0;
+}
+
 /** Format an ISO timestamp as local date and time. */
 export function formatDateTime(hass: HomeAssistant | undefined, iso: string): string {
   try {
