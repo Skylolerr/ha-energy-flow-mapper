@@ -46,6 +46,8 @@ yet. Electricity and water each have their own tab.
   ordinary integral helper and puts it into the diagram.
 - **Find a device:** the search field above the diagram highlights matching devices,
   opens collapsed ones and moves to them.
+- **Dashboard card:** the same tree, read-only, on any dashboard and for every user –
+  electricity or water, now or in a period, for the whole home or from one device down.
 - **Safe saving:** changes are collected in a draft and checked (loops, missing parents,
   duplicates, a sensor used twice) before anything is written. Every save first stores a
   backup; "Undo last save" and "Backups" restore an earlier state.
@@ -141,6 +143,34 @@ Good to know:
 - If someone changes the energy settings elsewhere while you edit, saving is refused and
   the panel reloads; your draft is kept and checked again.
 
+## Dashboard card
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/card-dark.png">
+  <img alt="Two dashboard cards: the energy flow of 30 days and the water flow now" src="docs/images/card-light.png">
+</picture>
+
+The card shows a device tree on a dashboard. It only shows – editing stays in the
+panel – and every user who can see the dashboard sees it, like Home Assistant's own
+energy dashboard. Tap a device to open its history.
+
+Add it in the dashboard editor: *Add card* → search for **Energy Flow Mapper**. It comes
+with the integration; there is no resource to add. In YAML:
+
+```yaml
+type: custom:energy-flow-mapper-card
+kind: electricity      # or water
+period: today          # now, today, week or month
+root: sensor.kitchen_energy   # optional: only this device and everything below it
+title: Kitchen         # optional; an empty title hides the header
+show_sources: true     # sources above Home (not with root)
+show_untracked: true   # blocks for what is not tracked individually
+```
+
+A tree wider than the card is shown at half size at least; then the card scrolls
+sideways and starts at Home. Values are read again every minute; power and flow *now*
+follow the sensors live.
+
 ## Backups
 
 - **When:** before every save, restore and import, Energy Flow Mapper backs up the
@@ -170,6 +200,10 @@ Good to know:
 - Backups are stored in `.storage/energy_flow_mapper.backups` (see [Backups](#backups)),
   the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers`.
 - The integration has no entities and no devices.
+- The card is served with the panel. Its small loader is added to every frontend page;
+  the card itself only loads when a dashboard shows it. Its one command only reads the
+  device tree, names and consumption, never prices, and is the only command that users
+  who are not admins may use.
 
 ## Known limitations
 

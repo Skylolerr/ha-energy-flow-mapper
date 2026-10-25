@@ -110,13 +110,14 @@ ha-energy-flow-mapper/
 │   ├── transfer.py            # Export/Import-Dateien – ohne HA-Imports
 │   ├── models.py              # Runtime-Daten des Config Entry (Sicherungen, Helfer, Schreib-Lock)
 │   ├── websocket.py           # energy_flow_mapper/*
-│   ├── frontend.py            # Static Path und Panel-Registrierung
+│   ├── frontend.py            # Static Paths, Panel-Registrierung, Startskript der Karte
 │   ├── diagnostics.py
 │   ├── strings.json
 │   ├── translations/{en,de,fr,it}.json
 │   ├── brand/…
-│   └── frontend/energy-flow-mapper-panel.js   # Gebautes Bundle (wird committet)
-├── panel/                     # Quellcode des Panels (TypeScript, Lit, Rollup)
+│   └── frontend/              # Gebaute Bundles (werden committet): Panel,
+│                              #   Startskript der Karte (-card.js), Karte (-card-view.js)
+├── panel/                     # Quellcode von Panel und Karte (TypeScript, Lit, Rollup)
 ├── tests/
 ├── scripts/{deploy.sh, release.sh}
 ├── .github/workflows/{validate.yml, tests.yml, release.yml}
@@ -126,7 +127,7 @@ ha-energy-flow-mapper/
 └── LICENSE
 ```
 
-Das Panel-Bundle wird **committet**, weil HACS keinen Build-Schritt ausführt. CI prüft, dass das Bundle zum Quellcode passt.
+Die Bundles werden **committet**, weil HACS keinen Build-Schritt ausführt. CI prüft, dass sie zum Quellcode passen.
 
 ### manifest.json
 
@@ -220,6 +221,14 @@ HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt 
 - **Nicht erfasst:** Unter jedem Gerät mit Kindern erscheint ein gestrichelter Block «Nicht erfasst» mit `eigener Wert − Summe Kinder` (live und im Zeitraum). Er ist nicht ziehbar und wird nicht gespeichert.
 
 ---
+
+### Dashboard-Karte (ab v0.5.0)
+
+- `custom:energy-flow-mapper-card`, nur Anzeige, für alle Benutzer (§2). Bearbeiten bleibt im Panel.
+- **Einstellungen** (Karten-Editor mit HAs `ha-form`, oder YAML): `kind` (`electricity` | `water`), `period` (`now` | `today` | `week` | `month`, Standard `today`), optional `root` (Gerät, ab dem der Baum gezeigt wird; dann ohne Quellen und ohne «Zuhause»), optional `title` (leer: keine Kopfzeile, fehlt: Name des Diagramms), `show_sources` und `show_untracked` (Standard an). Der Editor schreibt Standardwerte nicht ins YAML; ein Wechsel der Liste entfernt `root`.
+- **Darstellung:** dasselbe Layout wie im Panel (`layout.ts`), ohne Platzhalter, ohne Ziehen, Zoom und Suche. Der Baum wird auf die Kartenbreite verkleinert, aber nicht unter 50 %; ist er breiter, scrollt die Karte seitlich und beginnt in der Mitte bei «Zuhause» bzw. beim Startgerät. Warnungen (Plausibilität) wie im Panel. Antippen eines Geräts (nur Entities) öffnet `hass-more-info`.
+- **Werte:** «Jetzt» live aus `hass.states` (Leistung bzw. Durchfluss), Zeiträume aus `energy_flow_mapper/card` (§12). Die Karte liest den Baum und die Zeitraumwerte jede Minute neu.
+- **Auslieferung:** `frontend.add_extra_js_url` lädt beim Einrichten des Eintrags ein kleines Startskript (`energy-flow-mapper-card.js`, rund 2 KB) auf jeder Seite; es registriert die Karte und ihren Eintrag in der Kartenauswahl und lädt `energy-flow-mapper-card-view.js` erst, wenn ein Dashboard die Karte zeigt. Die Adresse trägt Version und Hash beider Dateien. HA setzt beim Start eine eigene (scoped) Registry an die Stelle von `window.customElements` und lädt Zusatz-Module gleichzeitig mit seinem eigenen Code; das Startskript registriert die Karte deshalb sofort und noch einmal, sobald `<home-assistant>` definiert ist.
 
 ## 7. Freie Sensoren (`candidates.py`)
 
@@ -323,6 +332,7 @@ Alle Befehle nur für Admins, ausser dem Lese-Befehl der Dashboard-Karte ab v0.5
 | `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
 | `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
 | `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
+| `energy_flow_mapper/card` (**alle Benutzer**, ab v0.5.0) | optional `kind` (Standard `electricity`), optional `period` (`today`, `week`, `month`) | `kind`, `devices` (Statistik, Name, übergeordnetes Gerät, Leistungs-/Durchflusssensor, Bereich), `sources` der Liste (Typ, Rolle, Statistik, Name), `water_unit`; mit `period` dazu `energy`, `untracked`, `issues` wie bei `energy`. Keine Preise oder Kosten |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
 
@@ -390,7 +400,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 4. **Phase 4 – v0.3.0:** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4)* Reiter «Strom» und «Wasser»; Wasser-Hierarchie (`device_consumption_water`) mit freien Wasser-Zählern, Durchfluss und Wasser im Zeitraum; Wasser-Quellen zuweisen, ersetzen und entfernen (§8); Export/Import mit Wasser-Geräten; `zip_release` (§4). Gas bleibt bei der Anzeige (§2).
 **v0.4.0** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4; Wunsch des Maintainers)*: «Zähler anlegen» für Durchflusssensoren (§7), «Änderung zurücknehmen» im Entwurf und «Gerät suchen» im Diagramm (§6).
 
-**v0.5.0 – Dashboard-Karte** *(geplant; Entscheid des Maintainers vom 2026-10-25)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
+**v0.5.0 – Dashboard-Karte** *(in Arbeit, Stand 2026-10-25; Entscheid des Maintainers vom 2026-10-25; siehe §6 «Dashboard-Karte»)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
 
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 

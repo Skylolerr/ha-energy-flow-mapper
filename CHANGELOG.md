@@ -7,6 +7,16 @@ breaking changes; they are marked as **Breaking**.
 
 ## [Unreleased]
 
+### Added
+
+- **Dashboard card** `custom:energy-flow-mapper-card`: the device tree of electricity or
+  water on any dashboard, read-only and for every user. Period (now, today, 7 or 30
+  days), start at a device, sources and untracked consumption on or off, title; tap a
+  device to open its history. Set up in the card editor; it comes with the integration
+  without adding a resource.
+- A read-only command for the card, which users who are not admins may use too. It
+  returns the tree, names and consumption only, never prices or costs.
+
 ## [0.4.0] - 2026-10-25
 
 Tested with Home Assistant 2026.10.4; the minimum stays 2026.10.0.
