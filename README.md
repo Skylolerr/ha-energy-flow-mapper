@@ -224,6 +224,9 @@ follow the sensors live.
   your Home Assistant release do not match what Energy Flow Mapper expects. To protect
   your settings the editor is disabled. Update Energy Flow Mapper or open an issue.
 - **Something looks wrong after saving:** use *Undo last save* or restore a backup.
+- **The card shows "Custom element doesn't exist" or an old version** right after
+  installing or updating: reload the page. The browser keeps the Home Assistant page
+  cached, and the card's loader is part of it.
 - **Report a problem:** open an [issue](https://github.com/Skylolerr/ha-energy-flow-mapper/issues)
   with the diagnostics (Settings → Devices & services → Energy Flow Mapper → ⋮ →
   Download diagnostics; it contains counts only, no entity names) and the log entries for
