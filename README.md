@@ -298,6 +298,16 @@ Copy the English file, translate the texts and keep the keys and `{placeholders}
 are. You do not need to build anything; registering the new language is done when it is
 merged.
 
+## Support
+
+Energy Flow Mapper is free and open source. If it saves you time, you can
+[buy me a coffee](https://buymeacoffee.com/skylolerr) – thank you! A star on GitHub, a
+bug report or a translation helps just as much.
+
+<a href="https://buymeacoffee.com/skylolerr"><img alt="Buy me a coffee" src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?logo=buymeacoffee&logoColor=000000"></a>
+
+More of my Home Assistant projects: [skylolerr.com](https://skylolerr.com)
+
 ## License
 
 MIT © Skylolerr – see [LICENSE](LICENSE). Changes are listed in the
