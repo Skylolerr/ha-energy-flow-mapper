@@ -11,6 +11,13 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Vertical diagram** for large energy trees: the buttons *Horizontal* and *Vertical*
+  above the diagram run the tree top-down or from left to right, with the devices of a
+  level stacked below each other. Your browser remembers the choice.
+- Card option `orientation` (`horizontal` or `vertical`), also in the card editor.
+
 ## [0.5.0] - 2026-10-25
 
 > **Highlight:** a dashboard card for everyone – your device tree, read-only, on any

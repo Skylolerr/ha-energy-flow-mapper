@@ -61,6 +61,7 @@ solar, battery or water meter, and which meters are not used yet.
 
 - **Diagram of your energy dashboard** – sources, Home and devices, arranged
   automatically; zoom and move with the mouse wheel, by dragging or with two fingers.
+  A large tree stays readable: *Vertical* runs it from left to right instead of top-down.
 - **Live power and energy per period** – now, today, 7 days or 30 days. Every device with
   sub-devices shows what is *not tracked individually*.
 - **Plausibility warnings** – a device is flagged when its sub-devices used clearly more
@@ -140,13 +141,15 @@ kind: electricity      # or water
 period: today          # now, today, week or month
 root: sensor.kitchen_energy   # optional: only this device and everything below it
 title: Kitchen         # optional; an empty title hides the header
-show_sources: true     # sources above Home (not with root)
+orientation: vertical  # horizontal (top-down, default) or vertical (left to right)
+show_sources: true     # sources before Home (not with root)
 show_untracked: true   # blocks for what is not tracked individually
 ```
 
 A tree wider than the card is shown at half size at least; then the card scrolls
-sideways and starts at Home. Values are read again every minute; power and flow *now*
-follow the sensors live.
+sideways and starts at Home. With many devices, `vertical` keeps the tree narrow and
+makes the card taller. Values are read again every minute; power and flow *now* follow
+the sensors live.
 
 ## Using the panel
 

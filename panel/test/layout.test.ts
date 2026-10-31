@@ -7,11 +7,14 @@ import {
   dashPattern,
   BOX_H,
   BOX_W,
+  COLUMN_GAP,
   edgePath,
   H_GAP,
   HOME_ID,
   layout,
   MARGIN,
+  ROW_GAP,
+  SOURCE_W,
   strokeWidth,
   untrackedId,
   V_GAP,
@@ -123,6 +126,68 @@ describe("layout", () => {
     expect(Math.max(...result.blocks.map((b) => b.y))).toBe(
       MARGIN + 5 * (BOX_H + V_GAP), // sources, Home, a, b, f, g
     );
+  });
+});
+
+describe("vertical layout", () => {
+  const vertical = (roots = buildTree(DEVICES), sources = sourceRows([{ type: "grid", stat_energy_from: "imp" }])) =>
+    layout(roots, sources, new Map(), new Map(), new Set(), [], true, "vertical");
+
+  it("flows to the right, with each level as a column", () => {
+    const result = vertical();
+    const blocks = byId(result);
+    const home = blocks[HOME_ID];
+    expect(blocks["source:0"].x).toBe(MARGIN);
+    expect(home.x).toBe(MARGIN + SOURCE_W + COLUMN_GAP);
+    const level1 = home.x + BOX_W + COLUMN_GAP;
+    expect(blocks.server.x).toBe(level1);
+    expect(blocks.tv.x).toBe(level1);
+    expect(blocks.sonos.x).toBe(level1 + BOX_W + COLUMN_GAP);
+    expect(blocks[untrackedId("server")].x).toBe(blocks.sonos.x);
+    // Blocks keep their size; siblings are stacked and a parent is centred on them.
+    expect(blocks.server).toMatchObject({ w: BOX_W, h: BOX_H });
+    expect(blocks["source:0"]).toMatchObject({ w: SOURCE_W, h: BOX_H });
+    const children = [blocks.sonos, blocks[untrackedId("server")]];
+    expect(children[1].y - children[0].y).toBe(BOX_H + ROW_GAP);
+    expect(blocks.server.y + BOX_H / 2).toBeCloseTo((children[0].y + children[1].y + BOX_H) / 2);
+    expect(blocks.tv.y).toBeGreaterThanOrEqual(children[1].y + BOX_H + ROW_GAP);
+    expect(home.y + BOX_H / 2).toBeCloseTo(result.height / 2);
+    // Everything fits inside the reported size.
+    for (const block of result.blocks) {
+      expect(block.x).toBeGreaterThanOrEqual(MARGIN - 0.001);
+      expect(block.x + block.w).toBeLessThanOrEqual(result.width - MARGIN + 0.001);
+      expect(block.y).toBeGreaterThanOrEqual(MARGIN - 0.001);
+      expect(block.y + block.h).toBeLessThanOrEqual(result.height - MARGIN + 0.001);
+    }
+  });
+
+  it("has the same blocks and edges as the horizontal layout", () => {
+    const roots = buildTree(DEVICES);
+    const sources = sourceRows([{ type: "grid", stat_energy_from: "imp", stat_energy_to: "exp" }]);
+    const wide = layout(roots, sources, new Map(), new Map(), new Set(), []);
+    const tall = vertical(roots, sources);
+    expect(tall.blocks.map((b) => b.id)).toEqual(wide.blocks.map((b) => b.id));
+    expect(tall.edges).toEqual(wide.edges);
+  });
+
+  it("keeps a wide tree narrow", () => {
+    const devices = [device("a"), ...Array.from({ length: 20 }, (_, i) => device(`d${i}`, "a"))];
+    const roots = buildTree(devices);
+    const wide = layout(roots, [], new Map(), new Map());
+    const tall = layout(roots, [], new Map(), new Map(), new Set(), undefined, true, "vertical");
+    expect(tall.width).toBeLessThan(wide.width / 2);
+    expect(tall.height).toBeGreaterThan(wide.height);
+  });
+
+  it("connects the right side to the left side, and back for grid export", () => {
+    const left = { id: "a", kind: "home" as const, x: 0, y: 0, w: 100, h: 60 };
+    const right = { id: "b", kind: "device" as const, x: 200, y: 200, w: 100, h: 60 };
+    expect(edgePath(left, right, 0, "vertical")).toBe("M 100 30 C 150 30, 150 230, 200 230");
+    expect(edgePath(right, left, 0, "vertical")).toBe("M 200 230 C 150 230, 150 30, 100 30");
+    expect(edgePath(left, right, 10, "vertical")).toBe("M 100 30 C 145 30, 145 230, 190 230");
+    expect(edgePath(right, left, 10, "vertical")).toBe("M 200 230 C 155 230, 155 30, 110 30");
+    expect(arrowHead(left, right, 5, 6.5, "vertical")).toBe("193.5,225 193.5,235 200,230");
+    expect(arrowHead(right, left, 5, 6.5, "vertical")).toBe("106.5,25 106.5,35 100,30");
   });
 });
 

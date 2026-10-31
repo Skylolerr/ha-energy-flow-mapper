@@ -52,6 +52,7 @@ import type {
   EnergyResult,
   HomeAssistant,
   Issue,
+  Orientation,
   Period,
   SaveResult,
   Snapshot,
@@ -74,6 +75,8 @@ export const FIND_ZOOM = 0.9;
 /** Minimum scale and lift (px above the finger) of the drag image on touch. */
 export const TOUCH_DRAG_SCALE = 0.8;
 export const TOUCH_DRAG_LIFT = 48;
+/** Where this browser remembers the orientation of the diagram. */
+const ORIENTATION_KEY = "energy_flow_mapper.orientation";
 
 interface Zoom {
   x: number;
@@ -146,6 +149,15 @@ export function downloadJson(filename: string, data: unknown): void {
   setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
+/** The orientation this browser remembers; storage may be blocked. */
+function savedOrientation(): Orientation {
+  try {
+    return localStorage.getItem(ORIENTATION_KEY) === "vertical" ? "vertical" : "horizontal";
+  } catch {
+    return "horizontal";
+  }
+}
+
 /** Navigate inside the Home Assistant frontend without reloading the page. */
 function navigate(path: string): void {
   history.pushState(null, "", path);
@@ -172,6 +184,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _view: { state: true },
     _zoom: { state: true },
     _period: { state: true },
+    _orientation: { state: true },
     _energy: { state: true },
     _tab: { state: true },
     _find: { state: true },
@@ -200,6 +213,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _view: "diagram" | "list";
   declare _zoom: Zoom;
   declare _period: Period;
+  declare _orientation: Orientation;
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
   /** The device list shown: electricity or water. */
@@ -240,6 +254,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._view = "diagram";
     this._zoom = { x: 0, y: 0, k: 1 };
     this._period = "now";
+    this._orientation = savedOrientation();
     this._energy = null;
     this._tab = "electricity";
     this._find = "";
@@ -1009,7 +1024,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       untracked(roots, values),
       this._collapsed,
       this._tab === "water" ? WATER_PLACEHOLDER_ROLES : PLACEHOLDER_ROLES,
+      true,
+      this._orientation,
     );
+  }
+
+  /** Run the diagram the other way, fit it again and remember the choice. */
+  setOrientation(orientation: Orientation): void {
+    this._orientation = orientation;
+    try {
+      localStorage.setItem(ORIENTATION_KEY, orientation);
+    } catch {
+      // Blocked storage: the choice just lasts until the panel is opened again.
+    }
+    this._autoFit = true;
+    this.fit();
   }
 
   private _viewport(): HTMLElement | null {
@@ -1212,6 +1241,17 @@ export class EnergyFlowMapperPanel extends LitElement {
             )}
           </div>
           <div class="toolbar">
+            <div class="orientation" role="group" aria-label=${this._t("orientation_label")}>
+              ${(["horizontal", "vertical"] as const).map(
+                (orientation) => html`<button
+                  class=${this._orientation === orientation ? "active" : ""}
+                  aria-pressed=${String(this._orientation === orientation)}
+                  @click=${() => this.setOrientation(orientation)}
+                >
+                  ${this._t(`orientation_${orientation}`)}
+                </button>`,
+              )}
+            </div>
             <button
               class="icon"
               aria-label=${this._t("zoom_out")}
@@ -1325,14 +1365,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     // neither pokes out of the tip nor leaves a gap.
     return svg`<g class="edge edge-${edge.kind}" data-from=${edge.from} data-to=${edge.to}>
       <path
-        d=${edgePath(from, to, head.length - 1)}
+        d=${edgePath(from, to, head.length - 1, this._orientation)}
         fill="none"
         stroke=${color}
         stroke-width=${width}
         stroke-dasharray=${dashed ? dashPattern(width) : "none"}
         stroke-linecap="butt"
       ></path>
-      <polygon points=${arrowHead(from, to, head.half, head.length)} fill=${color}></polygon>
+      <polygon points=${arrowHead(from, to, head.half, head.length, this._orientation)} fill=${color}></polygon>
     </g>`;
   }
 
@@ -2612,28 +2652,39 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .toolbar {
       display: flex;
+      flex-wrap: wrap;
       gap: 4px;
     }
     .diagram-card .card-header {
       flex-wrap: wrap;
     }
-    .periods {
+    .periods,
+    .orientation {
       display: flex;
+    }
+    .periods {
       margin-left: auto;
     }
-    .periods button {
+    .orientation {
+      margin-right: 4px;
+    }
+    .periods button,
+    .orientation button {
       border-radius: 0;
       margin-left: -1px;
       padding: 4px 10px;
       color: var(--primary-text-color);
     }
-    .periods button:first-child {
+    .periods button:first-child,
+    .orientation button:first-child {
       border-radius: 8px 0 0 8px;
     }
-    .periods button:last-child {
+    .periods button:last-child,
+    .orientation button:last-child {
       border-radius: 0 8px 8px 0;
     }
-    .periods button.active {
+    .periods button.active,
+    .orientation button.active {
       background: var(--primary-color);
       border-color: var(--primary-color);
       color: var(--text-primary-color, #fff);

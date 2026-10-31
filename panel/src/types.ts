@@ -194,6 +194,9 @@ export interface WSError {
 /** "now" shows live power; the others energy in a period. */
 export type Period = "now" | "today" | "week" | "month";
 
+/** How the diagram runs: top-down (horizontal) or left to right (vertical). */
+export type Orientation = "horizontal" | "vertical";
+
 /** Result of `energy_flow_mapper/energy`; values in kWh, water in `water_unit`. */
 export interface EnergyResult {
   period: Exclude<Period, "now">;

@@ -3,7 +3,15 @@
 
 import { css, html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 
-import { CARD_EDITOR_TAG, CARD_KINDS, CARD_PERIODS, CARD_VIEW_TAG, cardConfig, type CardConfig } from "./card-config";
+import {
+  CARD_EDITOR_TAG,
+  CARD_KINDS,
+  CARD_ORIENTATIONS,
+  CARD_PERIODS,
+  CARD_VIEW_TAG,
+  cardConfig,
+  type CardConfig,
+} from "./card-config";
 import { buildTree, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
 import {
   arrowHead,
@@ -85,8 +93,9 @@ export class EnergyFlowMapperCardView extends LitElement {
   declare _width: number;
 
   private _loaded: string | null = null;
-  /** Whether a scrolling diagram was moved to its middle (Home) yet. */
+  /** Whether a scrolling diagram was moved to Home yet, and for which orientation. */
   private _centred = false;
+  private _orientation: CardConfig["orientation"] | null = null;
   private _request = 0;
   private _timer: ReturnType<typeof setInterval> | undefined;
   private _resizeObserver?: ResizeObserver;
@@ -138,13 +147,20 @@ export class EnergyFlowMapperCardView extends LitElement {
       this._centred = false;
       void this._load();
     }
+    if (this.config.orientation !== this._orientation) {
+      this._orientation = this.config.orientation;
+      this._centred = false;
+    }
   }
 
-  /** A diagram wider than the card starts scrolled to the middle, where Home is. */
+  /**
+   * A diagram wider than the card starts where Home is: scrolled to the middle,
+   * or at the left when it runs from left to right.
+   */
   protected override updated(): void {
     const diagram = this.shadowRoot?.querySelector<HTMLElement>(".diagram");
     if (!this._centred && diagram) {
-      diagram.scrollLeft = (diagram.scrollWidth - diagram.clientWidth) / 2;
+      diagram.scrollLeft = this._orientation === "vertical" ? 0 : (diagram.scrollWidth - diagram.clientWidth) / 2;
       this._centred = true;
     }
   }
@@ -252,7 +268,7 @@ export class EnergyFlowMapperCardView extends LitElement {
       config.show_sources && !config.root
         ? (this._data?.sources ?? []).map((s) => ({ type: s.type, role: s.role, stat: s.stat, name: s.name }))
         : [];
-    const result = layout(roots, sources, values, rest, new Set(), [], config.show_untracked);
+    const result = layout(roots, sources, values, rest, new Set(), [], config.show_untracked, config.orientation);
     // Below a device the diagram starts at that device: no sources, no Home.
     const shown = result.blocks.filter((b) => !(config.root && b.kind === "home"));
     const ids = new Set(shown.map((b) => b.id));
@@ -296,10 +312,11 @@ export class EnergyFlowMapperCardView extends LitElement {
     const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null);
     const width = strokeWidth(edge.power, maxValue);
     const head = arrowSize(width);
+    const orientation = this.config?.orientation;
     return svg`<g class="edge edge-${edge.kind}" data-from=${edge.from} data-to=${edge.to}>
-      <path d=${edgePath(from, to, head.length - 1)} fill="none" stroke=${color} stroke-width=${width}
+      <path d=${edgePath(from, to, head.length - 1, orientation)} fill="none" stroke=${color} stroke-width=${width}
         stroke-dasharray=${dashed ? dashPattern(width) : "none"} stroke-linecap="butt"></path>
-      <polygon points=${arrowHead(from, to, head.half, head.length)} fill=${color}></polygon>
+      <polygon points=${arrowHead(from, to, head.half, head.length, orientation)} fill=${color}></polygon>
     </g>`;
   }
 
@@ -590,6 +607,10 @@ export class EnergyFlowMapperCardEditor extends LitElement {
           },
         },
       },
+      {
+        name: "orientation",
+        selector: { select: { mode: "dropdown", options: options(CARD_ORIENTATIONS, "orientation_") } },
+      },
       { name: "show_sources", selector: { boolean: {} } },
       { name: "show_untracked", selector: { boolean: {} } },
     ];
@@ -601,6 +622,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       kind: "card_field_kind",
       period: "period_label",
       root: "card_field_root",
+      orientation: "orientation_label",
       show_sources: "card_field_show_sources",
       show_untracked: "card_field_show_untracked",
     };
@@ -627,6 +649,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     const defaults: Record<string, unknown> = {
       kind: "electricity",
       period: "today",
+      orientation: "horizontal",
       show_sources: true,
       show_untracked: true,
     };

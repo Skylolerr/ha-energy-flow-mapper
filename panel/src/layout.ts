@@ -1,13 +1,19 @@
-// Automatic top-down layout of the diagram: sources, then Home, then the
-// device tree. Pure geometry, no DOM; positions are never stored.
+// Automatic layout of the diagram: sources, then Home, then the device tree,
+// top-down (horizontal, it grows wide) or from left to right (vertical, it
+// grows tall). Pure geometry, no DOM; positions are never stored.
 
 import type { SourceRole, SourceRow, TreeNode } from "./draft";
+import type { Orientation } from "./types";
 
 export const BOX_W = 220;
 export const BOX_H = 72;
 export const SOURCE_W = 160;
 export const H_GAP = 24;
 export const V_GAP = 56;
+/** Space between the levels of a vertical diagram; its edges fan out further. */
+export const COLUMN_GAP = 80;
+/** Space between stacked blocks of a vertical diagram, which keeps it short. */
+export const ROW_GAP = 12;
 export const MARGIN = 24;
 
 export const HOME_ID = "home";
@@ -94,12 +100,13 @@ function items(nodes: TreeNode[], collapsed: Set<string>, showUntracked: boolean
   });
 }
 
-function width(item: Item): number {
+/** Room of an item and its children across the flow, for blocks of size `box`. */
+function span(item: Item, box: number, space: number): number {
   if (item.children.length === 0) {
-    return BOX_W;
+    return box;
   }
-  const children = item.children.reduce((sum, child) => sum + width(child), 0);
-  return Math.max(BOX_W, children + H_GAP * (item.children.length - 1));
+  const children = item.children.reduce((sum, child) => sum + span(child, box, space), 0);
+  return Math.max(box, children + space * (item.children.length - 1));
 }
 
 /**
@@ -107,6 +114,7 @@ function width(item: Item): number {
  * or flow), `untracked` the untracked value of each device with children.
  * `placeholders` are the source roles offered when no source fills them;
  * without `showUntracked` the blocks for untracked consumption are left out.
+ * Levels are rows when horizontal and columns when vertical.
  */
 export function layout(
   roots: TreeNode[],
@@ -116,9 +124,20 @@ export function layout(
   collapsed: Set<string> = new Set(),
   placeholders: readonly PlaceholderRole[] = PLACEHOLDER_ROLES,
   showUntracked = true,
+  orientation: Orientation = "horizontal",
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
+
+  // Sizes along the flow and across it, and a position from those two.
+  const vertical = orientation === "vertical";
+  const boxAlong = vertical ? BOX_W : BOX_H;
+  const boxAcross = vertical ? BOX_H : BOX_W;
+  const sourceAlong = vertical ? SOURCE_W : BOX_H;
+  const sourceAcross = vertical ? BOX_H : SOURCE_W;
+  const gap = vertical ? COLUMN_GAP : V_GAP;
+  const space = vertical ? ROW_GAP : H_GAP;
+  const at = (along: number, across: number) => (vertical ? { x: along, y: across } : { x: across, y: along });
 
   // Source row: configured sources first, then placeholders for missing roles.
   const roles = new Set(sources.map((s) => (s.type === "battery" ? "battery" : s.role)));
@@ -126,7 +145,7 @@ export function layout(
     id: `source:${index}`,
     kind: "source",
     x: 0,
-    y: MARGIN,
+    y: 0,
     w: SOURCE_W,
     h: BOX_H,
     stat: source.stat,
@@ -139,32 +158,32 @@ export function layout(
         id: `placeholder:${role}`,
         kind: "placeholder",
         x: 0,
-        y: MARGIN,
+        y: 0,
         w: SOURCE_W,
         h: BOX_H,
         role,
       });
     }
   }
-  const sourcesWidth = sourceBlocks.length * SOURCE_W + (sourceBlocks.length - 1) * H_GAP;
+  const sourcesAcross = sourceBlocks.length * sourceAcross + (sourceBlocks.length - 1) * space;
 
-  // Device tree below Home.
+  // Device tree after Home.
   const tree = items(roots, collapsed, showUntracked);
-  const treeWidth = tree.length
-    ? tree.reduce((sum, item) => sum + width(item), 0) + H_GAP * (tree.length - 1)
-    : BOX_W;
-  const contentWidth = Math.max(sourcesWidth, treeWidth, BOX_W);
-  const center = MARGIN + contentWidth / 2;
+  const treeAcross = tree.length
+    ? tree.reduce((sum, item) => sum + span(item, boxAcross, space), 0) + space * (tree.length - 1)
+    : boxAcross;
+  const content = Math.max(sourcesAcross, treeAcross, boxAcross);
+  const center = MARGIN + content / 2;
 
-  let x = center - sourcesWidth / 2;
+  let across = center - sourcesAcross / 2;
   for (const block of sourceBlocks) {
-    block.x = x;
-    x += SOURCE_W + H_GAP;
+    Object.assign(block, at(MARGIN, across));
+    across += sourceAcross + space;
     blocks.push(block);
   }
 
-  const homeY = MARGIN + BOX_H + V_GAP;
-  blocks.push({ id: HOME_ID, kind: "home", x: center - BOX_W / 2, y: homeY, w: BOX_W, h: BOX_H });
+  const homeAlong = MARGIN + sourceAlong + gap;
+  blocks.push({ id: HOME_ID, kind: "home", ...at(homeAlong, center - boxAcross / 2), w: BOX_W, h: BOX_H });
   for (const block of sourceBlocks) {
     if (block.kind !== "source") {
       continue;
@@ -178,16 +197,15 @@ export function layout(
     });
   }
 
-  let height = homeY + BOX_H;
-  const place = (item: Item, left: number, depth: number, parent: string): void => {
-    const w = width(item);
-    const y = homeY + (depth + 1) * (BOX_H + V_GAP);
-    height = Math.max(height, y + BOX_H);
+  let end = homeAlong + boxAlong;
+  const place = (item: Item, start: number, depth: number, parent: string): void => {
+    const size = span(item, boxAcross, space);
+    const along = homeAlong + (depth + 1) * (boxAlong + gap);
+    end = Math.max(end, along + boxAlong);
     blocks.push({
       id: item.id,
       kind: item.kind,
-      x: left + (w - BOX_W) / 2,
-      y,
+      ...at(along, start + (size - boxAcross) / 2),
       w: BOX_W,
       h: BOX_H,
       stat: item.stat,
@@ -199,19 +217,22 @@ export function layout(
       kind: item.kind,
       power: item.kind === "untracked" ? (untracked.get(item.stat) ?? null) : (power.get(item.stat) ?? null),
     });
-    let childLeft = left + (w - (item.children.reduce((s, c) => s + width(c), 0) + H_GAP * (item.children.length - 1))) / 2;
+    const children = item.children.reduce((sum, child) => sum + span(child, boxAcross, space), 0);
+    let childStart = start + (size - (children + space * (item.children.length - 1))) / 2;
     for (const child of item.children) {
-      place(child, childLeft, depth + 1, item.id);
-      childLeft += width(child) + H_GAP;
+      place(child, childStart, depth + 1, item.id);
+      childStart += span(child, boxAcross, space) + space;
     }
   };
-  let left = center - treeWidth / 2;
+  let start = center - treeAcross / 2;
   for (const item of tree) {
-    place(item, left, 0, HOME_ID);
-    left += width(item) + H_GAP;
+    place(item, start, 0, HOME_ID);
+    start += span(item, boxAcross, space) + space;
   }
 
-  return { blocks, edges, width: contentWidth + 2 * MARGIN, height: height + MARGIN };
+  const breadth = content + 2 * MARGIN;
+  const length = end + MARGIN;
+  return { blocks, edges, width: vertical ? length : breadth, height: vertical ? breadth : length };
 }
 
 /** Stroke width for an edge: 2 to 8 px relative to the largest power. */
@@ -224,10 +245,20 @@ export function strokeWidth(power: number | null, maxPower: number): number {
 
 /**
  * A smooth connector between facing edges of two blocks: bottom to top when
- * it points down, top to bottom when it points up (Home to grid export).
- * `inset` stops the line before the target, where the arrowhead begins.
+ * it points down, top to bottom when it points up (Home to grid export), and
+ * sideways the same way in a vertical diagram. `inset` stops the line before
+ * the target, where the arrowhead begins.
  */
-export function edgePath(from: Block, to: Block, inset = 0): string {
+export function edgePath(from: Block, to: Block, inset = 0, orientation: Orientation = "horizontal"): string {
+  if (orientation === "vertical") {
+    const right = from.x <= to.x;
+    const x1 = right ? from.x + from.w : from.x;
+    const y1 = from.y + from.h / 2;
+    const x2 = right ? to.x - inset : to.x + to.w + inset;
+    const y2 = to.y + to.h / 2;
+    const mid = (x1 + x2) / 2;
+    return `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`;
+  }
   const down = from.y <= to.y;
   const x1 = from.x + from.w / 2;
   const y1 = down ? from.y + from.h : from.y;
@@ -243,8 +274,21 @@ export function arrowSize(lineWidth: number): { half: number; length: number } {
   return { half, length: half * 1.3 };
 }
 
-/** Arrowhead triangle at the end of an edge (points down, or up for export). */
-export function arrowHead(from: Block, to: Block, half = 6, length = half * 1.4): string {
+/** Arrowhead triangle at the end of an edge, pointing along it. */
+export function arrowHead(
+  from: Block,
+  to: Block,
+  half = 6,
+  length = half * 1.4,
+  orientation: Orientation = "horizontal",
+): string {
+  if (orientation === "vertical") {
+    const right = from.x <= to.x;
+    const x = right ? to.x : to.x + to.w;
+    const y = to.y + to.h / 2;
+    const back = right ? x - length : x + length;
+    return `${back},${y - half} ${back},${y + half} ${x},${y}`;
+  }
   const down = from.y <= to.y;
   const x = to.x + to.w / 2;
   const y = down ? to.y : to.y + to.h;

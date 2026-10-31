@@ -105,9 +105,12 @@ describe("card configuration", () => {
       type: "custom:x",
       kind: "electricity",
       period: "today",
+      orientation: "horizontal",
       show_sources: true,
       show_untracked: true,
     });
+    expect(cardConfig({ orientation: "vertical" }).orientation).toBe("vertical");
+    expect(() => cardConfig({ orientation: "diagonal" })).toThrow("orientation must be one of");
     expect(cardConfig({ kind: "water", period: "now", show_sources: false, root: "sensor.a" })).toMatchObject({
       type: `custom:${CARD_TAG}`,
       kind: "water",
@@ -261,6 +264,38 @@ describe("card", () => {
     expect(titled.shadowRoot!.querySelector(".title")!.textContent).toBe("Basement");
   });
 
+  it("shows the tree from left to right when vertical, starting at the left", async () => {
+    const position = (el: HTMLElement, selector: string) => {
+      const style = el.shadowRoot!.querySelector<HTMLElement>(selector)!.style;
+      return { x: Number.parseFloat(style.left), y: Number.parseFloat(style.top) };
+    };
+    const el = await view({ period: "now", orientation: "vertical" });
+    const home = position(el, ".block.home");
+    const server = position(el, '.block.device[data-stat="sensor.server"]');
+    const nas = position(el, '.block.device[data-stat="sensor.nas"]');
+    const tv = position(el, '.block.device[data-stat="portal:tv"]');
+    expect(position(el, ".block.source").x).toBeLessThan(home.x);
+    expect(server.x).toBeGreaterThan(home.x);
+    expect(nas.x).toBeGreaterThan(server.x);
+    expect(tv.x).toBe(server.x);
+    expect(tv.y).toBeGreaterThan(server.y);
+    // The arrow leaves Home on its right side and points right.
+    const edge = el.shadowRoot!.querySelector<SVGGElement>('.edge[data-from="home"][data-to="sensor.server"]')!;
+    const start = edge.querySelector("path")!.getAttribute("d")!.split(" ");
+    expect(Number(start[1])).toBe(home.x + 220);
+    // Home is at the left now, so a scrolling diagram stays there.
+    const diagram = el.shadowRoot!.querySelector<HTMLElement>(".diagram")!;
+    Object.defineProperty(diagram, "scrollWidth", { value: 900, configurable: true });
+    Object.defineProperty(diagram, "clientWidth", { value: 300, configurable: true });
+    el.config = cardConfig({ type: "x", period: "now" });
+    await settle(el);
+    expect(diagram.scrollLeft).toBe(300);
+    expect(position(el, ".block.home").y).toBeGreaterThan(position(el, ".block.source").y);
+    el.config = cardConfig({ type: "x", period: "now", orientation: "vertical" });
+    await settle(el);
+    expect(diagram.scrollLeft).toBe(0);
+  });
+
   it("loads again when it comes back, and stops watching its size when it leaves", async () => {
     const disconnect = vi.fn();
     const original = globalThis.ResizeObserver;
@@ -378,7 +413,15 @@ describe("card editor", () => {
     const el = await editor({ kind: "electricity" }, mock);
     expect(mock.calls).toEqual([{ type: "energy_flow_mapper/card", kind: "electricity" }]);
     const schema = el.schema();
-    expect(schema.map((f) => f.name)).toEqual(["title", "kind", "period", "root", "show_sources", "show_untracked"]);
+    expect(schema.map((f) => f.name)).toEqual([
+      "title",
+      "kind",
+      "period",
+      "root",
+      "orientation",
+      "show_sources",
+      "show_untracked",
+    ]);
     const root = schema[3].selector as { select: { options: { value: string; label: string }[] } };
     expect(root.select.options).toEqual([
       { value: "", label: "Whole home" },
@@ -388,11 +431,17 @@ describe("card editor", () => {
     ]);
     const kind = schema[1].selector as { select: { options: { label: string }[] } };
     expect(kind.select.options.map((o) => o.label)).toEqual(["Electricity", "Water"]);
+    const orientation = schema[4].selector as { select: { options: { value: string; label: string }[] } };
+    expect(orientation.select.options).toEqual([
+      { value: "horizontal", label: "Horizontal" },
+      { value: "vertical", label: "Vertical" },
+    ]);
     expect(schema.map((f) => el.computeLabel(f))).toEqual([
       "Title (empty: no title)",
       "Show",
       "Period",
       "Start at device",
+      "Orientation",
       "Show sources",
       "Show what is not tracked individually",
     ]);
@@ -412,6 +461,10 @@ describe("card editor", () => {
     expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}` });
     el._valueChanged({ show_untracked: false });
     expect(changes.at(-1)).toMatchObject({ show_untracked: false });
+    el._valueChanged({ orientation: "vertical" });
+    expect(changes.at(-1)).toMatchObject({ orientation: "vertical" });
+    el._valueChanged({ orientation: "horizontal" });
+    expect(changes.at(-1)).not.toHaveProperty("orientation");
     el._valueChanged({ kind: "water" });
     expect(changes.at(-1)).toMatchObject({ kind: "water" });
     expect(changes.at(-1)).not.toHaveProperty("root");

@@ -825,6 +825,51 @@ describe("diagram", () => {
     expect(el._zoom.k).toBeCloseTo(small);
   });
 
+  it("switches between horizontal and vertical, fits again and remembers it", async () => {
+    localStorage.clear();
+    const el = await mount(mockHass());
+    sized(el, 800, 600);
+    const buttons = () => [...root(el).querySelectorAll<HTMLButtonElement>(".orientation button")];
+    expect(buttons().map((b) => [b.textContent!.trim(), b.getAttribute("aria-pressed")])).toEqual([
+      ["Horizontal", "true"],
+      ["Vertical", "false"],
+    ]);
+    const wide = el.diagramLayout();
+    el._autoFit = false;
+    buttons()[1].click();
+    await el.updateComplete;
+    const tall = el.diagramLayout();
+    expect(tall.width).not.toBe(wide.width);
+    expect(buttons()[1].getAttribute("aria-pressed")).toBe("true");
+    expect(el._autoFit).toBe(true);
+    expect(el._zoom.k).toBeCloseTo(Math.min(800 / tall.width, 600 / tall.height, 1.4));
+    // The arrows run sideways: from the right side of Home.
+    const home = tall.blocks.find((b) => b.id === "home")!;
+    const path = root(el).querySelector('.edge-device[data-from="home"] path')!;
+    expect(path.getAttribute("d")).toContain(`M ${home.x + home.w} `);
+    // A new panel in this browser opens the same way.
+    const again = await mount(mockHass());
+    expect(again.diagramLayout().width).toBe(tall.width);
+    again.setOrientation("horizontal");
+    expect(localStorage.getItem("energy_flow_mapper.orientation")).toBe("horizontal");
+    localStorage.clear();
+  });
+
+  it("still switches when the browser cannot store it", async () => {
+    const el = await mount(mockHass());
+    const blocked = () => {
+      throw new Error("blocked");
+    };
+    vi.stubGlobal("localStorage", { getItem: blocked, setItem: blocked });
+    try {
+      el.setOrientation("vertical");
+      expect(el._orientation).toBe("vertical");
+      expect((await mount(mockHass()))._orientation).toBe("horizontal");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not fit before the viewport has a size", async () => {
     const el = await mount(mockHass());
     expect(el.fit()).toBe(false);
