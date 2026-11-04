@@ -63,6 +63,12 @@
     },
     "integral_failed": {
       "message": "L’assistant du compteur n’a pas pu être créé."
+    },
+    "home_not_supported": {
+      "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
+    },
+    "home_exists": {
+      "message": "Il y a déjà un compteur de la maison."
     }
   },
   "issues": {

@@ -63,6 +63,12 @@
     },
     "integral_failed": {
       "message": "Der Helfer für den Zähler konnte nicht angelegt werden."
+    },
+    "home_not_supported": {
+      "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
+    },
+    "home_exists": {
+      "message": "Es gibt schon einen Hauszähler."
     }
   },
   "issues": {

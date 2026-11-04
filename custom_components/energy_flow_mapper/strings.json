@@ -63,6 +63,12 @@
     },
     "integral_failed": {
       "message": "The helper for the meter could not be created."
+    },
+    "home_not_supported": {
+      "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
+    },
+    "home_exists": {
+      "message": "There is already a home meter."
     }
   },
   "issues": {

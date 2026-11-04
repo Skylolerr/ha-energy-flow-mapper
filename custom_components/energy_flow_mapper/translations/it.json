@@ -63,6 +63,12 @@
     },
     "integral_failed": {
       "message": "Non è stato possibile creare l’helper del contatore."
+    },
+    "home_not_supported": {
+      "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
+    },
+    "home_exists": {
+      "message": "C’è già un contatore della casa."
     }
   },
   "issues": {

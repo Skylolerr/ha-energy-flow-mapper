@@ -6,6 +6,7 @@ dashboard shows every user anyway (see SPEC.md §2).
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import probatio as vol
@@ -35,9 +36,17 @@ from .candidates import (
     async_stats_info,
 )
 from .const import DOMAIN, PLAUSIBILITY_MIN_KWH, PLAUSIBILITY_MIN_LITERS
-from .energy_stats import PERIODS, async_energy, period_range, water_unit
+from .energy_stats import (
+    PERIODS,
+    async_energy,
+    async_last_ends,
+    period_range,
+    stale_stat,
+    water_unit,
+)
 from .hierarchy import (
     DEVICE_KEYS,
+    HOME,
     KEY_DEVICES,
     KEY_DEVICES_WATER,
     KEY_SOURCES,
@@ -56,6 +65,10 @@ from .hierarchy import (
     build_tree,
     diff,
     has_errors,
+    home_consumption,
+    home_plausibility,
+    home_stats,
+    home_untracked,
     plausibility,
     prefs_hash,
     source_energy_stats,
@@ -135,6 +148,12 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("stat"): str,
             }
         ),
+        ChangeType.USE_AS_HOME_METER.value: vol.Schema(
+            {
+                vol.Required("type"): ChangeType.USE_AS_HOME_METER.value,
+                vol.Required("stat"): str,
+            }
+        ),
     },
 )
 
@@ -187,6 +206,13 @@ async def _async_current(hass: HomeAssistant, base_hash: str) -> dict[str, Any]:
 
 
 def _apply(prefs: Prefs, changes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Apply a draft; the home meter only where Home Assistant knows it."""
+    if not energy_access.home_supported() and any(
+        change["type"] == ChangeType.USE_AS_HOME_METER
+        or change.get("role") == AssignRole.HOME
+        for change in changes
+    ):
+        raise _error("home_not_supported")
     try:
         return apply_changes(prefs, changes)
     except ChangeError as err:
@@ -232,6 +258,7 @@ async def websocket_get(
             "power_candidates": async_power_candidates(hass, prefs),
             "flow_candidates": async_power_candidates(hass, prefs, DeviceKind.WATER),
             "issues": [issue.as_dict() for issue in _issues(hass, prefs)],
+            "home_supported": energy_access.home_supported(),
         },
     )
 
@@ -462,7 +489,10 @@ async def websocket_energy(
     lists = {kind: prefs.get(key, []) for kind, key in DEVICE_KEYS.items()}
     sources = source_energy_stats(prefs.get(KEY_SOURCES, []))
     connection.send_result(
-        msg["id"], await _async_period(hass, lists, sources, msg[ATTR_PERIOD])
+        msg["id"],
+        await _async_period(
+            hass, lists, sources, msg[ATTR_PERIOD], prefs.get(KEY_SOURCES, [])
+        ),
     )
 
 
@@ -471,11 +501,13 @@ async def _async_period(
     lists: dict[DeviceKind, list[Any]],
     sources: set[str],
     period: str,
+    home_sources: list[Any] | None = None,
 ) -> dict[str, Any]:
     """Return energy, untracked values and warnings of device lists in a period.
 
     Electricity is in kWh, water in `water_unit`; the energy of `sources` is
-    included too.
+    included too. With `home_sources` (the sources of the electricity list),
+    `home` holds the home consumption and what no top-level device covers.
     """
     stats = list(dict.fromkeys(d[STAT] for devices in lists.values() for d in devices))
     stats += sorted(sources - set(stats))
@@ -498,7 +530,7 @@ async def _async_period(
             )
         ]
     start, end = period_range(period, now)
-    return {
+    result: dict[str, Any] = {
         "period": period,
         "start": start.isoformat(),
         "end": end.isoformat(),
@@ -506,6 +538,42 @@ async def _async_period(
         "water_unit": unit,
         "untracked": rest,
         "issues": issues,
+    }
+    if home_sources is not None and DeviceKind.ELECTRICITY in lists:
+        roots = build_tree(lists[DeviceKind.ELECTRICITY])
+        home = await _async_home(hass, home_sources, roots, energy, end)
+        result["home"] = home
+        if home["untracked"] is not None:
+            rest[HOME] = home["untracked"]
+        if issue := home_plausibility(roots, energy, home["value"]):
+            issues.append(issue.as_dict())
+    return result
+
+
+async def _async_home(
+    hass: HomeAssistant,
+    sources: list[Any],
+    roots: list[Any],
+    energy: dict[str, float | None],
+    end: datetime,
+) -> dict[str, Any]:
+    """Return the home consumption of a period, unless its data is too late.
+
+    `stale` names the first meter behind it whose statistics end too long
+    before `end`; then there is no value, untracked value or warning.
+    """
+    value, basis = home_consumption(sources, energy)
+    stale = None
+    if value is not None:
+        stats = home_stats(sources)
+        stale = stale_stat(stats, await async_last_ends(hass, stats), end)
+    if stale is not None:
+        value = basis = None
+    return {
+        "value": value,
+        "basis": basis,
+        "stale": stale,
+        "untracked": home_untracked(roots, energy, value),
     }
 
 
@@ -566,6 +634,7 @@ async def websocket_card(
             for source, role, stat in rows
         ],
         "water_unit": water_unit(hass),
+        "home_supported": energy_access.home_supported(),
     }
     if ATTR_PERIOD in msg:
         result |= await _async_period(
@@ -573,6 +642,7 @@ async def websocket_card(
             {kind: devices},
             {stat for _, _, stat in rows},
             msg[ATTR_PERIOD],
+            sources if kind == DeviceKind.ELECTRICITY else None,
         )
     connection.send_result(msg["id"], result)
 

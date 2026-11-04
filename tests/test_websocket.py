@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
@@ -1007,7 +1008,11 @@ def energy_values(monkeypatch: pytest.MonkeyPatch) -> dict[str, float | None]:
         calls.append((stats, period))
         return {stat: values.get(stat) for stat in stats}
 
+    async def recent(hass: HomeAssistant, stats: list[str]) -> dict[str, Any]:
+        return dict.fromkeys(stats, dt_util.utcnow())
+
     monkeypatch.setattr(websocket_module, "async_energy", fake)
+    monkeypatch.setattr(websocket_module, "async_last_ends", recent)
     values["_calls"] = calls  # type: ignore[assignment]
     return values
 
@@ -1352,3 +1357,201 @@ async def test_import_check_reports_problems(
         document=CYCLE_DOCUMENT,
     )
     assert response["error"]["translation_key"] == "conflict"
+
+
+# --- home meter ---------------------------------------------------------------
+
+HOME_SOURCE: dict[str, Any] = {
+    "type": "home",
+    "stat_energy_to": "sensor.attic_energy",
+    "stat_rate": "sensor.attic_power",
+}
+
+
+def with_home(prefs: dict[str, Any]) -> dict[str, Any]:
+    return {**prefs, "energy_sources": [*prefs["energy_sources"], HOME_SOURCE]}
+
+
+@pytest.fixture
+def home_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Act as a release with the home meter, whose schema accepts it."""
+    monkeypatch.setattr(energy_access, "home_supported", lambda: True)
+    monkeypatch.setattr(energy_access, "validate", dict)
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_and_card_report_home_support(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Panel and card learn whether the home meter can be used."""
+    for supported in (False, True):
+        monkeypatch.setattr(energy_access, "home_supported", lambda s=supported: s)
+        get = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+        card = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+        assert get["result"]["home_supported"] is supported
+        assert card["result"]["home_supported"] is supported
+
+
+@pytest.mark.parametrize("energy_prefs", [with_home(ENERGY_PREFS)])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_with_home_meter(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Home is measured; untracked and the warning at the top level."""
+    energy_values |= {"sensor.attic_energy": 20.0, "sensor.garage_energy": 1.0}
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    result = response["result"]
+    assert result["home"] == {
+        "value": 20.0,
+        "basis": "measured",
+        "stale": None,
+        "untracked": 9.0,
+    }
+    assert result["untracked"]["home"] == 9.0
+    assert "devices_exceed_home" not in str(result["issues"])
+    energy_values["sensor.attic_energy"] = 9.0
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    result = response["result"]
+    assert result["home"]["untracked"] == -2.0
+    assert {
+        "code": "devices_exceed_home",
+        "severity": "warning",
+        "stat": "home",
+        "details": {"home": 9.0, "devices": 11.0, "excess": 2.0},
+        "kind": "electricity",
+    } in result["issues"]
+    card = await send(hass_ws_client, hass, type=f"{DOMAIN}/card", period="week")
+    assert card["result"]["home"]["value"] == 9.0
+    assert ("home", "sensor.attic_energy") in [
+        (s["role"], s["stat"]) for s in card["result"]["sources"]
+    ]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_calculates_home(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Without a home meter, Home is calculated from the sources."""
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    home = response["result"]["home"]
+    assert home == {"value": None, "basis": None, "stale": None, "untracked": None}
+    assert "home" not in response["result"]["untracked"]
+    energy_values |= {
+        "sensor.grid_export": 2.0,
+        "sensor.solar_energy": 3.0,
+        "sensor.battery_out": 1.0,
+        "sensor.battery_in": 0.5,
+        "sensor.garage_energy": 1.0,
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    assert response["result"]["home"] == {
+        "value": 13.5,
+        "basis": "calculated",
+        "stale": None,
+        "untracked": 2.5,
+    }
+
+
+@pytest.mark.parametrize("energy_prefs", [with_home(ENERGY_PREFS)])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_with_late_home_meter(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A home meter whose data is hours behind gives no home value."""
+    energy_values |= {"sensor.attic_energy": 9.0, "sensor.garage_energy": 1.0}
+
+    async def late(hass: HomeAssistant, stats: list[str]) -> dict[str, Any]:
+        return dict.fromkeys(stats, dt_util.utcnow() - timedelta(hours=3))
+
+    monkeypatch.setattr(websocket_module, "async_last_ends", late)
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="today")
+    result = response["result"]
+    assert result["home"] == {
+        "value": None,
+        "basis": None,
+        "stale": "sensor.attic_energy",
+        "untracked": None,
+    }
+    assert "devices_exceed_home" not in str(result["issues"])
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_water_card_has_no_home(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Home consumption is about electricity only."""
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/card", kind="water", period="week"
+    )
+    assert "home" not in response["result"]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"type": "assign_source", "role": "home", "stat": "sensor.attic_energy"},
+        {"type": "use_as_home_meter", "stat": "sensor.main_energy"},
+    ],
+)
+async def test_home_meter_refused_without_support(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+    change: dict[str, Any],
+) -> None:
+    """Releases before 2026.11 have no home meter: nothing is changed."""
+    monkeypatch.setattr(energy_access, "home_supported", lambda: False)
+    for command in ("validate", "save"):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/{command}",
+            base_hash=await current_hash(hass_ws_client, hass),
+            changes=[change],
+        )
+        assert response["error"]["translation_key"] == "home_not_supported"
+    assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS
+
+
+@pytest.mark.usefixtures("loaded_entry", "home_supported")
+async def test_use_device_as_home_meter(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A device becomes the home meter; its children move up a level."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[{"type": "use_as_home_meter", "stat": "sensor.main_energy"}],
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["energy_sources"][-1] == {
+        "type": "home",
+        "stat_energy_to": "sensor.main_energy",
+        "stat_rate": "sensor.main_power",
+    }
+    devices = device_list(prefs)
+    assert "sensor.main_energy" not in devices
+    assert "included_in_stat" not in devices["sensor.kitchen_energy"]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[{"type": "use_as_home_meter", "stat": "sensor.kitchen_energy"}],
+    )
+    assert response["error"]["translation_key"] == "home_exists"
