@@ -12,7 +12,7 @@ import {
   cardConfig,
   type CardConfig,
 } from "./card-config";
-import { buildTree, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
+import { buildTree, homeNow, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
 import {
   arrowHead,
   arrowSize,
@@ -34,7 +34,7 @@ import {
   localize,
   type StringKey,
 } from "./localize";
-import type { Device, DeviceKind, HomeAssistant, Issue } from "./types";
+import type { Device, DeviceKind, HomeAssistant, HomeResult, Issue } from "./types";
 
 const DOMAIN = "energy_flow_mapper";
 /** How often the card reads the tree and the period values again. */
@@ -60,6 +60,8 @@ export interface CardSource {
   role: SourceRole;
   stat: string;
   name: string;
+  /** Power sensor of the home meter, for Home now. */
+  stat_rate?: string;
 }
 
 /** Answer of `energy_flow_mapper/card`; period values only with a period. */
@@ -70,6 +72,9 @@ export interface CardData {
   water_unit: string;
   energy?: Record<string, number | null>;
   issues?: Issue[];
+  home_supported?: boolean;
+  /** Home consumption of the period (electricity). */
+  home?: HomeResult;
 }
 
 /** Only entities have a history to show; external statistics have none. */
@@ -260,15 +265,54 @@ export class EnergyFlowMapperCardView extends LitElement {
     return this._renderDiagram(roots, devices);
   }
 
+  /**
+   * What the whole home uses (not below a start device): now from the home
+   * meter's power sensor, in a period from the card command.
+   */
+  _home(roots: TreeNode[], values: Map<string, number | null>): HomeResult | null {
+    const config = this.config;
+    if (!config || config.root || config.kind !== "electricity") {
+      return null;
+    }
+    if (config.period !== "now") {
+      return this._data?.home ?? null;
+    }
+    const meter = this._data?.sources.find((s) => s.role === "home");
+    const value =
+      this.hass && meter?.stat_rate
+        ? homeNow(this.hass, [{ type: "home", stat_energy_to: meter.stat, stat_rate: meter.stat_rate }])
+        : null;
+    if (value === null) {
+      return null;
+    }
+    const tops = roots.map((n) => values.get(n.stat) ?? null);
+    const rest = tops.some((v) => v === null) ? null : value - tops.reduce<number>((a, b) => a + (b ?? 0), 0);
+    return { value, basis: "measured", stale: null, untracked: rest };
+  }
+
   private _renderDiagram(roots: TreeNode[], devices: Device[]): TemplateResult {
     const config = this.config!;
     const values = this._values(devices);
     const rest = untracked(roots, values);
+    const home = this._home(roots, values);
+    if (home?.value != null) {
+      rest.set(HOME_ID, home.untracked);
+    }
     const sources =
       config.show_sources && !config.root
         ? (this._data?.sources ?? []).map((s) => ({ type: s.type, role: s.role, stat: s.stat, name: s.name }))
         : [];
-    const result = layout(roots, sources, values, rest, new Set(), [], config.show_untracked, config.orientation);
+    const result = layout(
+      roots,
+      sources,
+      values,
+      rest,
+      new Set(),
+      [],
+      config.show_untracked,
+      config.orientation,
+      home?.value != null,
+    );
     // Below a device the diagram starts at that device: no sources, no Home.
     const shown = result.blocks.filter((b) => !(config.root && b.kind === "home"));
     const ids = new Set(shown.map((b) => b.id));
@@ -293,7 +337,7 @@ export class EnergyFlowMapperCardView extends LitElement {
         <svg class="edges" width=${width + left} height=${height + top} aria-hidden="true">
           ${edges.map((edge) => this._renderEdge(edge, blocks, maxValue))}
         </svg>
-        ${shown.map((block) => this._renderBlock(block, measured, rest))}
+        ${shown.map((block) => this._renderBlock(block, measured, rest, home))}
       </div>
       </div>
     </div>`;
@@ -309,7 +353,7 @@ export class EnergyFlowMapperCardView extends LitElement {
         : edge.kind === "source"
           ? (SOURCE_COLORS[source?.role ?? ""] ?? "var(--secondary-text-color)")
           : "var(--primary-color)";
-    const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null);
+    const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null) || (edge.kind === "source" && from.role === "home");
     const width = strokeWidth(edge.power, maxValue);
     const head = arrowSize(width);
     const orientation = this.config?.orientation;
@@ -320,18 +364,24 @@ export class EnergyFlowMapperCardView extends LitElement {
     </g>`;
   }
 
-  private _renderBlock(block: Block, measured: number | null, rest: Map<string, number | null>): TemplateResult {
+  private _renderBlock(
+    block: Block,
+    measured: number | null,
+    rest: Map<string, number | null>,
+    home: HomeResult | null = null,
+  ): TemplateResult {
     const style = `left:${block.x}px;top:${block.y}px;width:${block.w}px;height:${block.h}px`;
     switch (block.kind) {
-      case "home":
+      case "home": {
+        const warned = (this._data?.issues ?? []).some((i) => i.stat === HOME_ID);
         return html`<div class="block home" style=${style}>
           <div class="block-text">
             <span class="node-name">${this._t("home")}</span>
-            ${measured === null
-              ? nothing
-              : html`<span class="sub">${this._t("home_measured", { power: this._format(measured) })}</span>`}
+            ${this._homeText(measured, home)}
           </div>
+          ${warned ? html`<span class="badge" title=${this._t("issue_devices_exceed_home")}>!</span>` : nothing}
         </div>`;
+      }
       case "source": {
         const role = block.role ?? "import";
         return html`<div
@@ -347,7 +397,7 @@ export class EnergyFlowMapperCardView extends LitElement {
       }
       case "untracked": {
         const value = rest.get(block.stat!);
-        return html`<div class="block untracked" style=${style}>
+        return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
           <div class="block-text">
             <span class="node-name">${this._t("untracked")}</span>
             <span class="sub">${value == null ? this._t("none") : this._format(value)}</span>
@@ -357,6 +407,19 @@ export class EnergyFlowMapperCardView extends LitElement {
       default:
         return this._renderDevice(block, style);
     }
+  }
+
+  /** Subtitle of Home: the home consumption, or the sum of the top-level devices. */
+  private _homeText(measured: number | null, home: HomeResult | null): TemplateResult | typeof nothing {
+    if (home?.stale) {
+      const name = this._data?.sources.find((s) => s.stat === home.stale)?.name ?? home.stale;
+      return html`<span class="sub">${this._t("home_stale", { name })}</span>`;
+    }
+    const [key, value] =
+      home?.value != null
+        ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)
+        : (["home_measured", measured] as const);
+    return value === null ? nothing : html`<span class="sub">${this._t(key, { power: this._format(value) })}</span>`;
   }
 
   private _renderDevice(block: Block, style: string): TemplateResult {

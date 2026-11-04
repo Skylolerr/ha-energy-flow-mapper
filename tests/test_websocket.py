@@ -1426,9 +1426,11 @@ async def test_energy_with_home_meter(
     } in result["issues"]
     card = await send(hass_ws_client, hass, type=f"{DOMAIN}/card", period="week")
     assert card["result"]["home"]["value"] == 9.0
-    assert ("home", "sensor.attic_energy") in [
-        (s["role"], s["stat"]) for s in card["result"]["sources"]
-    ]
+    home_row = card["result"]["sources"][-1]
+    assert (home_row["role"], home_row["stat"]) == ("home", "sensor.attic_energy")
+    # Home now needs the home meter's power sensor; other sources do not get one.
+    assert home_row["stat_rate"] == "sensor.attic_power"
+    assert all("stat_rate" not in s for s in card["result"]["sources"][:-1])
 
 
 @pytest.mark.usefixtures("loaded_entry")

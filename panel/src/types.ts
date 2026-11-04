@@ -83,7 +83,8 @@ export type IssueCode =
   | "statistic_missing"
   | "not_energy_unit"
   | "not_water_unit"
-  | "children_exceed_parent";
+  | "children_exceed_parent"
+  | "devices_exceed_home";
 
 export interface Issue {
   code: IssueCode;

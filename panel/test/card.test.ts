@@ -296,6 +296,65 @@ describe("card", () => {
     expect(diagram.scrollLeft).toBe(0);
   });
 
+  it("shows the home meter, the home consumption, what no device covers and the warning", async () => {
+    const home = { type: "home", role: "home" as const, stat: "sensor.main", name: "Main meter" };
+    const withHome = (period: Partial<CardData>) => ({
+      ...data({ sources: [...data().sources, home], home_supported: true }),
+      ...period,
+    });
+    const mock = mockHass((msg) =>
+      msg.period
+        ? withHome({
+            ...periodValues(),
+            home: { value: 12, basis: "measured", stale: null, untracked: -0.92 },
+            issues: [{ code: "devices_exceed_home", severity: "warning", stat: "home", details: {}, kind: "electricity" }],
+          })
+        : withHome({}),
+    );
+    const el = await view({ period: "week" }, mock);
+    expect(el.shadowRoot!.querySelector('.block.source[data-role="home"]')!.textContent).toContain("Main meter");
+    expect(el.shadowRoot!.querySelector(".block.home")!.textContent).toContain("12 kWh measured");
+    expect(el.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("-920 Wh");
+    expect(el.shadowRoot!.querySelector(".block.home .badge")).not.toBeNull();
+    const edge = el.shadowRoot!.querySelector('.edge[data-to="home"] path[stroke-dasharray]:not([stroke-dasharray="none"])');
+    expect(edge).not.toBeNull();
+    const hidden = await view({ period: "week", show_untracked: false }, mock);
+    expect(hidden.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')).toBeNull();
+    const late = await view(
+      { period: "week" },
+      mockHass(() => withHome({ ...periodValues(), home: { value: null, basis: null, stale: "sensor.main", untracked: null } })),
+    );
+    expect(late.shadowRoot!.querySelector(".block.home")!.textContent).toContain("Main meter: data not recent enough");
+    expect(late.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')).toBeNull();
+  });
+
+  it("measures Home now with the home meter's power sensor", async () => {
+    const mock = mockHass(() => ({
+      ...data({
+        sources: [...data().sources, { type: "home", role: "home", stat: "sensor.main", name: "Main meter" }],
+      }),
+    }));
+    mock.hass.states["sensor.main_power"] = {
+      entity_id: "sensor.main_power",
+      state: "80",
+      attributes: { unit_of_measurement: "W" },
+    };
+    const sources = (await mock.hass.callWS<CardData>({ type: "x" })).sources;
+    expect(sources.at(-1)!.role).toBe("home");
+    // The card gets the power sensor of the home meter with the source.
+    mock.answer = () =>
+      data({
+        sources: [
+          ...data().sources,
+          { type: "home", role: "home", stat: "sensor.main", name: "Main meter", stat_rate: "sensor.main_power" },
+        ],
+      });
+    const el = await view({ period: "now" }, mock);
+    expect(el.shadowRoot!.querySelector(".block.home")!.textContent).toContain("80 W measured");
+    // Server 50 W and TV without power: what no device covers is unknown.
+    expect(el.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("–");
+  });
+
   it("loads again when it comes back, and stops watching its size when it leaves", async () => {
     const disconnect = vi.fn();
     const original = globalThis.ResizeObserver;

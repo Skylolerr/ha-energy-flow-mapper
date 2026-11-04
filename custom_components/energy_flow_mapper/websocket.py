@@ -630,6 +630,12 @@ async def websocket_card(
                 "role": role,
                 "stat": stat,
                 "name": source.get(NAME) or info[stat]["name"] or stat,
+                # Home now comes from the home meter's power sensor.
+                **(
+                    {"stat_rate": source[RATE]}
+                    if role == "home" and isinstance(source.get(RATE), str)
+                    else {}
+                ),
             }
             for source, role, stat in rows
         ],
