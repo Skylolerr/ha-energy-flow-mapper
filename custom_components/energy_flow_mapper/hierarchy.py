@@ -430,21 +430,7 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
         _assign_home(sources, stat)
         return
     if role == AssignRole.WATER:
-        if replace := change.get("replace"):
-            water = next(
-                (
-                    s
-                    for s in sources
-                    if s.get("type") == "water" and s.get(FROM) == replace
-                ),
-                None,
-            )
-            if water is None:
-                raise ChangeError("unknown_source", replace)
-        else:
-            water = deepcopy(NEW_WATER)
-            sources.append(water)
-        water[FROM] = stat
+        _assign_water(sources, stat, change.get("replace"))
         return
     if role in (AssignRole.IMPORT, AssignRole.EXPORT):
         key = FROM if role == AssignRole.IMPORT else TO
@@ -467,6 +453,23 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
         sources.append({"type": "battery", FROM: stat, TO: change["stat_to"]})
     else:
         raise ChangeError("unknown_change", stat)
+
+
+def _assign_water(
+    sources: list[dict[str, Any]], stat: str, replace: str | None
+) -> None:
+    """Replace the water meter `replace` (keeping its prices), or add one."""
+    if replace:
+        water = next(
+            (s for s in sources if s.get("type") == "water" and s.get(FROM) == replace),
+            None,
+        )
+        if water is None:
+            raise ChangeError("unknown_source", replace)
+    else:
+        water = deepcopy(NEW_WATER)
+        sources.append(water)
+    water[FROM] = stat
 
 
 def _assign_home(
@@ -518,14 +521,7 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
     for change in changes:
         kind = change["type"]
         stat = change["stat"]
-        if kind == ChangeType.ASSIGN_SOURCE:
-            _assign_source(sources, change)
-            continue
-        if kind == ChangeType.UNASSIGN_SOURCE:
-            _unassign_source(sources, stat)
-            continue
-        if kind == ChangeType.USE_AS_HOME_METER:
-            _use_as_home_meter(result, sources, stat)
+        if _apply_source_change(result, sources, change):
             continue
         key = DEVICE_KEYS[DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))]
         devices: list[Device] = result.setdefault(key, [])
@@ -553,6 +549,22 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
         else:
             raise ChangeError("unknown_change", stat)
     return result
+
+
+def _apply_source_change(
+    prefs: dict[str, Any], sources: list[dict[str, Any]], change: Mapping[str, Any]
+) -> bool:
+    """Apply a change of the sources; False if it is a device change."""
+    kind = change["type"]
+    if kind == ChangeType.ASSIGN_SOURCE:
+        _assign_source(sources, change)
+    elif kind == ChangeType.UNASSIGN_SOURCE:
+        _unassign_source(sources, change["stat"])
+    elif kind == ChangeType.USE_AS_HOME_METER:
+        _use_as_home_meter(prefs, sources, change["stat"])
+    else:
+        return False
+    return True
 
 
 def _use_as_home_meter(
@@ -739,7 +751,9 @@ def home_consumption(
         for role, stat in source_roles(sources)
         if role in _HOME_SIGNS
     }
-    total = sum(signs[stat] * (value or 0.0) for stat, value in zip(stats, values))
+    total = sum(
+        signs[stat] * (value or 0.0) for stat, value in zip(stats, values, strict=True)
+    )
     return round(total, 6), "calculated"
 
 
