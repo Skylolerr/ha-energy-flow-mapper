@@ -6,7 +6,7 @@
 </p>
 
 <p align="center">
-  <a href="https://hacs.xyz/docs/faq/custom_repositories"><img alt="HACS custom repository" src="https://img.shields.io/badge/HACS-custom-41BDF5?logo=homeassistantcommunitystore&logoColor=white"></a>
+  <a href="https://hacs.xyz/"><img alt="HACS default" src="https://img.shields.io/badge/HACS-default-41BDF5?logo=homeassistantcommunitystore&logoColor=white"></a>
   <a href="https://github.com/Skylolerr/ha-energy-flow-mapper/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/Skylolerr/ha-energy-flow-mapper?sort=semver&color=0c63b8"></a>
   <img alt="Home Assistant 2026.10 or newer" src="https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2?logo=homeassistant&logoColor=white">
   <a href="https://github.com/Skylolerr/ha-energy-flow-mapper/actions/workflows/validate.yml"><img alt="Validate" src="https://github.com/Skylolerr/ha-energy-flow-mapper/actions/workflows/validate.yml/badge.svg"></a>
@@ -92,10 +92,8 @@ solar, battery or water meter, and which meters are not used yet.
 
 ## Installation
 
-1. **HACS:** click *Open this repository in HACS* above, or add
-   `https://github.com/Skylolerr/ha-energy-flow-mapper` under HACS → ⋮ → **Custom
-   repositories** with type **Integration**. Download **Energy Flow Mapper** and restart
-   Home Assistant.
+1. **HACS:** open HACS, search for **Energy Flow Mapper**, download it and restart Home
+   Assistant. *Open this repository in HACS* above takes you straight there.
 2. **Set up:** click *Set up Energy Flow Mapper* above, or Settings → Devices & services →
    **Add integration** → **Energy Flow Mapper**.
 3. **Open the panel:** **Energy Flow Mapper** appears in the sidebar for admins. The setup
@@ -103,6 +101,14 @@ solar, battery or water meter, and which meters are not used yet.
 
 Requires Home Assistant **2026.10.0** or newer. The panel is for admins; the dashboard
 card is for everyone.
+
+<details>
+<summary>As a custom repository</summary>
+
+If HACS does not find it yet, add `https://github.com/Skylolerr/ha-energy-flow-mapper`
+under HACS → ⋮ → **Custom repositories** with type **Integration**, then download
+**Energy Flow Mapper** and restart Home Assistant.
+</details>
 
 <details>
 <summary>Manual installation</summary>
