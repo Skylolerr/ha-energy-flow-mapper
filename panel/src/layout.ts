@@ -29,6 +29,7 @@ export const SOURCE_COLORS: Record<string, string> = {
   gas: "var(--energy-gas-color, #8e021b)",
   water: "var(--energy-water-color, #00bcd4)",
   consumption: "var(--energy-gas-color, #8e021b)",
+  home: "var(--secondary-text-color)",
 };
 
 export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked";
@@ -68,10 +69,12 @@ export interface Layout {
 export const PLACEHOLDER_ROLES = ["import", "production", "battery", "export"] as const;
 /** The same for the water tab. */
 export const WATER_PLACEHOLDER_ROLES = ["water"] as const;
+/** The electricity roles with the home meter (HA 2026.11 and newer). */
+export const HOME_PLACEHOLDER_ROLES = [...PLACEHOLDER_ROLES, "home"] as const;
 
 type PlaceholderRole = SourceRole | "battery";
 
-const INTO_HOME: SourceRole[] = ["import", "production", "discharge", "gas", "water", "consumption"];
+const INTO_HOME: SourceRole[] = ["import", "production", "discharge", "gas", "water", "consumption", "home"];
 
 export function untrackedId(stat: string): string {
   return `untracked:${stat}`;
@@ -114,7 +117,8 @@ function span(item: Item, box: number, space: number): number {
  * or flow), `untracked` the untracked value of each device with children.
  * `placeholders` are the source roles offered when no source fills them;
  * without `showUntracked` the blocks for untracked consumption are left out.
- * Levels are rows when horizontal and columns when vertical.
+ * Levels are rows when horizontal and columns when vertical. `homeUntracked`
+ * adds what no top-level device covers below Home (`untracked` of HOME_ID).
  */
 export function layout(
   roots: TreeNode[],
@@ -125,6 +129,7 @@ export function layout(
   placeholders: readonly PlaceholderRole[] = PLACEHOLDER_ROLES,
   showUntracked = true,
   orientation: Orientation = "horizontal",
+  homeUntracked = false,
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
@@ -169,6 +174,9 @@ export function layout(
 
   // Device tree after Home.
   const tree = items(roots, collapsed, showUntracked);
+  if (showUntracked && homeUntracked) {
+    tree.push({ id: untrackedId(HOME_ID), kind: "untracked", stat: HOME_ID, children: [] });
+  }
   const treeAcross = tree.length
     ? tree.reduce((sum, item) => sum + span(item, boxAcross, space), 0) + space * (tree.length - 1)
     : boxAcross;

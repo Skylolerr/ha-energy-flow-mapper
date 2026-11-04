@@ -6,6 +6,7 @@ import {
   buildTree,
   canMove,
   displayName,
+  homeNow,
   moveTargets,
   rateValue,
   sourceRows,
@@ -21,6 +22,7 @@ import {
   type Edge,
   edgePath,
   HOME_ID,
+  HOME_PLACEHOLDER_ROLES,
   layout,
   PLACEHOLDER_ROLES,
   SOURCE_COLORS,
@@ -51,6 +53,7 @@ import type {
   DiffEntry,
   EnergyResult,
   HomeAssistant,
+  HomeResult,
   Issue,
   Orientation,
   Period,
@@ -116,6 +119,7 @@ export function assignRole(role: string | undefined): AssignRole | null {
     case "production":
     case "battery":
     case "water":
+    case "home":
       return role;
     case "discharge":
     case "charge":
@@ -406,7 +410,39 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** The sources with the draft applied. */
   get draftSources(): Source[] {
-    return applySourceChanges(this._snapshot?.prefs.energy_sources ?? [], this._changes);
+    const prefs = this._snapshot?.prefs;
+    return applySourceChanges(prefs?.energy_sources ?? [], this._changes, prefs?.device_consumption ?? []);
+  }
+
+  /** Whether the home meter can be offered: HA knows it, electricity, none set yet. */
+  private _canUseHomeMeter(): boolean {
+    return (
+      this._snapshot?.home_supported === true &&
+      this._tab === "electricity" &&
+      !this.draftSources.some((s) => s.type === "home")
+    );
+  }
+
+  /**
+   * What the whole home uses in the current period (null on the water tab):
+   * now from the home meter's power sensor, in a period from the backend.
+   */
+  _home(): HomeResult | null {
+    if (this._tab !== "electricity") {
+      return null;
+    }
+    if (this._period !== "now") {
+      return this._energy?.home ?? null;
+    }
+    const value = this.hass ? homeNow(this.hass, this.draftSources) : null;
+    if (value === null) {
+      return null;
+    }
+    const devices = this.draft;
+    const power = this._values(devices);
+    const tops = buildTree(devices).map((n) => power.get(n.stat) ?? null);
+    const rest = tops.some((v) => v === null) ? null : value - tops.reduce<number>((a, b) => a + (b ?? 0), 0);
+    return { value, basis: "measured", stale: null, untracked: rest };
   }
 
   private _info(stat: string): StatInfo | undefined {
@@ -694,7 +730,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       return false;
     }
     if (target.startsWith(SOURCE_TARGET)) {
-      return dragged.kind === "candidate";
+      if (dragged.kind === "device") {
+        return target.startsWith(`${SOURCE_TARGET}home:`) && this._canUseHomeMeter();
+      }
+      return true;
     }
     const parent = target === HOME ? null : target;
     if (dragged.kind === "candidate") {
@@ -716,6 +755,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       const rest = target.slice(SOURCE_TARGET.length);
       const separator = rest.indexOf(":");
       const blockId = rest.slice(separator + 1);
+      if (dragged.kind === "device") {
+        this._change({ type: "use_as_home_meter", stat: dragged.stat });
+        return;
+      }
       const block = this.diagramLayout().blocks.find((b) => b.id === blockId && b.kind === "source");
       this._assign(rest.slice(0, separator) as AssignRole, dragged.stat, block?.stat ?? null);
       return;
@@ -1017,15 +1060,25 @@ export class EnergyFlowMapperPanel extends LitElement {
     const devices = this.draft;
     const roots = buildTree(devices);
     const values = this._values(devices);
+    const rest = untracked(roots, values);
+    const home = this._home();
+    if (home?.value != null) {
+      rest.set(HOME_ID, home.untracked);
+    }
     return layout(
       roots,
       sourceRows(this.draftSources, this._tab),
       values,
-      untracked(roots, values),
+      rest,
       this._collapsed,
-      this._tab === "water" ? WATER_PLACEHOLDER_ROLES : PLACEHOLDER_ROLES,
+      this._tab === "water"
+        ? WATER_PLACEHOLDER_ROLES
+        : this._snapshot?.home_supported
+          ? HOME_PLACEHOLDER_ROLES
+          : PLACEHOLDER_ROLES,
       true,
       this._orientation,
+      home?.value != null,
     );
   }
 
@@ -1219,6 +1272,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
     const power = this._values(devices);
     const rest = untracked(buildTree(devices), power);
+    const home = this._home();
+    if (home?.value != null) {
+      rest.set(HOME_ID, home.untracked);
+    }
     const known = buildTree(devices)
       .map((n) => power.get(n.stat))
       .filter((v): v is number => v != null);
@@ -1358,7 +1415,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       return nothing;
     }
     const color = this._edgeColor(edge, blocks);
-    const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null);
+    // The home meter measures Home; it does not feed it.
+    const dashed =
+      edge.kind === "untracked" ||
+      (edge.kind === "device" && edge.power === null) ||
+      (edge.kind === "source" && from.role === "home");
     const width = strokeWidth(edge.power, maxPower);
     const head = arrowSize(width);
     // The line ends just inside the base of the arrowhead (flat end), so it
@@ -1374,6 +1435,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       ></path>
       <polygon points=${arrowHead(from, to, head.half, head.length, this._orientation)} fill=${color}></polygon>
     </g>`;
+  }
+
+  /** Subtitle of Home: the home consumption, or the sum of the top-level devices. */
+  private _homeText(measured: number | null): TemplateResult | typeof nothing {
+    const home = this._home();
+    if (home?.stale) {
+      return html`<span class="sub">${this._t("home_stale", { name: this._name(home.stale) })}</span>`;
+    }
+    const [key, value] =
+      home?.value != null
+        ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)
+        : (["home_measured", measured] as const);
+    return value === null
+      ? nothing
+      : html`<span class="sub">${this._t(key, { power: this._formatValue(value) })}</span>`;
   }
 
   private _blockStyle(block: Block): string {
@@ -1403,12 +1479,13 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${icon("home")}
           <div class="block-text">
             <span class="node-name">${this._t("home")}</span>
-            ${measured === null
-              ? nothing
-              : html`<span class="sub"
-                  >${this._t("home_measured", { power: this._formatValue(measured) })}</span
-                >`}
+            ${this._homeText(measured)}
           </div>
+          ${this._issuesFor(HOME_ID).length
+            ? html`<span class="badge" title=${this._issuesFor(HOME_ID).map((i) => this._issueText(i)).join("\n")}
+                >!</span
+              >`
+            : nothing}
         </div>`;
       }
       case "source":
@@ -2005,6 +2082,16 @@ export class EnergyFlowMapperPanel extends LitElement {
             >
               ${this._t("rename")}
             </button>
+            ${this._canUseHomeMeter()
+              ? html`<button
+                  @click=${() => {
+                    this._close();
+                    this._change({ type: "use_as_home_meter", stat: dialog.stat });
+                  }}
+                >
+                  ${this._t("use_as_home_meter")}
+                </button>`
+              : nothing}
             <button
               class="danger"
               @click=${() => {

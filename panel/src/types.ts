@@ -106,6 +106,8 @@ export interface Snapshot {
   /** Flow sensors without a water meter. */
   flow_candidates?: StatInfo[];
   issues: Issue[];
+  /** Whether Home Assistant knows the home meter (2026.11 and newer). */
+  home_supported?: boolean;
 }
 
 /** Device changes name their list; without `kind` they change electricity. */
@@ -130,10 +132,12 @@ export type Change =
        * is used, and a water meter is added. */
       replace?: string | null;
     }
-  | { type: "unassign_source"; stat: string };
+  | { type: "unassign_source"; stat: string }
+  /** Turn an electricity device into the home meter (HA 2026.11 and newer). */
+  | { type: "use_as_home_meter"; stat: string };
 
 /** Source roles a free sensor can be assigned to. */
-export type AssignRole = "import" | "export" | "production" | "battery" | "water";
+export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "home";
 
 export interface DiffEntry {
   type: "added" | "removed" | "moved" | "renamed" | "rate" | "source_added" | "source_removed";
@@ -207,4 +211,15 @@ export interface EnergyResult {
   water_unit: string;
   untracked: Record<string, number | null>;
   issues: Issue[];
+  /** Home consumption of the electricity tree; missing for water. */
+  home?: HomeResult;
+}
+
+/** What the whole home used in a period, and what no top-level device covers. */
+export interface HomeResult {
+  value: number | null;
+  basis: "measured" | "calculated" | null;
+  /** The meter whose data is not recent enough; then there is no value. */
+  stale: string | null;
+  untracked: number | null;
 }

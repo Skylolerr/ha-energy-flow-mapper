@@ -11,9 +11,11 @@ import {
   edgePath,
   H_GAP,
   HOME_ID,
+  HOME_PLACEHOLDER_ROLES,
   layout,
   MARGIN,
   ROW_GAP,
+  SOURCE_COLORS,
   SOURCE_W,
   strokeWidth,
   untrackedId,
@@ -252,4 +254,43 @@ describe("dashPattern", () => {
     expect(dashPattern(2)).toBe("4 4");
     expect(dashPattern(8)).toBe("16 10");
   });
+});
+
+describe("home meter and Home", () => {
+  it("offers a home meter placeholder and measures Home with the meter", () => {
+    const empty = layout(buildTree(DEVICES), [], new Map(), new Map(), new Set(), HOME_PLACEHOLDER_ROLES);
+    expect(empty.blocks.filter((b) => b.kind === "placeholder").map((b) => b.role)).toEqual([
+      "import",
+      "production",
+      "battery",
+      "export",
+      "home",
+    ]);
+    const rows = sourceRows([{ type: "home", stat_energy_to: "main" }]);
+    const result = layout(buildTree(DEVICES), rows, new Map(), new Map(), new Set(), HOME_PLACEHOLDER_ROLES);
+    expect(result.blocks.some((b) => b.kind === "placeholder" && b.role === "home")).toBe(false);
+    expect(result.edges).toContainEqual({ from: "source:0", to: HOME_ID, kind: "source", power: null });
+    expect(SOURCE_COLORS.home).toBe("var(--secondary-text-color)");
+  });
+
+  for (const orientation of ["horizontal", "vertical"] as const) {
+    it(`adds what no device covers below Home (${orientation})`, () => {
+      const rest = new Map([[HOME_ID, 2.5]]);
+      const without = layout(buildTree(DEVICES), [], new Map(), rest, new Set(), [], true, orientation);
+      expect(without.blocks.some((b) => b.id === untrackedId(HOME_ID))).toBe(false);
+      const result = layout(buildTree(DEVICES), [], new Map(), rest, new Set(), [], true, orientation, true);
+      const blocks = byId(result);
+      const block = blocks[untrackedId(HOME_ID)];
+      expect(block).toMatchObject({ kind: "untracked", stat: HOME_ID });
+      expect(result.edges.at(-1)).toEqual({ from: HOME_ID, to: untrackedId(HOME_ID), kind: "untracked", power: 2.5 });
+      // It is the last block of the first level, after the top-level devices.
+      const across = (b: (typeof result.blocks)[number]) => (orientation === "vertical" ? b.y : b.x);
+      const along = (b: (typeof result.blocks)[number]) => (orientation === "vertical" ? b.x : b.y);
+      expect(along(block)).toBe(along(blocks.tv));
+      expect(across(block)).toBeGreaterThan(across(blocks.tv));
+      // Hidden together with the other untracked blocks.
+      const hidden = layout(buildTree(DEVICES), [], new Map(), rest, new Set(), [], false, orientation, true);
+      expect(hidden.blocks.some((b) => b.kind === "untracked")).toBe(false);
+    });
+  }
 });

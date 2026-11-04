@@ -1742,3 +1742,130 @@ describe("find in the diagram", () => {
     expect(el._find).toBe("");
   });
 });
+
+describe("home meter", () => {
+  function homeMock(supported = true, sources?: unknown[]): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.home_supported = supported;
+    if (sources) {
+      snap.prefs.energy_sources = sources as Snapshot["prefs"]["energy_sources"];
+    }
+    snap.stats["sensor.main"] = info("sensor.main", "Main meter");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    return mock;
+  }
+
+  const WITH_HOME = [
+    { type: "grid", stat_energy_from: "sensor.import", stat_energy_to: "sensor.export" },
+    { type: "home", stat_energy_to: "sensor.main", stat_rate: "sensor.main_power" },
+  ];
+
+  function energy(home: Record<string, unknown>) {
+    return (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      energy: { "sensor.server": 12.5, "sensor.sonos": 2, "sensor.tv": 0.5, "sensor.main": 20 },
+      untracked: { "sensor.server": 10.5, ...(home.untracked == null ? {} : { home: home.untracked }) },
+      issues:
+        typeof home.value === "number" && home.value < 13
+          ? [{ code: "devices_exceed_home", severity: "warning", stat: "home", details: {} }]
+          : [],
+      home,
+    });
+  }
+
+  it("offers a placeholder only where Home Assistant knows the home meter", async () => {
+    const off = await mount(homeMock(false));
+    expect(root(off).querySelector('.block.placeholder[data-role="home"]')).toBeNull();
+    const el = await mount(homeMock(true));
+    expect(root(el).querySelector('.block.placeholder[data-role="home"]')).not.toBeNull();
+    el._tab = "water";
+    await settle(el);
+    expect(root(el).querySelector('.block.placeholder[data-role="home"]')).toBeNull();
+  });
+
+  it("assigns a free sensor as home meter from the placeholder", async () => {
+    const el = await mount(homeMock());
+    root(el).querySelector<HTMLButtonElement>('.block.placeholder[data-role="home"]')!.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Assign Home meter");
+    root(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.attic"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "home", stat: "sensor.attic" }]);
+    expect(root(el).querySelector('.block.source[data-role="home"]:not(.placeholder)')).not.toBeNull();
+    const edge = root(el).querySelector('.edge[data-to="home"] path[stroke-dasharray]:not([stroke-dasharray="none"])');
+    expect(edge).not.toBeNull();
+  });
+
+  it("uses a device as home meter by dropping it or from its menu, as one change", async () => {
+    const el = await mount(homeMock());
+    drag(node(el, "sensor.server"), root(el).querySelector<HTMLElement>('.block.placeholder[data-role="home"]')!);
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "use_as_home_meter", stat: "sensor.server" }]);
+    expect(el.draft.map((d) => d.stat_consumption)).toEqual(["sensor.sonos", "sensor.tv"]);
+    expect(el.draftSources.at(-1)).toEqual({
+      type: "home",
+      stat_energy_to: "sensor.server",
+      stat_rate: "sensor.server_power",
+    });
+    el._undoChange();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    buttonWith(el, "Use as home meter").click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "use_as_home_meter", stat: "sensor.tv" }]);
+    // With a home meter, neither is offered any more.
+    el._dialog = { kind: "actions", stat: "sensor.server" };
+    await settle(el);
+    expect(text(el)).not.toContain("Use as home meter");
+    expect(root(el).querySelector('.block.placeholder[data-role="home"]')).toBeNull();
+  });
+
+  it("does not offer the menu entry without support", async () => {
+    const el = await mount(homeMock(false));
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    expect(text(el)).not.toContain("Use as home meter");
+  });
+
+  it("shows the measured, calculated or late home consumption and what no device covers", async () => {
+    const mock = homeMock(true, WITH_HOME);
+    mock.responses["energy_flow_mapper/energy"] = energy({
+      value: 20,
+      basis: "measured",
+      stale: null,
+      untracked: 5,
+    });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const home = () => root(el).querySelector(".block.home")!.textContent!.replace(/\s+/g, " ");
+    expect(home()).toContain("20 kWh measured");
+    const block = root(el).querySelector('.block.untracked[data-parent="home"]')!;
+    expect(block.textContent).toContain("5 kWh");
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: 12, basis: "calculated", stale: null, untracked: -3 });
+    el.setPeriod("month");
+    await settle(el);
+    expect(home()).toContain("12 kWh calculated");
+    expect(root(el).querySelector(".block.home .badge")).not.toBeNull();
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: null, basis: null, stale: "sensor.main", untracked: null });
+    el.setPeriod("today");
+    await settle(el);
+    expect(home()).toContain("Main meter: data not recent enough");
+    expect(root(el).querySelector('.block.untracked[data-parent="home"]')).toBeNull();
+  });
+
+  it("measures Home now with the home meter's power sensor", async () => {
+    const mock = homeMock(true, WITH_HOME);
+    mock.hass.states["sensor.main_power"] = entity("sensor.main_power", "200");
+    const el = await mount(mock);
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("200 W measured");
+    // Server 50 W (with Sonos below it) and TV without power: unknown.
+    expect(root(el).querySelector('.block.untracked[data-parent="home"]')).not.toBeNull();
+    expect(root(el).querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("–");
+  });
+});

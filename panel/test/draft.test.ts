@@ -10,6 +10,7 @@ import {
   NEW_WATER,
   canMove,
   displayName,
+  homeNow,
   moveTargets,
   powerInWatts,
   rateValue,
@@ -384,5 +385,47 @@ describe("applySourceChanges", () => {
 
   it("ignores device changes", () => {
     expect(applySourceChanges([grid], [{ type: "remove", stat: "x" }])).toEqual([grid]);
+  });
+});
+
+describe("home meter", () => {
+  const HOME = { type: "home", stat_energy_to: "main", stat_rate: "main_power", name: "Main", x: 1 };
+
+  it("is a source row of electricity", () => {
+    expect(sourceRows([HOME])).toEqual([{ type: "home", role: "home", stat: "main", name: "Main" }]);
+    expect(sourceRows([HOME], "water")).toEqual([]);
+  });
+
+  it("is assigned, replaced and removed", () => {
+    expect(applySourceChanges([], [{ type: "assign_source", role: "home", stat: "a" }])).toEqual([
+      { type: "home", stat_energy_to: "a" },
+    ]);
+    expect(applySourceChanges([HOME], [{ type: "assign_source", role: "home", stat: "b" }])).toEqual([
+      { ...HOME, stat_energy_to: "b" },
+    ]);
+    expect(applySourceChanges([HOME], [{ type: "unassign_source", stat: "main" }])).toEqual([]);
+  });
+
+  it("can be made from a device, whose children move up", () => {
+    const devices = [
+      { stat_consumption: "main", stat_rate: "main_power" },
+      { stat_consumption: "kitchen", included_in_stat: "main" },
+    ];
+    const change = { type: "use_as_home_meter" as const, stat: "main" };
+    expect(changeKind(change)).toBe("electricity");
+    expect(applyChanges(devices, [change])).toEqual([{ stat_consumption: "kitchen" }]);
+    expect(applyChanges(devices, [change], "water")).toEqual(devices);
+    expect(applySourceChanges([], [change], devices)).toEqual([
+      { type: "home", stat_energy_to: "main", stat_rate: "main_power" },
+    ]);
+    // There is only one home meter.
+    expect(applySourceChanges([HOME], [change], devices)).toEqual([HOME]);
+  });
+
+  it("gives the power of Home now", () => {
+    const hass = { states: { main_power: { entity_id: "main_power", state: "1.5", attributes: { unit_of_measurement: "kW" } } } };
+    expect(homeNow(hass as never, [HOME])).toBe(1500);
+    expect(homeNow(hass as never, [{ type: "home", stat_energy_to: "main" }])).toBeNull();
+    expect(homeNow(hass as never, [])).toBeNull();
   });
 });

@@ -42,6 +42,7 @@ export type SourceRole =
   | "charge"
   | "gas"
   | "water"
+  | "home"
   | "consumption";
 
 export interface SourceRow {
@@ -65,7 +66,7 @@ export function changeKind(change: Change): DeviceKind | null {
   if (change.type === "assign_source" || change.type === "unassign_source") {
     return null;
   }
-  return change.kind ?? "electricity";
+  return change.type === "use_as_home_meter" ? "electricity" : (change.kind ?? "electricity");
 }
 
 /**
@@ -101,7 +102,7 @@ export function applyChanges(
       setOptional(result[index], "included_in_stat", change.parent);
     } else if (change.type === "rename") {
       setOptional(result[index], "name", change.name);
-    } else if (change.type === "remove") {
+    } else if (change.type === "remove" || change.type === "use_as_home_meter") {
       const [removed] = result.splice(index, 1);
       for (const other of result) {
         if (other.included_in_stat === change.stat) {
@@ -318,6 +319,8 @@ const SOURCE_ROLES: Record<string, [SourceRole, SourceRole | null]> = {
   battery: ["discharge", "charge"],
   gas: ["gas", null],
   water: ["water", null],
+  // The home meter (HA 2026.11 and newer) only has `stat_energy_to`.
+  home: ["home", "home"],
 };
 
 /** The tab a source is shown in: water on its own, everything else with electricity. */
@@ -346,20 +349,33 @@ export function sourceRows(sources: Source[], kind?: DeviceKind): SourceRow[] {
 const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
 
 /** Source types the panel may change; gas is only shown. */
-const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "water"];
+const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "water", "home"];
 
 /**
  * Apply the source changes of a draft to a copy, like hierarchy.py: grid
  * import/export replace the meter given as `replace`, or else that of the
  * first grid connection (keeping its prices); a water meter replaces the one
- * given as `replace`, or else is added; solar and battery add a source.
- * Changes that do not fit are skipped.
+ * given as `replace`, or else is added; solar and battery add a source; the
+ * home meter replaces the one there is. A device used as home meter brings
+ * its power sensor from `devices`. Changes that do not fit are skipped.
  */
-export function applySourceChanges(sources: Source[], changes: Change[]): Source[] {
+export function applySourceChanges(sources: Source[], changes: Change[], devices: Device[] = []): Source[] {
   const result: Source[] = structuredClone(sources);
   for (const change of changes) {
-    if (change.type === "assign_source") {
-      if (change.role === "import" || change.role === "export") {
+    if (change.type === "use_as_home_meter") {
+      if (!result.some((s) => s.type === "home")) {
+        const rate = devices.find((d) => d.stat_consumption === change.stat)?.stat_rate;
+        result.push({ type: "home", stat_energy_to: change.stat, ...(rate ? { stat_rate: rate } : {}) });
+      }
+    } else if (change.type === "assign_source") {
+      if (change.role === "home") {
+        const home = result.find((s) => s.type === "home");
+        if (home) {
+          home.stat_energy_to = change.stat;
+        } else {
+          result.push({ type: "home", stat_energy_to: change.stat });
+        }
+      } else if (change.role === "import" || change.role === "export") {
         const key = change.role === "import" ? "stat_energy_from" : "stat_energy_to";
         const grids = result.filter((s) => s.type === "grid");
         let grid = change.replace ? grids.find((s) => s[key] === change.replace) : grids[0];
@@ -415,4 +431,10 @@ export function applySourceChanges(sources: Source[], changes: Change[]): Source
     }
   }
   return result;
+}
+
+/** Power of the whole home now in W, from the home meter's power sensor. */
+export function homeNow(hass: HomeAssistant, sources: Source[]): number | null {
+  const rate = sources.find((s) => s.type === "home")?.stat_rate;
+  return typeof rate === "string" ? powerInWatts(hass, rate) : null;
 }
