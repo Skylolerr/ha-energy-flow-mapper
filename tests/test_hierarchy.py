@@ -8,6 +8,7 @@ from typing import Any
 import pytest
 
 from custom_components.energy_flow_mapper.hierarchy import (
+    HOME,
     NEW_GRID,
     NEW_WATER,
     ChangeError,
@@ -19,6 +20,10 @@ from custom_components.energy_flow_mapper.hierarchy import (
     build_tree,
     diff,
     has_errors,
+    home_consumption,
+    home_plausibility,
+    home_stats,
+    home_untracked,
     parent_map,
     plausibility,
     prefs_hash,
@@ -918,4 +923,161 @@ def test_diff_sources() -> None:
         {"type": "source_added", "stat": "sensor.new_import", "role": "import"},
         {"type": "source_added", "stat": "sensor.pv", "role": "production"},
         {"type": "source_removed", "stat": "sensor.import", "role": "import"},
+    ]
+
+
+# --- home meter ---------------------------------------------------------------
+
+HOME_SOURCE: dict[str, Any] = {
+    "type": "home",
+    "stat_energy_to": "sensor.main_meter",
+    "stat_rate": "sensor.main_meter_power",
+    "name": "Main panel",
+    "future_field": {"keep": True},
+}
+
+
+def test_home_source_roles() -> None:
+    sources = [{"type": "home", "stat_energy_to": "sensor.main_meter"}]
+    assert source_roles(sources) == [("home", "sensor.main_meter")]
+    assert source_energy_stats(sources) == {"sensor.main_meter"}
+
+
+def test_assign_home_adds_then_replaces() -> None:
+    new = apply_changes(
+        prefs(), [{"type": "assign_source", "role": "home", "stat": "sensor.a"}]
+    )
+    assert new["energy_sources"] == [{"type": "home", "stat_energy_to": "sensor.a"}]
+    old = prefs(energy_sources=[deepcopy(HOME_SOURCE)])
+    new = apply_changes(
+        old, [{"type": "assign_source", "role": "home", "stat": "sensor.b"}]
+    )
+    assert new["energy_sources"] == [HOME_SOURCE | {"stat_energy_to": "sensor.b"}]
+
+
+def test_unassign_home_removes_source() -> None:
+    old = prefs(energy_sources=[deepcopy(HOME_SOURCE)])
+    new = apply_changes(old, [{"type": "unassign_source", "stat": "sensor.main_meter"}])
+    assert new["energy_sources"] == []
+
+
+def test_untouched_home_source_survives() -> None:
+    old = prefs(energy_sources=[deepcopy(HOME_SOURCE)])
+    new = apply_changes(
+        old, [{"type": "move", "stat": "sensor.garage", "parent": "sensor.main"}]
+    )
+    assert new["energy_sources"] == [HOME_SOURCE]
+
+
+def test_use_as_home_meter() -> None:
+    new = apply_changes(prefs(), [{"type": "use_as_home_meter", "stat": "sensor.main"}])
+    stats = {d["stat_consumption"]: d for d in new["device_consumption"]}
+    assert "sensor.main" not in stats
+    assert "included_in_stat" not in stats["sensor.kitchen"]
+    assert "included_in_stat" not in stats["sensor.office"]
+    assert new["energy_sources"] == [
+        {
+            "type": "home",
+            "stat_energy_to": "sensor.main",
+            "stat_rate": "sensor.main_power",
+        }
+    ]
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            prefs(energy_sources=[deepcopy(HOME_SOURCE)]),
+            [{"type": "use_as_home_meter", "stat": "sensor.main"}],
+        )
+    assert err.value.code == "home_exists"
+    with pytest.raises(ChangeError) as err:
+        apply_changes(prefs(), [{"type": "use_as_home_meter", "stat": "sensor.gone"}])
+    assert err.value.code == "unknown_device"
+
+
+def test_use_as_home_meter_without_power_sensor() -> None:
+    new = apply_changes(
+        prefs(), [{"type": "use_as_home_meter", "stat": "sensor.garage"}]
+    )
+    assert new["energy_sources"] == [
+        {"type": "home", "stat_energy_to": "sensor.garage"}
+    ]
+
+
+SOURCES_FOR_HOME: list[dict[str, Any]] = [
+    {"type": "grid", "stat_energy_from": "sensor.imp", "stat_energy_to": "sensor.exp"},
+    {"type": "solar", "stat_energy_from": "sensor.pv"},
+    {
+        "type": "battery",
+        "stat_energy_from": "sensor.out",
+        "stat_energy_to": "sensor.in",
+    },
+    {"type": "gas", "stat_energy_from": "sensor.gas"},
+    {"type": "water", "stat_energy_from": "sensor.water"},
+]
+ENERGY_FOR_HOME: dict[str, float | None] = {
+    "sensor.imp": 10.0,
+    "sensor.exp": 2.0,
+    "sensor.pv": 4.0,
+    "sensor.out": 1.0,
+    "sensor.in": 3.0,
+    "sensor.gas": 50.0,
+    "sensor.water": 900.0,
+}
+
+
+def test_home_stats() -> None:
+    assert home_stats([deepcopy(HOME_SOURCE), *SOURCES_FOR_HOME]) == [
+        "sensor.main_meter"
+    ]
+    assert home_stats(SOURCES_FOR_HOME) == [
+        "sensor.imp",
+        "sensor.exp",
+        "sensor.pv",
+        "sensor.out",
+        "sensor.in",
+    ]
+    assert home_stats([{"type": "grid", "stat_energy_to": "sensor.exp"}]) == []
+    assert home_stats([]) == []
+
+
+def test_home_consumption() -> None:
+    measured = [deepcopy(HOME_SOURCE), *SOURCES_FOR_HOME]
+    assert home_consumption(measured, {"sensor.main_meter": 5.0}) == (5.0, "measured")
+    assert home_consumption(measured, {"sensor.main_meter": None}) == (None, None)
+    assert home_consumption(SOURCES_FOR_HOME, ENERGY_FOR_HOME) == (10.0, "calculated")
+    only_export = [{"type": "grid", "stat_energy_to": "sensor.exp"}]
+    assert home_consumption(only_export, ENERGY_FOR_HOME) == (None, None)
+    missing = ENERGY_FOR_HOME | {"sensor.in": None}
+    assert home_consumption(SOURCES_FOR_HOME, missing) == (None, None)
+    assert home_consumption([], {}) == (None, None)
+
+
+def test_home_untracked_and_plausibility() -> None:
+    roots = build_tree(
+        [device("sensor.a"), device("sensor.b"), device("sensor.c", "sensor.a")]
+    )
+    values = {"sensor.a": 3.0, "sensor.b": 4.0, "sensor.c": 100.0}
+    assert home_untracked(roots, values, 10.0) == 3.0
+    assert home_untracked(roots, values | {"sensor.b": None}, 10.0) is None
+    assert home_untracked(roots, values, None) is None
+    assert home_untracked([], {}, 10.0) == 10.0
+    issue = home_plausibility(roots, values, 6.0)
+    assert issue is not None
+    assert (issue.code, issue.severity, issue.stat) == (
+        IssueCode.DEVICES_EXCEED_HOME,
+        Severity.WARNING,
+        HOME,
+    )
+    assert issue.details == {"home": 6.0, "devices": 7.0, "excess": 1.0}
+    assert home_plausibility(roots, {"sensor.a": 3.0, "sensor.b": 7.3}, 10.0) is None
+    assert home_plausibility(roots, values, None) is None
+    assert home_plausibility(roots, values | {"sensor.b": None}, 6.0) is None
+
+
+def test_diff_home_source() -> None:
+    old = prefs()
+    new = apply_changes(
+        old, [{"type": "assign_source", "role": "home", "stat": "sensor.m"}]
+    )
+    assert diff(old, new) == [
+        {"type": "source_added", "stat": "sensor.m", "role": "home"}
     ]

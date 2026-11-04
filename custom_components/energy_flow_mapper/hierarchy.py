@@ -38,10 +38,15 @@ SOURCE_ROLES: dict[str, dict[str, str]] = {
     "battery": {FROM: "discharge", TO: "charge"},
     "gas": {FROM: "gas"},
     "water": {FROM: "water"},
+    # The home meter (Home Assistant 2026.11 and newer) measures Home itself.
+    "home": {TO: "home"},
 }
 
 # Source types the panel may change; gas is only shown.
-EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery", "water")
+EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery", "water", "home")
+
+# Key of Home in untracked values and issues.
+HOME = "home"
 
 # A grid connection without costs, as the energy settings page creates it.
 NEW_GRID: dict[str, Any] = {
@@ -103,6 +108,7 @@ class IssueCode(StrEnum):
     NOT_ENERGY_UNIT = "not_energy_unit"
     NOT_WATER_UNIT = "not_water_unit"
     CHILDREN_EXCEED_PARENT = "children_exceed_parent"
+    DEVICES_EXCEED_HOME = "devices_exceed_home"
 
 
 class ChangeType(StrEnum):
@@ -114,6 +120,7 @@ class ChangeType(StrEnum):
     REMOVE = "remove"
     ASSIGN_SOURCE = "assign_source"
     UNASSIGN_SOURCE = "unassign_source"
+    USE_AS_HOME_METER = "use_as_home_meter"
 
 
 class AssignRole(StrEnum):
@@ -124,6 +131,7 @@ class AssignRole(StrEnum):
     PRODUCTION = "production"
     BATTERY = "battery"
     WATER = "water"
+    HOME = "home"
 
 
 # Unit warning of each device list.
@@ -418,6 +426,9 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
     """
     role = change.get("role")
     stat = change["stat"]
+    if role == AssignRole.HOME:
+        _assign_home(sources, stat)
+        return
     if role == AssignRole.WATER:
         if replace := change.get("replace"):
             water = next(
@@ -456,6 +467,19 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
         sources.append({"type": "battery", FROM: stat, TO: change["stat_to"]})
     else:
         raise ChangeError("unknown_change", stat)
+
+
+def _assign_home(
+    sources: list[dict[str, Any]], stat: str, rate: str | None = None
+) -> None:
+    """Set the statistic of the home meter, or add one; there is at most one."""
+    home = next((s for s in sources if s.get("type") == "home"), None)
+    if home is None:
+        home = {"type": "home"}
+        sources.append(home)
+    home[TO] = stat
+    if rate:
+        home[RATE] = rate
 
 
 def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
@@ -500,6 +524,9 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
         if kind == ChangeType.UNASSIGN_SOURCE:
             _unassign_source(sources, stat)
             continue
+        if kind == ChangeType.USE_AS_HOME_METER:
+            _use_as_home_meter(result, sources, stat)
+            continue
         key = DEVICE_KEYS[DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))]
         devices: list[Device] = result.setdefault(key, [])
         index = _index(devices, stat)
@@ -526,6 +553,27 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
         else:
             raise ChangeError("unknown_change", stat)
     return result
+
+
+def _use_as_home_meter(
+    prefs: dict[str, Any], sources: list[dict[str, Any]], stat: str
+) -> None:
+    """Turn an electricity device into the home meter.
+
+    The device is removed like any removal (its children move up a level) and
+    its statistic and power sensor become the home meter.
+    """
+    if any(s.get("type") == "home" for s in sources):
+        raise ChangeError("home_exists", stat)
+    devices: list[Device] = prefs.setdefault(KEY_DEVICES, [])
+    index = _index(devices, stat)
+    if index is None:
+        raise ChangeError("unknown_device", stat)
+    removed = devices.pop(index)
+    for other in devices:
+        if other.get(PARENT) == stat:
+            _set_optional(other, PARENT, removed.get(PARENT))
+    _assign_home(sources, stat, removed.get(RATE))
 
 
 def diff(old: Prefs, new: Prefs) -> list[dict[str, Any]]:
@@ -640,6 +688,96 @@ def plausibility(
                 )
             )
     return issues
+
+
+def home_stats(sources: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Return the statistics the home consumption is read or calculated from.
+
+    The home meter if there is one; otherwise grid import and export, solar and
+    the battery. Without a grid import nothing can be calculated.
+    """
+    for source in sources:
+        if source.get("type") == "home" and isinstance(source.get(TO), str):
+            return [source[TO]]
+    roles = [
+        (role, stat) for role, stat in source_roles(sources) if role in _HOME_SIGNS
+    ]
+    if not any(role == "import" for role, _ in roles):
+        return []
+    return [stat for _, stat in roles]
+
+
+# How each source role counts towards the calculated home consumption.
+_HOME_SIGNS: dict[str, int] = {
+    "import": 1,
+    "export": -1,
+    "production": 1,
+    "discharge": 1,
+    "charge": -1,
+}
+
+
+def home_consumption(
+    sources: Sequence[Mapping[str, Any]], energy: Mapping[str, float | None]
+) -> tuple[float | None, str | None]:
+    """Return the home consumption and whether it is measured or calculated.
+
+    Measured comes from the home meter. Calculated is grid import - export +
+    solar + battery discharge - charge, and only when every one of these has a
+    value. Gas and water never count. Returns (None, None) otherwise.
+    """
+    stats = home_stats(sources)
+    if not stats:
+        return None, None
+    values = [energy.get(stat) for stat in stats]
+    if any(value is None for value in values):
+        return None, None
+    if any(s.get("type") == "home" and s.get(TO) == stats[0] for s in sources):
+        return values[0], "measured"
+    signs = {
+        stat: _HOME_SIGNS[role]
+        for role, stat in source_roles(sources)
+        if role in _HOME_SIGNS
+    }
+    total = sum(signs[stat] * (value or 0.0) for stat, value in zip(stats, values))
+    return round(total, 6), "calculated"
+
+
+def home_untracked(
+    roots: Sequence[Node], values: Mapping[str, float | None], home: float | None
+) -> float | None:
+    """Return the home consumption minus all top-level devices, or None."""
+    if home is None:
+        return None
+    tops = [values.get(node.stat) for node in roots]
+    if any(value is None for value in tops):
+        return None
+    return home - sum(value for value in tops if value is not None)
+
+
+def home_plausibility(
+    roots: Sequence[Node],
+    energy: Mapping[str, float | None],
+    home: float | None,
+    ratio: float = PLAUSIBILITY_RATIO,
+    min_amount: float = PLAUSIBILITY_MIN_KWH,
+) -> Issue | None:
+    """Warn when the top-level devices use clearly more than the home.
+
+    The same limits as for a device and its children.
+    """
+    rest = home_untracked(roots, energy, home)
+    if rest is None or home is None:
+        return None
+    excess = round(-rest, 9)
+    if excess > round(ratio * home, 9) and excess > min_amount:
+        return Issue(
+            IssueCode.DEVICES_EXCEED_HOME,
+            Severity.WARNING,
+            HOME,
+            {"home": home, "devices": round(home + excess, 9), "excess": excess},
+        )
+    return None
 
 
 def prefs_hash(prefs: Prefs) -> str:
