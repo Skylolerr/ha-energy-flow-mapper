@@ -1545,6 +1545,7 @@ async def test_use_device_as_home_meter(
         "type": "home",
         "stat_energy_to": "sensor.main_energy",
         "stat_rate": "sensor.main_power",
+        "name": "Main",
     }
     devices = device_list(prefs)
     assert "sensor.main_energy" not in devices
@@ -1578,3 +1579,41 @@ async def test_home_meter_without_value(
     # In a longer period it is late only if its statistics end too early.
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
     assert response["result"]["home"]["stale"] is None
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_home_meter_restore_and_import_refused_without_support(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A backup or file with a home meter says why it cannot be used."""
+    monkeypatch.setattr(energy_access, "home_supported", lambda: False)
+    data = {"energy_sources": with_home(ENERGY_PREFS)["energy_sources"]}
+    backup_id = await loaded_entry.runtime_data.backups.async_add(data, None, None, {})
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=backup_id,
+        base_hash=await current_hash(hass_ws_client, hass),
+    )
+    assert response["error"]["translation_key"] == "home_not_supported"
+    document = {
+        "format": "energy_flow_mapper",
+        "version": 1,
+        "exported": "2026-11-04T12:00:00+00:00",
+        "source": "current",
+        "data": data,
+    }
+    for command in ("import_check", "import"):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/{command}",
+            base_hash=await current_hash(hass_ws_client, hass),
+            document=document,
+        )
+        assert response["error"]["translation_key"] == "home_not_supported"
+    assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS

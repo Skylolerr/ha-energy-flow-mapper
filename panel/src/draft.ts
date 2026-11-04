@@ -364,8 +364,13 @@ export function applySourceChanges(sources: Source[], changes: Change[], devices
   for (const change of changes) {
     if (change.type === "use_as_home_meter") {
       if (!result.some((s) => s.type === "home")) {
-        const rate = devices.find((d) => d.stat_consumption === change.stat)?.stat_rate;
-        result.push({ type: "home", stat_energy_to: change.stat, ...(rate ? { stat_rate: rate } : {}) });
+        const device = devices.find((d) => d.stat_consumption === change.stat);
+        result.push({
+          type: "home",
+          stat_energy_to: change.stat,
+          ...(device?.stat_rate ? { stat_rate: device.stat_rate } : {}),
+          ...(device?.name ? { name: device.name } : {}),
+        });
       }
     } else if (change.type === "assign_source") {
       if (change.role === "home") {

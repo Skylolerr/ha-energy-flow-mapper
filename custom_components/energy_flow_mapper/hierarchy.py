@@ -476,7 +476,10 @@ def _assign_water(
 
 
 def _assign_home(
-    sources: list[dict[str, Any]], stat: str, rate: str | None = None
+    sources: list[dict[str, Any]],
+    stat: str,
+    rate: str | None = None,
+    name: str | None = None,
 ) -> None:
     """Set the statistic of the home meter, or add one; there is at most one."""
     home = next((s for s in sources if s.get("type") == "home"), None)
@@ -486,6 +489,8 @@ def _assign_home(
     home[TO] = stat
     if rate:
         home[RATE] = rate
+    if name:
+        home[NAME] = name
 
 
 def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
@@ -576,7 +581,7 @@ def _use_as_home_meter(
     """Turn an electricity device into the home meter.
 
     The device is removed like any removal (its children move up a level) and
-    its statistic and power sensor become the home meter.
+    its statistic, power sensor and name become the home meter.
     """
     if any(s.get("type") == "home" for s in sources):
         raise ChangeError("home_exists", stat)
@@ -588,7 +593,7 @@ def _use_as_home_meter(
     for other in devices:
         if other.get(PARENT) == stat:
             _set_optional(other, PARENT, removed.get(PARENT))
-    _assign_home(sources, stat, removed.get(RATE))
+    _assign_home(sources, stat, removed.get(RATE), removed.get(NAME))
 
 
 def diff(old: Prefs, new: Prefs) -> list[dict[str, Any]]:

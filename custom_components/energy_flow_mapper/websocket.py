@@ -6,6 +6,7 @@ dashboard shows every user anyway (see SPEC.md §2).
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
@@ -203,6 +204,14 @@ async def _async_current(hass: HomeAssistant, base_hash: str) -> dict[str, Any]:
     if prefs_hash(prefs) != base_hash:
         raise _error("conflict")
     return prefs
+
+
+def _refuse_home_without_support(update: Mapping[str, Any]) -> None:
+    """Refuse a home meter in restored or imported sources before HA 2026.11."""
+    if not energy_access.home_supported() and any(
+        source.get("type") == "home" for source in update.get(KEY_SOURCES, [])
+    ):
+        raise _error("home_not_supported")
 
 
 def _apply(prefs: Prefs, changes: list[dict[str, Any]]) -> dict[str, Any]:
@@ -409,6 +418,7 @@ async def websocket_restore(
             for key, value in backup["data"].items()
             if prefs.get(key) != value
         }
+        _refuse_home_without_support(update)
         if not update:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
@@ -690,6 +700,7 @@ def _imported(prefs: Prefs, document: Any) -> tuple[dict[str, Any], dict[str, An
     except InvalidImportError as err:
         raise _error("invalid_import", error=str(err)) from err
     update = {key: value for key, value in data.items() if prefs.get(key) != value}
+    _refuse_home_without_support(update)
     return dict(prefs) | update, update
 
 

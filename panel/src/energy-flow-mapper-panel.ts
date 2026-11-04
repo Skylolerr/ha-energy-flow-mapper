@@ -414,9 +414,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     return applySourceChanges(prefs?.energy_sources ?? [], this._changes, prefs?.device_consumption ?? []);
   }
 
-  /** Whether the home meter can be offered: HA knows it, electricity, none set yet. */
-  private _canUseHomeMeter(): boolean {
+  /**
+   * Whether the home meter can be offered: HA knows it, electricity, none set
+   * yet; with `stat`, only for a top-level device.
+   */
+  private _canUseHomeMeter(stat?: string): boolean {
+    const top = stat === undefined || !this.draft.find((d) => d.stat_consumption === stat)?.included_in_stat;
     return (
+      top &&
       this._snapshot?.home_supported === true &&
       this._tab === "electricity" &&
       !this.draftSources.some((s) => s.type === "home")
@@ -731,7 +736,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     if (target.startsWith(SOURCE_TARGET)) {
       if (dragged.kind === "device") {
-        return target.startsWith(`${SOURCE_TARGET}home:`) && this._canUseHomeMeter();
+        return target.startsWith(`${SOURCE_TARGET}home:`) && this._canUseHomeMeter(dragged.stat);
       }
       return true;
     }
@@ -2086,7 +2091,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             >
               ${this._t("rename")}
             </button>
-            ${this._canUseHomeMeter()
+            ${this._canUseHomeMeter(dialog.stat)
               ? html`<button
                   @click=${() => {
                     this._close();

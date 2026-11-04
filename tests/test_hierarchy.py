@@ -980,6 +980,7 @@ def test_use_as_home_meter() -> None:
             "type": "home",
             "stat_energy_to": "sensor.main",
             "stat_rate": "sensor.main_power",
+            "name": "Main",
         }
     ]
     with pytest.raises(ChangeError) as err:
@@ -1097,3 +1098,16 @@ def test_home_meter_may_share_the_grid_import() -> None:
         ]
     )
     assert codes(validate(data)) == []
+
+
+def test_use_as_home_meter_keeps_the_name() -> None:
+    """A name set for the device stays as the home meter's name."""
+    new = apply_changes(prefs(), [{"type": "use_as_home_meter", "stat": "sensor.main"}])
+    assert new["energy_sources"] == [
+        {
+            "type": "home",
+            "stat_energy_to": "sensor.main",
+            "stat_rate": "sensor.main_power",
+            "name": "Main",
+        }
+    ]

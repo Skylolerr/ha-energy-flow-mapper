@@ -429,3 +429,12 @@ describe("home meter", () => {
     expect(homeNow(hass as never, [])).toBeNull();
   });
 });
+
+describe("home meter from a named device", () => {
+  it("keeps the device's name", () => {
+    const devices = [{ stat_consumption: "main", stat_rate: "main_power", name: "Main panel" }];
+    expect(applySourceChanges([], [{ type: "use_as_home_meter", stat: "main" }], devices)).toEqual([
+      { type: "home", stat_energy_to: "main", stat_rate: "main_power", name: "Main panel" },
+    ]);
+  });
+});

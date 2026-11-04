@@ -1898,3 +1898,22 @@ describe("home meter without a value", () => {
     expect(root(el).querySelector('.block.untracked[data-parent="home"]')).toBeNull();
   });
 });
+
+describe("home meter from a nested device", () => {
+  it("is offered for top-level devices only", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.home_supported = true;
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el._dialog = { kind: "actions", stat: "sensor.sonos" };
+    await settle(el);
+    expect(text(el)).not.toContain("Use as home meter");
+    drag(node(el, "sensor.sonos"), root(el).querySelector<HTMLElement>('.block.placeholder[data-role="home"]')!);
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    expect(text(el)).toContain("Use as home meter");
+  });
+});
