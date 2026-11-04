@@ -551,3 +551,17 @@ describe("card editor", () => {
     expect(bare.shadowRoot!.querySelector("ha-form")).toBeNull();
   });
 });
+
+describe("card home meter without a value", () => {
+  it("does not show the sum of the devices as measured", async () => {
+    const meter = { type: "home", role: "home" as const, stat: "sensor.main", name: "Main meter" };
+    const mock = mockHass((msg) => ({
+      ...data({ sources: [...data().sources, meter] }),
+      ...(msg.period ? { ...periodValues(), issues: [], home: { value: null, basis: null, stale: null, untracked: null } } : {}),
+    }));
+    const now = await view({ period: "now" }, mock);
+    expect(now.shadowRoot!.querySelector(".block.home")!.textContent).not.toContain("measured");
+    const week = await view({ period: "week" }, mock);
+    expect(week.shadowRoot!.querySelector(".block.home")!.textContent).not.toContain("measured");
+  });
+});

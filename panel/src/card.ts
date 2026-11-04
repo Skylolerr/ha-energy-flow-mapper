@@ -415,6 +415,11 @@ export class EnergyFlowMapperCardView extends LitElement {
       const name = this._data?.sources.find((s) => s.stat === home.stale)?.name ?? home.stale;
       return html`<span class="sub">${this._t("home_stale", { name })}</span>`;
     }
+    // With a home meter, the sum of the devices is no measurement of Home.
+    const meter = !this.config?.root && (this._data?.sources ?? []).some((s) => s.role === "home");
+    if (home?.value == null && meter) {
+      return nothing;
+    }
     const [key, value] =
       home?.value != null
         ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)

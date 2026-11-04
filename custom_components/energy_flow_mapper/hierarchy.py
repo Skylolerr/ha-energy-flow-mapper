@@ -383,7 +383,10 @@ def validate(
         for key in SOURCE_ENERGY_KEYS
         if isinstance(stat := source.get(key), str)
     }
-    counts = Counter(stat for _, stat in source_roles(all_sources))
+    # The home meter only measures Home; it may also be the grid import meter.
+    counts = Counter(
+        stat for role, stat in source_roles(all_sources) if role != AssignRole.HOME
+    )
     issues.extend(
         Issue(IssueCode.DUPLICATE_SOURCE, Severity.ERROR, stat, kind=kinds[stat])
         for stat, count in counts.items()

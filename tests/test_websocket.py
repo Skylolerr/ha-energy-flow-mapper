@@ -1557,3 +1557,24 @@ async def test_use_device_as_home_meter(
         changes=[{"type": "use_as_home_meter", "stat": "sensor.kitchen_energy"}],
     )
     assert response["error"]["translation_key"] == "home_exists"
+
+
+@pytest.mark.parametrize("energy_prefs", [with_home(ENERGY_PREFS)])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_home_meter_without_value(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """A home meter without 5-minute data is too late for today."""
+    energy_values |= {"sensor.attic_energy": None, "sensor.garage_energy": 1.0}
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="today")
+    assert response["result"]["home"] == {
+        "value": None,
+        "basis": None,
+        "stale": "sensor.attic_energy",
+        "untracked": None,
+    }
+    # In a longer period it is late only if its statistics end too early.
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    assert response["result"]["home"]["stale"] is None

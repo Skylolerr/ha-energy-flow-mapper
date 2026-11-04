@@ -541,7 +541,8 @@ async def _async_period(
     }
     if home_sources is not None and DeviceKind.ELECTRICITY in lists:
         roots = build_tree(lists[DeviceKind.ELECTRICITY])
-        home = await _async_home(hass, home_sources, roots, energy, end)
+        home = await _async_home(hass, home_sources, energy, period, end)
+        home["untracked"] = home_untracked(roots, energy, home["value"])
         result["home"] = home
         if home["untracked"] is not None:
             rest[HOME] = home["untracked"]
@@ -553,28 +554,29 @@ async def _async_period(
 async def _async_home(
     hass: HomeAssistant,
     sources: list[Any],
-    roots: list[Any],
     energy: dict[str, float | None],
+    period: str,
     end: datetime,
 ) -> dict[str, Any]:
     """Return the home consumption of a period, unless its data is too late.
 
+    The caller adds `untracked`, what no top-level device covers.
+
     `stale` names the first meter behind it whose statistics end too long
-    before `end`; then there is no value, untracked value or warning.
+    before `end`; then there is no value, untracked value or warning. A home
+    meter without 5-minute statistics (an external one) is too late for today.
     """
     value, basis = home_consumption(sources, energy)
+    stats = home_stats(sources)
+    meter = any(source.get("type") == "home" for source in sources)
     stale = None
-    if value is not None:
-        stats = home_stats(sources)
+    if meter and stats and value is None and period == "today":
+        stale = stats[0]
+    elif value is not None or meter:
         stale = stale_stat(stats, await async_last_ends(hass, stats), end)
     if stale is not None:
         value = basis = None
-    return {
-        "value": value,
-        "basis": basis,
-        "stale": stale,
-        "untracked": home_untracked(roots, energy, value),
-    }
+    return {"value": value, "basis": basis, "stale": stale}
 
 
 @websocket_command(

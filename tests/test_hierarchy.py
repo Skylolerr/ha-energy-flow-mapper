@@ -1086,3 +1086,14 @@ def test_diff_home_source() -> None:
     assert diff(old, new) == [
         {"type": "source_added", "stat": "sensor.m", "role": "home"}
     ]
+
+
+def test_home_meter_may_share_the_grid_import() -> None:
+    """Home Assistant allows the home meter to be the grid import meter."""
+    data = prefs(
+        energy_sources=[
+            {"type": "grid", "stat_energy_from": "sensor.meter"},
+            {"type": "home", "stat_energy_to": "sensor.meter"},
+        ]
+    )
+    assert codes(validate(data)) == []

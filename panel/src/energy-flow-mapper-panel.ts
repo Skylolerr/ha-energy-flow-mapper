@@ -1443,6 +1443,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (home?.stale) {
       return html`<span class="sub">${this._t("home_stale", { name: this._name(home.stale) })}</span>`;
     }
+    // With a home meter, the sum of the devices is no measurement of Home.
+    if (home?.value == null && this._tab === "electricity" && this.draftSources.some((s) => s.type === "home")) {
+      return nothing;
+    }
     const [key, value] =
       home?.value != null
         ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)

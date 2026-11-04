@@ -1869,3 +1869,32 @@ describe("home meter", () => {
     expect(root(el).querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("–");
   });
 });
+
+describe("home meter without a value", () => {
+  it("does not show the sum of the devices as measured", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.home_supported = true;
+    snap.prefs.energy_sources = [
+      ...snap.prefs.energy_sources,
+      { type: "home", stat_energy_to: "sensor.main" },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.responses["energy_flow_mapper/energy"] = (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      energy: { "sensor.server": 12.5, "sensor.sonos": 2, "sensor.tv": 0.5 },
+      untracked: {},
+      issues: [],
+      home: { value: null, basis: null, stale: null, untracked: null },
+    });
+    const el = await mount(mock);
+    // Now: the home meter has no power sensor.
+    expect(root(el).querySelector(".block.home")!.textContent).not.toContain("measured");
+    el.setPeriod("week");
+    await settle(el);
+    expect(root(el).querySelector(".block.home")!.textContent).not.toContain("measured");
+    expect(root(el).querySelector('.block.untracked[data-parent="home"]')).toBeNull();
+  });
+});
