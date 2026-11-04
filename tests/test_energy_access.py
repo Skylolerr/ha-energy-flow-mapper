@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from homeassistant.components.energy import data as energy_data
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -103,3 +104,11 @@ async def test_supported(hass: HomeAssistant) -> None:
     assert energy_access.unsupported_error().translation_key == (
         "unsupported_energy_api"
     )
+
+
+def test_home_supported(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The home meter exists from the release that has its schema."""
+    monkeypatch.delattr(energy_data, "HOME_SOURCE_SCHEMA", raising=False)
+    assert energy_access.home_supported() is False
+    monkeypatch.setattr(energy_data, "HOME_SOURCE_SCHEMA", object(), raising=False)
+    assert energy_access.home_supported() is True

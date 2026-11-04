@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection
+from collections.abc import Collection, Mapping, Sequence
 from datetime import datetime, timedelta
+from functools import partial
 from typing import Final, Literal
 
-from homeassistant.components.recorder.statistics import statistics_during_period
+from homeassistant.components.recorder.statistics import (
+    get_last_statistics,
+    statistics_during_period,
+)
 from homeassistant.const import UnitOfVolume
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.recorder import get_instance
@@ -23,6 +27,10 @@ PERIODS: Final[dict[str, tuple[int, Resolution]]] = {
     "week": (6, "hour"),
     "month": (29, "day"),
 }
+
+# A statistic whose data ends longer before the end of a period than this is
+# too late to compare with up-to-date sensors (for example a utility portal).
+RECENT_LAG: Final = timedelta(hours=2)
 
 
 def water_unit(hass: HomeAssistant) -> str:
@@ -73,3 +81,40 @@ async def async_energy(
         ]
         result[stat] = round(sum(changes), 6) if changes else None
     return result
+
+
+async def async_last_ends(
+    hass: HomeAssistant, stats: Collection[str]
+) -> dict[str, datetime | None]:
+    """Return the end of each statistic's last hourly statistic.
+
+    None for a statistic without data, and for all without a recorder.
+    """
+    if "recorder" not in hass.config.components:
+        return dict.fromkeys(stats)
+    result: dict[str, datetime | None] = {}
+    for stat in stats:
+        rows = await get_instance(hass).async_add_executor_job(
+            partial(get_last_statistics, convert_units=True, types={"sum"}),
+            hass,
+            1,
+            stat,
+        )
+        last = rows.get(stat)
+        result[stat] = (
+            dt_util.utc_from_timestamp(last[0]["start"]) + timedelta(hours=1)
+            if last
+            else None
+        )
+    return result
+
+
+def stale_stat(
+    stats: Sequence[str], ends: Mapping[str, datetime | None], end: datetime
+) -> str | None:
+    """Return the first statistic whose data ends too long before `end`."""
+    for stat in stats:
+        last = ends.get(stat)
+        if last is None or last < end - RECENT_LAG:
+            return stat
+    return None

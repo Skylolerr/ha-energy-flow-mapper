@@ -47,6 +47,11 @@ def unsupported_error() -> HomeAssistantError:
     )
 
 
+def home_supported() -> bool:
+    """Return True if this release knows the home meter (2026.11 and newer)."""
+    return hasattr(energy_data, "HOME_SOURCE_SCHEMA")
+
+
 async def async_is_supported(hass: HomeAssistant) -> bool:
     """Return True if this Home Assistant release has the expected energy API."""
     if any(not hasattr(energy_data, name) for name in REQUIRED_NAMES):

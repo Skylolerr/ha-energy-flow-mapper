@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -12,8 +12,11 @@ from homeassistant.util.unit_system import US_CUSTOMARY_SYSTEM
 
 from custom_components.energy_flow_mapper import energy_stats
 from custom_components.energy_flow_mapper.energy_stats import (
+    RECENT_LAG,
     async_energy,
+    async_last_ends,
     period_range,
+    stale_stat,
     water_unit,
 )
 
@@ -120,3 +123,45 @@ async def test_without_recorder_or_statistics(hass: HomeAssistant) -> None:
     }
     hass.config.components.add("recorder")
     assert await async_energy(hass, [], "today", dt_util.now()) == {}
+
+
+async def test_last_ends(hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The end of each statistic's last hour; None without data or recorder."""
+    hour = datetime.fromisoformat("2026-11-04T12:00:00+00:00")
+    asked: list[tuple[Any, ...]] = []
+
+    def fake(*args: Any, **kwargs: Any) -> dict[str, list[dict[str, Any]]]:
+        asked.append((*args, kwargs))
+        stat = args[2]
+        return {"sensor.a": [{"start": hour.timestamp()}]} if stat == "sensor.a" else {}
+
+    monkeypatch.setattr(energy_stats, "get_last_statistics", fake)
+    monkeypatch.setattr(energy_stats, "get_instance", FakeRecorder)
+    assert await async_last_ends(hass, ["sensor.a"]) == {"sensor.a": None}
+    hass.config.components.add("recorder")
+    ends = await async_last_ends(hass, ["sensor.a", "portal:x"])
+    assert ends == {
+        "sensor.a": datetime.fromisoformat("2026-11-04T13:00:00+00:00"),
+        "portal:x": None,
+    }
+    assert asked[0][1:] == (1, "sensor.a", {"convert_units": True, "types": {"sum"}})
+
+
+def test_stale_stat() -> None:
+    """The first statistic that ends more than two hours before the end."""
+    end = datetime.fromisoformat("2026-11-04T15:00:00+00:00")
+    ends = {
+        "sensor.fresh": datetime.fromisoformat("2026-11-04T14:00:00+00:00"),
+        "sensor.limit": datetime.fromisoformat("2026-11-04T13:00:00+00:00"),
+        "sensor.old": datetime.fromisoformat("2026-11-04T12:00:00+00:00"),
+        "sensor.none": None,
+    }
+    assert timedelta(hours=2) == RECENT_LAG
+    assert stale_stat(["sensor.fresh", "sensor.limit"], ends, end) is None
+    assert (
+        stale_stat(["sensor.fresh", "sensor.old", "sensor.none"], ends, end)
+        == "sensor.old"
+    )
+    assert stale_stat(["sensor.none", "sensor.old"], ends, end) == "sensor.none"
+    assert stale_stat(["sensor.unknown"], ends, end) == "sensor.unknown"
+    assert stale_stat([], ends, end) is None
