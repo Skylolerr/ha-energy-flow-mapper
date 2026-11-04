@@ -410,7 +410,7 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 
 **v0.6.0 – Vertikale Ansicht** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0b5; Wunsch des Maintainers vom 2026-10-31; siehe §6 «Ausrichtung»)*: Knöpfe «Horizontal» und «Vertikal» über dem Diagramm, Karten-Option `orientation`. Dazu die Aufnahme in die HACS-Standardliste (hacs/default#12520, gemerged am 2026-11-04); das README führt mit der HACS-Suche.
 
-**v0.7.0 – Hauszähler** *(in Arbeit, Stand 2026-11-04; Wunsch des Maintainers vom 2026-11-04; siehe §2 «Hauszähler» und §6)*: HAs Hauszähler (ab 2026.11) bei «Zuhause» zuweisen, ersetzen, entfernen oder aus einem Gerät machen; Hausverbrauch gemessen oder berechnet; «Nicht erfasster Verbrauch» und Warnung auf oberster Ebene; dasselbe auf der Karte. Mindestversion bleibt HA 2026.10.
+**v0.7.0 – Hauszähler** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0; Wunsch des Maintainers vom 2026-11-04; siehe §2 «Hauszähler» und §6)*: HAs Hauszähler (ab 2026.11) bei «Zuhause» zuweisen, ersetzen, entfernen oder aus einem Gerät machen; Hausverbrauch gemessen oder berechnet; «Nicht erfasster Verbrauch» und Warnung auf oberster Ebene; dasselbe auf der Karte. Mindestversion bleibt HA 2026.10.
 
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 

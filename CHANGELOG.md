@@ -11,6 +11,11 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-04
+
+> **Highlight:** see what your whole home uses – and how much of it no device covers yet.
+> With Home Assistant 2026.11, assign the new home meter right at Home.
+
 ### ✨ Added
 
 - **Home meter** (Home Assistant 2026.11 or newer): assign, replace or remove the whole-home
@@ -25,15 +30,15 @@ and Home Assistant show when they offer the update.
   instead of a misleading one; Home names the meter.
 - The same on the dashboard card.
 
-### 🔄 Changed
+### 📦 Changed
 
 - Terms like in Home Assistant: *upstream device*, *child devices* and *untracked
   consumption* (before: parent device, sub-devices, not tracked individually), in all four
   languages.
 - With Home Assistant 2026.11 or newer, a device without its own name is named after its
   device (with the upstream device in front), the same way the energy dashboard does it.
-- *Use as home meter* is offered for top-level devices only, and restoring or importing a
-  home meter before Home Assistant 2026.11 explains why it cannot be used.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.0 · minimum 2026.10.0*
 
 ## [0.6.0] - 2026-11-04
 
