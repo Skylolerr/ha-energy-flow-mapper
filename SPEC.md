@@ -403,6 +403,8 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 
 **v0.5.0 – Dashboard-Karte** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4; Entscheid des Maintainers vom 2026-10-25; siehe §6 «Dashboard-Karte»)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
 
+**v0.6.0 – Vertikale Ansicht** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0b5; Wunsch des Maintainers vom 2026-10-31; siehe §6 «Ausrichtung»)*: Knöpfe «Horizontal» und «Vertikal» über dem Diagramm, Karten-Option `orientation`. Dazu die Aufnahme in die HACS-Standardliste (hacs/default#12520, gemerged am 2026-11-04); das README führt mit der HACS-Suche.
+
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
 **Laufend:** Bei jeder neuen HA-Version gemeinsam mit dem Maintainer testen und die Mindestversion bei Bedarf anheben.

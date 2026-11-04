@@ -11,12 +11,26 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-04
+
+> **Highlight:** large energy trees stay readable – switch the diagram to vertical, and
+> find Energy Flow Mapper directly in HACS.
+
+![The diagram in the vertical view: sources on the left, then Home, then the devices in columns](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/vertical-light.png)
+
 ### ✨ Added
 
 - **Vertical diagram** for large energy trees: the buttons *Horizontal* and *Vertical*
   above the diagram run the tree top-down or from left to right, with the devices of a
   level stacked below each other. Your browser remembers the choice.
 - Card option `orientation` (`horizontal` or `vertical`), also in the card editor.
+
+### 📦 Changed
+
+- Energy Flow Mapper is in the HACS default list now: search for it in HACS. The README
+  keeps the custom repository steps as a fallback.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.0b5 · minimum 2026.10.0*
 
 ## [0.5.0] - 2026-10-25
 
