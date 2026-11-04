@@ -1049,6 +1049,11 @@ def test_home_consumption() -> None:
     missing = ENERGY_FOR_HOME | {"sensor.in": None}
     assert home_consumption(SOURCES_FOR_HOME, missing) == (None, None)
     assert home_consumption([], {}) == (None, None)
+    # A home never uses less than nothing: broken statistics give no value.
+    negative = ENERGY_FOR_HOME | {"sensor.imp": -10.0}
+    assert home_consumption(SOURCES_FOR_HOME, negative) == (None, None)
+    assert home_consumption(measured, {"sensor.main_meter": -0.5}) == (None, None)
+    assert home_consumption(measured, {"sensor.main_meter": 0.0}) == (0.0, "measured")
 
 
 def test_home_untracked_and_plausibility() -> None:

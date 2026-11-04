@@ -736,7 +736,8 @@ def home_consumption(
 
     Measured comes from the home meter. Calculated is grid import - export +
     solar + battery discharge - charge, and only when every one of these has a
-    value. Gas and water never count. Returns (None, None) otherwise.
+    value. Gas and water never count. Returns (None, None) otherwise, and for
+    a negative result (broken statistics, a home never uses less than nothing).
     """
     stats = home_stats(sources)
     if not stats:
@@ -745,7 +746,8 @@ def home_consumption(
     if any(value is None for value in values):
         return None, None
     if any(s.get("type") == "home" and s.get(TO) == stats[0] for s in sources):
-        return values[0], "measured"
+        # A home never uses less than nothing: broken statistics give no value.
+        return (values[0], "measured") if (values[0] or 0.0) >= 0 else (None, None)
     signs = {
         stat: _HOME_SIGNS[role]
         for role, stat in source_roles(sources)
@@ -754,6 +756,8 @@ def home_consumption(
     total = sum(
         signs[stat] * (value or 0.0) for stat, value in zip(stats, values, strict=True)
     )
+    if total < 0:
+        return None, None
     return round(total, 6), "calculated"
 
 
