@@ -11,6 +11,20 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Home meter** (Home Assistant 2026.11 or newer): assign, replace or remove the whole-home
+  meter at Home – drop a free sensor on *+ Home meter* or tap it. A device that is your
+  main meter can become the home meter in one step (*Use as home meter*); its sub-devices
+  move up a level.
+- **Home consumption** at Home: measured by the home meter, or for a period calculated
+  from grid, solar and battery. Below Home, *Not tracked individually* shows what no
+  top-level device covers, with a warning when the devices use clearly more than the home.
+  This also works on Home Assistant 2026.10, without a home meter.
+- Meters whose data is hours behind (for example from a utility portal) give no home value
+  instead of a misleading one; Home names the meter.
+- The same on the dashboard card.
+
 ## [0.6.0] - 2026-11-04
 
 > **Highlight:** large energy trees stay readable – switch the diagram to vertical, and

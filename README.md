@@ -64,6 +64,10 @@ solar, battery or water meter, and which meters are not used yet.
   A large tree stays readable: *Vertical* runs it from left to right instead of top-down.
 - **Live power and energy per period** – now, today, 7 days or 30 days. Every device with
   sub-devices shows what is *not tracked individually*.
+- **The whole home** – Home shows what the house used: measured by a home meter, or
+  calculated from grid, solar and battery. Below it, what *no* device covers yet. With
+  Home Assistant 2026.11 or newer you can assign the home meter here too, or turn a
+  device into it.
 - **Plausibility warnings** – a device is flagged when its sub-devices used clearly more
   than it did (more than 5 % and 0.1 kWh, water 10 L) – usually a wrong assignment.
 - **Find a device** – the search field highlights matches, opens collapsed devices and

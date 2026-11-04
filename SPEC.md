@@ -50,6 +50,7 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Schreibweg | Über das Backend (prüfen, sichern, speichern in einem Schritt), nicht direkt aus dem Panel per `energy/save_prefs` |
 | Quellen zuweisen, externe Statistiken, Integral-Helfer | seit v0.1.0 |
 | Wasser | **Eigener Reiter «Wasser»** neben «Strom» (v0.3.0): Wasser-Geräte (`device_consumption_water`) als eigenes Diagramm, Wasser-Zähler als Quellen zuweisen, ersetzen und entfernen (Wunsch des Maintainers vom 2026-10-23) |
+| Hauszähler | Ab v0.7.0 (Wunsch des Maintainers vom 2026-11-04): HAs Quelle `home` (ab HA 2026.11) bei «Zuhause» zuweisen, ersetzen und entfernen, auch aus einem Gerät («Als Hauszähler verwenden»). «Zuhause» zeigt den Hausverbrauch, gemessen (Hauszähler) oder für Zeiträume aus Netz, Solar und Batterie berechnet, und darunter «Nicht einzeln erfasst» für alles, was kein oberstes Gerät abdeckt. Unter HA 2026.10 gibt es den Hauszähler nicht; Berechnung, Block und Warnung gibt es trotzdem. Entwurf: `docs/superpowers/specs/2026-11-04-home-meter-design.md` |
 | Gas | nur Anzeige der Gas-Quellen im Reiter «Strom», keine Bearbeitung und kein eigener Reiter (Entscheid des Maintainers vom 2026-10-25: HA kennt keine Gas-Geräte, ein Reiter hätte nur die Quellen) |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
 | Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** (Wasser: **> 10 L**) mehr verbrauchen als das übergeordnete |
@@ -206,6 +207,7 @@ HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt 
 - **Pfeildicke = Wert des Blocks** (relativ zum grössten Wert im Diagramm). Ohne Leistungs- bzw. Durchflusssensor ist der Pfeil dünn und gestrichelt.
 - **Automatische Anordnung** von oben nach unten; ein Block mit untergeordneten Geräten steht mittig über ihnen. Blöcke mit untergeordneten Geräten lassen sich zuklappen.
 - **Ausrichtung** (Wunsch des Maintainers vom 2026-10-31): Knöpfe «Horizontal» und «Vertikal» über dem Diagramm. Horizontal läuft der Baum von oben nach unten (wird breit), vertikal von links nach rechts: jede Ebene ist eine Spalte, Geschwister stehen untereinander, Pfeile laufen seitlich. Der Wechsel passt das Diagramm neu ein. Die Wahl merkt sich der Browser (`localStorage`), sie gehört nicht zur Energie-Konfiguration.
+- **Hauszähler und Hausverbrauch** (ab v0.7.0, Wunsch des Maintainers vom 2026-11-04): Unter HA 2026.11 erscheint im Reiter «Strom» der Platzhalter «+ Hauszähler». Freien Sensor darauf ziehen oder antippen weist ihn zu; ein Gerät darauf ziehen oder im ⋮-Menü «Als Hauszähler verwenden» macht das Gerät zum Hauszähler (Kinder rutschen eine Ebene nach oben, eine einzige Änderung im Entwurf). Der Pfeil vom Hauszähler zu «Zuhause» ist gestrichelt, weil er misst und nicht liefert. «Zuhause» zeigt «X gemessen» (Hauszähler; «Jetzt» über seinen Leistungssensor), «X berechnet» (Zeiträume ohne Hauszähler: Netz-Bezug − Einspeisung + Solar + Batterie entladen − laden, nur wenn alle Werte da sind, nie Gas oder Wasser) oder wie bisher die Summe der obersten Geräte. Darunter «Nicht einzeln erfasst» (Hausverbrauch − alle obersten Geräte) und die Warnung, wenn die Geräte deutlich mehr verbrauchen (gleiche Grenzen wie §2). Endet die Statistik eines beteiligten Zählers mehr als 2 Stunden vor dem Ende des Zeitraums (z. B. Versorger-Portal), gibt es keinen Wert, keinen Block und keine Warnung; «Zuhause» nennt den Zähler mit «Daten nicht aktuell genug».
 - **Nicht konfigurierte Quellen** erscheinen als gestrichelte Platzhalter («+ Netz-Bezug», «+ Solar», «+ Batterie», «+ Einspeisung», im Reiter Wasser «+ Wasser»). Sie sind Ablageziele; ein Klick öffnet die Auswahl der freien Sensoren (§8).
 - **Zoomen und Verschieben:** Mausrad zoomt um den Mauszeiger, Ziehen auf freier Fläche verschiebt; auf dem Handy mit zwei Fingern zoomen und mit einem Finger verschieben. Knöpfe «−», «+» und «Einpassen»; beim Laden wird das Diagramm eingepasst.
 - **Listen-Ansicht:** Die bisherige eingerückte Liste bleibt im Code und in den Tests erhalten, ist aber in der Oberfläche nicht erreichbar.
@@ -227,7 +229,7 @@ HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt 
 
 - `custom:energy-flow-mapper-card`, nur Anzeige, für alle Benutzer (§2). Bearbeiten bleibt im Panel.
 - **Einstellungen** (Karten-Editor mit HAs `ha-form`, oder YAML): `kind` (`electricity` | `water`), `period` (`now` | `today` | `week` | `month`, Standard `today`), optional `root` (Gerät, ab dem der Baum gezeigt wird; dann ohne Quellen und ohne «Zuhause»), optional `title` (leer: keine Kopfzeile, fehlt: Name des Diagramms), `orientation` (`horizontal` | `vertical`, Standard `horizontal`), `show_sources` und `show_untracked` (Standard an). Der Editor schreibt Standardwerte nicht ins YAML; ein Wechsel der Liste entfernt `root`.
-- **Darstellung:** dasselbe Layout wie im Panel (`layout.ts`), ohne Platzhalter, ohne Ziehen, Zoom und Suche. Der Baum wird auf die Kartenbreite verkleinert, aber nicht unter 50 %; ist er breiter, scrollt die Karte seitlich und beginnt in der Mitte bei «Zuhause» bzw. beim Startgerät, vertikal am linken Rand. Warnungen (Plausibilität) wie im Panel. Antippen eines Geräts (nur Entities) öffnet `hass-more-info`.
+- **Darstellung:** dasselbe Layout wie im Panel (`layout.ts`), ohne Platzhalter, ohne Ziehen, Zoom und Suche. Der Baum wird auf die Kartenbreite verkleinert, aber nicht unter 50 %; ist er breiter, scrollt die Karte seitlich und beginnt in der Mitte bei «Zuhause» bzw. beim Startgerät, vertikal am linken Rand. Warnungen (Plausibilität) wie im Panel. Hauszähler, Hausverbrauch und «Nicht einzeln erfasst» bei «Zuhause» wie im Panel (nicht mit `root`). Antippen eines Geräts (nur Entities) öffnet `hass-more-info`.
 - **Werte:** «Jetzt» live aus `hass.states` (Leistung bzw. Durchfluss), Zeiträume aus `energy_flow_mapper/card` (§12). Die Karte liest den Baum und die Zeitraumwerte jede Minute neu und sofort, wenn sie wieder angezeigt wird. Der Befehl schlägt externe Statistiken nur für die gezeigten Geräte nach (aus dem Cache des Recorders).
 - **Auslieferung:** `frontend.add_extra_js_url` lädt beim Einrichten des Eintrags ein kleines Startskript (`energy-flow-mapper-card.js`, rund 2 KB) auf jeder Seite; es registriert die Karte und ihren Eintrag in der Kartenauswahl und lädt `energy-flow-mapper-card-view.js` erst, wenn ein Dashboard die Karte zeigt. Die Adresse trägt Version und Hash beider Dateien; beim Entladen wird genau die registrierte Adresse wieder entfernt. Schlägt das Nachladen der Karte fehl (offline, halbes Update), zeigt die Karte einen übersetzten Hinweis und versucht es bis zum Neuladen der Seite nicht erneut. HA setzt beim Start eine eigene (scoped) Registry an die Stelle von `window.customElements` und lädt Zusatz-Module gleichzeitig mit seinem eigenen Code; das Startskript registriert die Karte deshalb sofort und noch einmal, sobald `<home-assistant>` definiert ist.
 
@@ -260,6 +262,7 @@ Sortiert nach Bereich, dann Name. Beim Hinzufügen als Gerät wird ein Leistungs
 ## 8. Quellen zuweisen
 
 - Quellen-Felder: Netz-Bezug, Einspeisung, Solar, Batterie (Laden, Entladen), Wasser (ab v0.3.0). Gas wird nur angezeigt (§2).
+- **Hauszähler** (ab v0.7.0, nur ab HA 2026.11): Rolle `home`, Feld `stat_energy_to` der Quelle `{"type": "home"}`. Es gibt höchstens einen; Zuweisen ersetzt dessen Statistik (`stat_rate`, `name` und unbekannte Felder bleiben) oder legt ihn an, Entfernen entfernt ihn. Die Änderung `use_as_home_meter` (`stat`) entfernt ein Strom-Gerät wie `remove` und macht es mit seinem `stat_rate` zum Hauszähler (`home_exists`, wenn schon einer da ist). Unter HA 2026.10 lehnt das Backend beides mit `home_not_supported` ab.
 - **Netz:** Gibt es schon einen Netz-Eintrag, wird nur `stat_energy_from` bzw. `stat_energy_to` ersetzt. Alle anderen Felder (Preise, Vergütung, `power_config`, `cost_adjustment_day`, unbekannte Felder) bleiben unverändert. Gibt es noch keinen, wird einer ohne Kosten angelegt (`stat_cost` und Preise `null`, `cost_adjustment_day: 0`).
 - **Solar:** neuer Eintrag pro Sensor, `config_entry_solar_forecast: null`.
 - **Batterie:** Laden und Entladen werden als Paar zugewiesen. Ein Eintrag wird erst gespeichert, wenn beide gesetzt sind.
@@ -292,6 +295,7 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 - `diff(old, new)` für den Bestätigungsdialog und die Sicherungsliste.
 - `untracked(tree, values)`: pro Gerät mit Kindern `eigener Wert − Summe Kinder`.
 - `plausibility(tree, energy_per_stat)`: Warnung, wenn `Summe Kinder − eigener Wert > 5 % des eigenen Werts` **und** `> 0,1 kWh` (Wasser: `> 10 L`, bei Gallonen umgerechnet) im gewählten Zeitraum.
+- `home_stats(sources)`, `home_consumption(sources, energy)` → `(Wert, "measured" | "calculated" | None)`, `home_untracked(roots, values, home)` und `home_plausibility(roots, energy, home)` (Code `devices_exceed_home`, Statistik `home`) für den Hausverbrauch (§6).
 
 ---
 
@@ -323,17 +327,17 @@ Alle Befehle nur für Admins, ausser dem Lese-Befehl der Dashboard-Karte ab v0.5
 
 | Befehl | Eingabe | Ausgabe |
 |---|---|---|
-| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`, `flow_candidates`), Prüfergebnis |
+| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`, `flow_candidates`), Prüfergebnis, `home_supported` (ab v0.7.0) |
 | `energy_flow_mapper/validate` | `base_hash`, `changes` | `valid`, Fehler und Warnungen, `rejected` (Meldung von HAs Schemas), `diff` |
 | `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid_changes` / `rejected_by_home_assistant` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
 | `energy_flow_mapper/restore` | `backup_id`, `base_hash` | neuer Hash |
-| `energy_flow_mapper/energy` | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (pro Statistik: Strom in kWh, Wasser in `water_unit`; `null` ohne Daten), `water_unit` (`L` oder `gal`), `untracked`, `issues` (Plausibilität beider Listen) |
+| `energy_flow_mapper/energy` | `period` (`today`, `week`, `month`), optional `base_hash` + `changes` | `start`, `end`, `energy` (pro Statistik: Strom in kWh, Wasser in `water_unit`; `null` ohne Daten), `water_unit` (`L` oder `gal`), `untracked`, `issues` (Plausibilität beider Listen) ; ab v0.7.0 `home` (`value`, `basis`, `stale`, `untracked`) für den Strom-Baum, `untracked.home` und die Warnung `devices_exceed_home` |
 | `energy_flow_mapper/create_integral` | `power_entity_id` (Leistungs- oder Durchflusssensor), `name` | `entity_id` des neuen Zählers, `stat_rate`, `kind` (Liste, in die er gehört) |
 | `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
 | `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
 | `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
-| `energy_flow_mapper/card` (**alle Benutzer**, ab v0.5.0) | optional `kind` (Standard `electricity`), optional `period` (`today`, `week`, `month`) | `kind`, `devices` (Statistik, Name, übergeordnetes Gerät, Leistungs-/Durchflusssensor, Bereich), `sources` der Liste (Typ, Rolle, Statistik, Name), `water_unit`; mit `period` dazu `energy`, `untracked`, `issues` wie bei `energy`. Keine Preise oder Kosten |
+| `energy_flow_mapper/card` (**alle Benutzer**, ab v0.5.0) | optional `kind` (Standard `electricity`), optional `period` (`today`, `week`, `month`) | `kind`, `devices` (Statistik, Name, übergeordnetes Gerät, Leistungs-/Durchflusssensor, Bereich), `sources` der Liste (Typ, Rolle, Statistik, Name), `water_unit`; mit `period` dazu `energy`, `untracked`, `issues` wie bei `energy`. Keine Preise oder Kosten; ab v0.7.0 `home_supported`, beim Hauszähler in `sources` auch `stat_rate`, mit `period` für Strom `home` wie bei `energy` |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
 
@@ -404,6 +408,8 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 **v0.5.0 – Dashboard-Karte** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4; Entscheid des Maintainers vom 2026-10-25; siehe §6 «Dashboard-Karte»)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
 
 **v0.6.0 – Vertikale Ansicht** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0b5; Wunsch des Maintainers vom 2026-10-31; siehe §6 «Ausrichtung»)*: Knöpfe «Horizontal» und «Vertikal» über dem Diagramm, Karten-Option `orientation`. Dazu die Aufnahme in die HACS-Standardliste (hacs/default#12520, gemerged am 2026-11-04); das README führt mit der HACS-Suche.
+
+**v0.7.0 – Hauszähler** *(in Arbeit, Stand 2026-11-04; Wunsch des Maintainers vom 2026-11-04; siehe §2 «Hauszähler» und §6)*: HAs Hauszähler (ab 2026.11) bei «Zuhause» zuweisen, ersetzen, entfernen oder aus einem Gerät machen; Hausverbrauch gemessen oder berechnet; «Nicht einzeln erfasst» und Warnung auf oberster Ebene; dasselbe auf der Karte. Mindestversion bleibt HA 2026.10.
 
 5. **Phase 5 – v1.0.0:** Stabilisierung auf Basis von Feedback.
 
