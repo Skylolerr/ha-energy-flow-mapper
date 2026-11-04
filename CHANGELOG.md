@@ -15,15 +15,25 @@ and Home Assistant show when they offer the update.
 
 - **Home meter** (Home Assistant 2026.11 or newer): assign, replace or remove the whole-home
   meter at Home – drop a free sensor on *+ Home meter* or tap it. A device that is your
-  main meter can become the home meter in one step (*Use as home meter*); its sub-devices
-  move up a level.
+  main meter can become the home meter in one step (*Use as home meter*); its child devices
+  move up a level, and it keeps its name.
 - **Home consumption** at Home: measured by the home meter, or for a period calculated
-  from grid, solar and battery. Below Home, *Not tracked individually* shows what no
+  from grid, solar and battery. Below Home, *Untracked consumption* shows what no
   top-level device covers, with a warning when the devices use clearly more than the home.
   This also works on Home Assistant 2026.10, without a home meter.
 - Meters whose data is hours behind (for example from a utility portal) give no home value
   instead of a misleading one; Home names the meter.
 - The same on the dashboard card.
+
+### 🔄 Changed
+
+- Terms like in Home Assistant: *upstream device*, *child devices* and *untracked
+  consumption* (before: parent device, sub-devices, not tracked individually), in all four
+  languages.
+- With Home Assistant 2026.11 or newer, a device without its own name is named after its
+  device (with the upstream device in front), the same way the energy dashboard does it.
+- *Use as home meter* is offered for top-level devices only, and restoring or importing a
+  home meter before Home Assistant 2026.11 explains why it cannot be used.
 
 ## [0.6.0] - 2026-11-04
 

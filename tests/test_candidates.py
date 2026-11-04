@@ -373,3 +373,48 @@ async def test_names_follow_home_assistant_naming(hass: HomeAssistant) -> None:
     assert async_stat_info(hass, "sensor.plug_sum")["name"] == "Plug Server Total"
     assert async_stat_info(hass, "sensor.plug_main")["name"] == "Plug Server"
     assert async_stat_info(hass, "sensor.plug_renamed")["name"] == "My meter"
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_energy_name_like_home_assistant(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From 2026.11, devices are named after their device, as in HA."""
+    devices = dr.async_get(hass)
+    printer = async_stat_info(hass, "sensor.printer_energy")
+    device = devices.async_get(printer["device_id"])
+    assert device is not None
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    hub = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "hub")}, name="Office hub"
+    )
+    devices.async_update_device(device.id, via_device_id=hub.id)
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: False)
+    assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == (
+        "Printer energy"
+    )
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
+    assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == (
+        "Office hub Printer"
+    )
+    devices.async_update_device(device.id, via_device_id=None)
+    assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == "Printer"
+    # Without a device, and for external statistics, the statistic's name stays.
+    assert (
+        async_stat_info(hass, "sensor.kitchen_energy")["energy_name"]
+        == (async_stat_info(hass, "sensor.kitchen_energy")["name"])
+    )
+    assert async_stat_info(hass, "portal:energy_import")["energy_name"] is None
+
+
+def test_names_by_device_from_2026_11(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The naming follows the running Home Assistant release."""
+    monkeypatch.setattr(candidates_module, "MAJOR_VERSION", 2026)
+    monkeypatch.setattr(candidates_module, "MINOR_VERSION", 10)
+    assert candidates_module.names_by_device() is False
+    monkeypatch.setattr(candidates_module, "MINOR_VERSION", 11)
+    assert candidates_module.names_by_device() is True
+    monkeypatch.setattr(candidates_module, "MAJOR_VERSION", 2027)
+    monkeypatch.setattr(candidates_module, "MINOR_VERSION", 1)
+    assert candidates_module.names_by_device() is True

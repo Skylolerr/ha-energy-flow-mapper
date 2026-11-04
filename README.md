@@ -63,12 +63,15 @@ solar, battery or water meter, and which meters are not used yet.
   automatically; zoom and move with the mouse wheel, by dragging or with two fingers.
   A large tree stays readable: *Vertical* runs it from left to right instead of top-down.
 - **Live power and energy per period** – now, today, 7 days or 30 days. Every device with
-  sub-devices shows what is *not tracked individually*.
+  child devices shows its *untracked consumption*.
 - **The whole home** – Home shows what the house used: measured by a home meter, or
-  calculated from grid, solar and battery. Below it, what *no* device covers yet. With
+  calculated from grid, solar and battery. Below it, the *untracked consumption* that no device covers yet. With
   Home Assistant 2026.11 or newer you can assign the home meter here too, or turn a
   device into it.
-- **Plausibility warnings** – a device is flagged when its sub-devices used clearly more
+- **Names and terms like Home Assistant** – upstream device, child devices, untracked
+  consumption; with Home Assistant 2026.11 or newer, devices are named after their device,
+  as in the energy dashboard.
+- **Plausibility warnings** – a device is flagged when its child devices used clearly more
   than it did (more than 5 % and 0.1 kWh, water 10 L) – usually a wrong assignment.
 - **Find a device** – the search field highlights matches, opens collapsed devices and
   moves to them.
@@ -153,7 +156,7 @@ root: sensor.kitchen_energy   # optional: only this device and everything below 
 title: Kitchen         # optional; an empty title hides the header
 orientation: vertical  # horizontal (top-down, default) or vertical (left to right)
 show_sources: true     # sources before Home (not with root)
-show_untracked: true   # blocks for what is not tracked individually
+show_untracked: true   # blocks for untracked consumption
 ```
 
 A tree wider than the card is shown at half size at least; then the card scrolls
@@ -205,8 +208,8 @@ the sensors live.
 
 | | |
 |---|---|
-| ![30 days with consumption not tracked individually and a plausibility warning](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/period.png) | ![The list of changes shown before saving](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/save.png) |
-| *30 days:* energy per device, what is not tracked individually, and a warning | *Saving:* every change is listed before anything is written |
+| ![30 days with untracked consumption and a plausibility warning](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/period.png) | ![The list of changes shown before saving](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/save.png) |
+| *30 days:* energy per device, untracked consumption, and a warning | *Saving:* every change is listed before anything is written |
 | ![The list of backups with export and restore buttons](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/backups.png) | ![The water tab over 30 days in litres and m³](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/water-dark.png) |
 | *Backups:* restore, export or import | *Water, 30 days:* litres and m³ per device |
 

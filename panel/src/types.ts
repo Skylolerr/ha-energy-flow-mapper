@@ -54,6 +54,8 @@ export interface StatInfo {
   stat: string;
   entity_id: string | null;
   name: string | null;
+  /** Name of an individual device as Home Assistant's energy dashboard shows it. */
+  energy_name?: string | null;
   unit: string | null;
   device_class: string | null;
   device_id: string | null;

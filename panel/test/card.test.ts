@@ -502,7 +502,7 @@ describe("card editor", () => {
       "Start at device",
       "Orientation",
       "Show sources",
-      "Show what is not tracked individually",
+      "Show untracked consumption",
     ]);
     const form = el.shadowRoot!.querySelector("ha-form") as HTMLElement & { data: Record<string, unknown> };
     expect(form.data.root).toBe("");

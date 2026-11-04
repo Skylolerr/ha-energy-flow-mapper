@@ -15,6 +15,8 @@ from homeassistant.const import (
     ATTR_DEVICE_CLASS,
     ATTR_FRIENDLY_NAME,
     ATTR_UNIT_OF_MEASUREMENT,
+    MAJOR_VERSION,
+    MINOR_VERSION,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfVolume,
@@ -106,6 +108,15 @@ def _entity_name(entry: er.RegistryEntry | None, device_name: str | None) -> str
 
 
 @callback
+def names_by_device() -> bool:
+    """Return True if Home Assistant names energy devices after their device.
+
+    From 2026.11, the energy dashboard names an individual device after its
+    upstream HA device and device instead of the entity.
+    """
+    return (MAJOR_VERSION, MINOR_VERSION) >= (2026, 11)
+
+
 def async_stat_info(
     hass: HomeAssistant,
     stat: str,
@@ -121,6 +132,7 @@ def async_stat_info(
         "stat": stat,
         "entity_id": None,
         "name": None,
+        "energy_name": None,
         "unit": None,
         "device_class": None,
         "device_id": None,
@@ -160,6 +172,12 @@ def async_stat_info(
     info["name"] = _entity_name(entry, info["device_name"]) or (
         state.attributes.get(ATTR_FRIENDLY_NAME) if state is not None else None
     )
+    info["energy_name"] = info["name"]
+    if device is not None and info["device_name"] and names_by_device():
+        via_id = getattr(device, "via_device_id", None)
+        via = dr.async_get(hass).async_get(via_id) if via_id else None
+        parent = (via.name_by_user or via.name) if via is not None else None
+        info["energy_name"] = " ".join(n for n in (parent, info["device_name"]) if n)
 
     area_id = (entry.area_id if entry else None) or (device.area_id if device else None)
     area = ar.async_get(hass).async_get_area(area_id) if area_id else None

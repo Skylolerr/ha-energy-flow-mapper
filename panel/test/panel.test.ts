@@ -343,7 +343,7 @@ describe("editing", () => {
     const details = text(el);
     expect(details).toContain("sensor.server_power");
     expect(details).toContain("Office");
-    expect(details).toContain("Not tracked by its devices 40 W");
+    expect(details).toContain("Untracked by its child devices 40 W");
   });
 });
 
@@ -1307,7 +1307,7 @@ describe("energy in a period", () => {
     expect(root(el).querySelector(".block.home")!.textContent).toContain("12.9 kWh measured");
     // The warning marks the server; the details show the energy.
     expect(node(el, "sensor.server").querySelector(".badge")!.getAttribute("title")).toBe(
-      "Its devices use more than this device",
+      "Its child devices use more than this device",
     );
     node(el, "sensor.server").click();
     await settle(el);

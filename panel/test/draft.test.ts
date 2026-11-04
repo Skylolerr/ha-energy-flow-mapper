@@ -438,3 +438,16 @@ describe("home meter from a named device", () => {
     ]);
   });
 });
+
+describe("device names like Home Assistant", () => {
+  it("prefers the device's own name, then the energy name, then the statistic's name", () => {
+    const stats = {
+      a: { name: "A energy", energy_name: "Office hub A" },
+      b: { name: "B energy", energy_name: null },
+    } as never;
+    expect(displayName("a", [{ stat_consumption: "a", name: "Mine" }], stats)).toBe("Mine");
+    expect(displayName("a", [{ stat_consumption: "a" }], stats)).toBe("Office hub A");
+    expect(displayName("b", [{ stat_consumption: "b" }], stats)).toBe("B energy");
+    expect(displayName("c", [], stats)).toBe("c");
+  });
+});

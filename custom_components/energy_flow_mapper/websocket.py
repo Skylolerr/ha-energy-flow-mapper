@@ -629,7 +629,10 @@ async def websocket_card(
         "devices": [
             {
                 "stat": device[STAT],
-                "name": device.get(NAME) or info[device[STAT]]["name"] or device[STAT],
+                "name": device.get(NAME)
+                or info[device[STAT]]["energy_name"]
+                or info[device[STAT]]["name"]
+                or device[STAT],
                 "parent": device.get(PARENT),
                 "stat_rate": device.get(RATE),
                 "area": info[device[STAT]]["area_name"],

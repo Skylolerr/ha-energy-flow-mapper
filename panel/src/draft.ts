@@ -230,7 +230,7 @@ export function displayName(
   stats: Record<string, StatInfo | undefined>,
 ): string {
   const device = devices.find((d) => d.stat_consumption === stat);
-  return device?.name || stats[stat]?.name || stat;
+  return device?.name || stats[stat]?.energy_name || stats[stat]?.name || stat;
 }
 
 const POWER_FACTORS: Record<string, number> = { mW: 0.001, W: 1, kW: 1000, MW: 1e6 };
