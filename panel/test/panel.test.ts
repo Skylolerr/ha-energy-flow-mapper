@@ -360,7 +360,7 @@ describe("saving", () => {
     const el = await mount(mock);
     el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
     await settle(el);
-    buttonWith(el, "Save").click();
+    root(el).querySelector<HTMLButtonElement>(".footer button.primary")!.click();
     await settle(el);
     const dialog = root(el).querySelector("dialog")!;
     expect(dialog.textContent).toContain("TV moved under Server & co");
@@ -2109,5 +2109,76 @@ describe("suggestions from child devices", () => {
   it("does not suggest what the tree already shows", async () => {
     const el = await mount(withPairs([pair("sensor.sonos", "sensor.server")]));
     expect(root(el).querySelector(".suggested")).toBeNull();
+  });
+});
+
+describe("save as image", () => {
+  function capture(el: EnergyFlowMapperPanel) {
+    const downloads: { name: string; href: string }[] = [];
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:image");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      downloads.push({ name: this.download, href: this.href });
+    });
+    const toPng = vi.fn(async (_svg: string, _w: number, _h: number) => new Blob(["png"], { type: "image/png" }));
+    el._toPng = toPng;
+    return { downloads, toPng };
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function save(el: EnergyFlowMapperPanel, hideNames = false): Promise<void> {
+    buttonWith(el, "Save as image").click();
+    await settle(el);
+    if (hideNames) {
+      root(el).querySelector<HTMLInputElement>('dialog input[type="checkbox"]')!.click();
+      await settle(el);
+    }
+    root(el).querySelector<HTMLButtonElement>("dialog button.primary")!.click();
+    await settle(el);
+  }
+
+  it("opens a dialog with the option to hide names", async () => {
+    const el = await mount(mockHass());
+    buttonWith(el, "Save as image").click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Hide names");
+  });
+
+  it("saves the whole diagram as a PNG named after the tab and the day", async () => {
+    const el = await mount(mockHass());
+    const { downloads, toPng } = capture(el);
+    await save(el);
+    expect(downloads).toHaveLength(1);
+    expect(downloads[0].name).toMatch(/^energy-flow-mapper-electricity-[0-9]{4}-[0-9]{2}-[0-9]{2}[.]png$/);
+    const svg = toPng.mock.calls[0][0];
+    expect(svg).toContain("Server &amp; co");
+    expect(svg).toContain("Office");
+    expect(svg).toContain("Energy Flow Mapper · Electricity · Now");
+    expect(svg).not.toContain("Draft, not saved");
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("hides names, areas and sensor names on request", async () => {
+    const el = await mount(mockHass());
+    const { toPng } = capture(el);
+    await save(el, true);
+    const svg = toPng.mock.calls[0][0];
+    for (const secret of ["Server", "Sonos", "TV", "Office", "sensor."]) {
+      expect(svg).not.toContain(secret);
+    }
+    expect(svg).toContain("Device 1");
+    expect(svg).toContain("Grid import");
+  });
+
+  it("marks a draft that is not saved", async () => {
+    const el = await mount(mockHass());
+    const { toPng } = capture(el);
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    await settle(el);
+    await save(el);
+    expect(toPng.mock.calls[0][0]).toContain("Draft, not saved");
   });
 });

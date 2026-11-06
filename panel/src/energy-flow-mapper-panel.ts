@@ -15,6 +15,7 @@ import {
   type TreeNode,
   untracked,
 } from "./draft";
+import { anonymize, diagramSvg, type ExportBlock, type ExportEdge, FOOTER_H, svgToPng } from "./export";
 import { icon } from "./icons";
 import {
   arrowHead,
@@ -114,7 +115,8 @@ type Dialog =
   | { kind: "source"; role: string; label: string; stat: string | null }
   | { kind: "assign"; role: AssignRole; replace?: string | null }
   | { kind: "battery"; discharge: string }
-  | { kind: "integral"; stat: string };
+  | { kind: "integral"; stat: string }
+  | { kind: "export"; hideNames: boolean };
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
 const SOURCE_TARGET = "src:";
@@ -153,7 +155,12 @@ export function fileStamp(iso: string): string {
 
 /** Offer a JSON document as a file download. */
 export function downloadJson(filename: string, data: unknown): void {
-  const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+  downloadBlob(filename, new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
+}
+
+/** Offer a file made in the browser as a download. */
+export function downloadBlob(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
@@ -226,6 +233,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _selected: string | null;
   /** Whether Home Assistant's texts for its energy check were requested. */
   private _haTexts = false;
+  /** Turns the picture of the diagram into a PNG; replaced in tests. */
+  _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
   declare _dragged: Dragged | null;
   declare _dropTarget: string | null;
@@ -1191,6 +1200,101 @@ export class EnergyFlowMapperPanel extends LitElement {
     );
   }
 
+  /** A colour of the theme as a plain value, for the picture. */
+  private _cssColor(value: string, fallback = "#888888"): string {
+    const match = /^var\((--[^,)]+)(?:,\s*([^)]+))?\)$/.exec(value.trim());
+    if (!match) {
+      return value;
+    }
+    const resolved = getComputedStyle(this).getPropertyValue(match[1]).trim();
+    return resolved || match[2]?.trim() || fallback;
+  }
+
+  /** One block of the picture, with the texts the diagram shows. */
+  private _exportBlock(block: Block, element: Element | undefined, devices: Device[]): ExportBlock {
+    const title = element?.querySelector(".node-name")?.textContent?.trim() ?? "";
+    const subs = [...(element?.querySelectorAll(".sub") ?? [])]
+      .map((e) => e.textContent?.trim() ?? "")
+      .filter(Boolean);
+    const warn = Boolean(element?.querySelector(".badge"));
+    if (block.kind === "device") {
+      const stat = block.stat!;
+      const device = devices.find((d) => d.stat_consumption === stat);
+      const value = device ? (this._values([device]).get(stat) ?? null) : null;
+      return {
+        block,
+        title: this._name(stat, devices),
+        sub: value === null ? null : this._formatValue(value),
+        area: this._info(stat)?.area_name ?? null,
+        color: this._cssColor("var(--primary-color, #03a9f4)"),
+        warn,
+      };
+    }
+    const color =
+      block.kind === "source" || block.kind === "placeholder"
+        ? (SOURCE_COLORS[block.role ?? ""] ?? "var(--divider-color, #e0e0e0)")
+        : "var(--secondary-text-color, #727272)";
+    return { block, title, sub: subs.join(" · ") || null, area: null, color: this._cssColor(color), warn };
+  }
+
+  /** Save the whole diagram of this tab as a PNG, optionally without names. */
+  async _saveImage(hideNames: boolean): Promise<void> {
+    const result = this.diagramLayout();
+    const byId = new Map(result.blocks.map((b) => [b.id, b]));
+    const devices = this.draft;
+    const elements = [...(this.shadowRoot?.querySelectorAll(".canvas > .block") ?? [])];
+    let items = result.blocks.map((block, index) => this._exportBlock(block, elements[index], devices));
+    if (hideNames) {
+      items = anonymize(items, (n) => this._t("export_device", { n: String(n) }));
+    }
+    const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
+    const edges: ExportEdge[] = result.edges.flatMap((edge) => {
+      const from = byId.get(edge.from);
+      const to = byId.get(edge.to);
+      if (!from || !to) {
+        return [];
+      }
+      const width = strokeWidth(edge.power, maxPower);
+      const head = arrowSize(width);
+      return [
+        {
+          d: edgePath(from, to, head.length - 1, this._orientation),
+          color: this._cssColor(this._edgeColor(edge, byId), "#727272"),
+          width,
+          dashed:
+            edge.kind === "untracked" ||
+            (edge.kind === "device" && edge.power === null) ||
+            (edge.kind === "source" && from.role === "home"),
+          head: arrowHead(from, to, head.half, head.length, this._orientation),
+        },
+      ];
+    });
+    const now = new Date().toISOString();
+    const footer = [
+      this._t("export_footer", {
+        tab: this._t(`tab_${this._tab}`),
+        period: this._t(`period_${this._period}`),
+        time: formatDateTime(this.hass, now),
+      }),
+      ...(this._changes.length ? [this._t("export_draft")] : []),
+    ].join(" · ");
+    const theme = {
+      background: this._cssColor("var(--primary-background-color, #fafafa)"),
+      text: this._cssColor("var(--primary-text-color, #212121)"),
+      secondary: this._cssColor("var(--secondary-text-color, #727272)"),
+      card: this._cssColor("var(--card-background-color, #ffffff)"),
+      divider: this._cssColor("var(--divider-color, #e0e0e0)"),
+    };
+    const svg = diagramSvg(result, items, edges, { theme, footer });
+    try {
+      const png = await this._toPng(svg, result.width, result.height + FOOTER_H);
+      downloadBlob(`energy-flow-mapper-${this._tab}-${fileStamp(now).slice(0, 10)}.png`, png);
+      this._close();
+    } catch (err) {
+      this._showToast(errorText(this.hass, err));
+    }
+  }
+
   /** Show or hide the coverage at Home and remember the choice. */
   setCoverage(on: boolean): void {
     this._coverage = on;
@@ -1465,6 +1569,9 @@ export class EnergyFlowMapperPanel extends LitElement {
               }}
             >
               ${this._t("fit")}
+            </button>
+            <button class="export-image" @click=${() => (this._dialog = { kind: "export", hideNames: false })}>
+              ${this._t("export_image")}
             </button>
           </div>
         </div>
@@ -2564,6 +2671,24 @@ export class EnergyFlowMapperPanel extends LitElement {
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("close")}</button>
           </div>`;
+      case "export":
+        return html`<h2>${this._t("export_title")}</h2>
+          <label class="check">
+            <input
+              type="checkbox"
+              .checked=${dialog.hideNames}
+              @change=${(e: Event) =>
+                (this._dialog = { kind: "export", hideNames: (e.target as HTMLInputElement).checked })}
+            />
+            ${this._t("export_hide_names")}
+          </label>
+          <p class="hint">${this._t("export_hide_hint")}</p>
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button class="primary" @click=${() => void this._saveImage(dialog.hideNames)}>
+              ${this._t("export_save")}
+            </button>
+          </div>`;
       case "details":
         return html`${this._renderDetails()}
           <div class="dialog-actions">
@@ -2973,6 +3098,12 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .block.suggested {
       border-style: dashed;
+    }
+    label.check {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin: 8px 0;
     }
     .coverage-toggle.active,
     .orientation button.active {
