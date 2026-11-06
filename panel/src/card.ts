@@ -342,7 +342,9 @@ export class EnergyFlowMapperCardView extends LitElement {
     const blocks = new Map(result.blocks.map((b) => [b.id, b]));
     const maxValue = Math.max(0, ...edges.map((e) => e.power ?? 0));
     const known = roots.map((n) => values.get(n.stat)).filter((v): v is number => v != null);
-    const measured = known.length ? known.reduce((a, b) => a + b, 0) : null;
+    // A negative sum (a meter that went backwards) is no consumption of Home.
+    const sum = known.reduce((a, b) => a + b, 0);
+    const measured = known.length && sum >= 0 ? sum : null;
     return html`<div class="diagram">
       <div class="sizer" style="width:${width * k > room ? `${width * k}px` : "100%"};height:${height * k}px">
       <div

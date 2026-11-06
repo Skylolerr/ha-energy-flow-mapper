@@ -380,3 +380,24 @@ describe("Home Assistant's texts", () => {
     expect(mock.hass.loadBackendTranslation).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("Home without a home meter", () => {
+  it("shows no value for a negative sum of the devices", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/energy"] = (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      // A meter that went backwards (reset) gives negative values.
+      energy: { "sensor.server": -500, "sensor.sonos": 2, "sensor.tv": -19 },
+      untracked: {},
+      issues: [],
+    });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const home = el.shadowRoot!.querySelector(".block.home")!.textContent!;
+    expect(home).not.toMatch(/-\s?5/);
+    expect(home).not.toContain("measured");
+  });
+});

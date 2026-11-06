@@ -1536,7 +1536,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     const known = buildTree(devices)
       .map((n) => power.get(n.stat))
       .filter((v): v is number => v != null);
-    const measured = known.length ? known.reduce((a, b) => a + b, 0) : null;
+    // A negative sum (a meter that went backwards) is no consumption of Home.
+    const sum = known.reduce((a, b) => a + b, 0);
+    const measured = known.length && sum >= 0 ? sum : null;
     const { x, y, k } = this._zoom;
     return html`
       <section class="card diagram-card">

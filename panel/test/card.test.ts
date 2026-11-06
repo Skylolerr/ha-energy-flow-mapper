@@ -609,3 +609,12 @@ describe("coverage on the card", () => {
     expect(text(el)).toContain("65% covered by devices");
   });
 });
+
+describe("Home on the card", () => {
+  it("shows no value for a negative sum of the devices", async () => {
+    const answer = (msg: Record<string, unknown>) =>
+      msg.period ? data({ energy: { "sensor.server": -500, "sensor.nas": 1, "portal:tv": -3 } }) : data();
+    const el = await view({ period: "week" }, mockHass(answer));
+    expect(el.shadowRoot!.querySelector(".block.home")!.textContent).not.toContain("measured");
+  });
+});
