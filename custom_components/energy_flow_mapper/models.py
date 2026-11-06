@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 
@@ -18,7 +19,8 @@ class EnergyFlowMapperData:
 
     `lock` serializes writes so that two saves cannot interleave between
     the conflict check and the write. `card_url` is the loader URL added to
-    the frontend, removed again on unload.
+    the frontend, removed again on unload. `suggestions` holds the ignored
+    suggestions.
     """
 
     backups: BackupStore
@@ -27,6 +29,8 @@ class EnergyFlowMapperData:
     supported: bool
     card_url: str
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # HA's energy validation for the cards: (monotonic time, result).
+    validation_cache: tuple[float, dict[str, Any] | None] | None = None
 
 
 type EnergyFlowMapperConfigEntry = ConfigEntry[EnergyFlowMapperData]

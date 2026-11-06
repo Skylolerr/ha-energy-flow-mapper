@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -1659,3 +1660,97 @@ async def test_ignore_suggestion_of_unknown_device_is_dropped(
     )
     assert response["success"]
     assert response["result"] == {"ignored": []}
+
+
+def _validation() -> dict[str, Any]:
+    """HA's check: a grid price unit, a missing price sensor, two device issues."""
+
+    def issue(kind: str, *entities: tuple[str, Any]) -> dict[str, Any]:
+        return {
+            "type": kind,
+            "affected_entities": [list(e) for e in entities],
+            "translation_placeholders": None,
+        }
+
+    return {
+        "energy_sources": [
+            [
+                issue(
+                    "entity_unexpected_unit_energy_price", ("sensor.grid_import", "x")
+                ),
+                issue("entity_unavailable", ("sensor.grid_price", None)),
+            ],
+            [],
+            [],
+        ],
+        "device_consumption": [
+            [
+                issue("entity_unavailable", ("sensor.main_energy", "unavailable")),
+                issue("entity_unavailable", ("sensor.main_power", "unavailable")),
+            ],
+            [],
+            [],
+            [],
+            [],
+        ],
+        "device_consumption_water": [],
+    }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_returns_ha_issues_child_pairs_ignored(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    with patch.object(energy_access, "async_validation", return_value=_validation()):
+        response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    assert [(i["stat"], i["type"]) for i in result["ha_issues"]] == [
+        ("sensor.grid_import", "entity_unexpected_unit_energy_price"),
+        ("sensor.grid_import", "entity_unavailable"),
+        ("sensor.main_energy", "entity_unavailable"),
+        ("sensor.main_energy", "entity_unavailable"),
+    ]
+    assert result["child_pairs"] == []
+    assert result["ignored_suggestions"] == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_validation_failure_still_answers(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    with patch.object(energy_access, "async_validation", return_value=None):
+        response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["success"]
+    assert response["result"]["ha_issues"] == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_ha_issues_without_prices(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+) -> None:
+    """The card gets device and power sensor messages, never price ones."""
+    with patch.object(energy_access, "async_validation", return_value=_validation()):
+        response = await send(
+            hass_ws_client, hass, hass_read_only_access_token, type=f"{DOMAIN}/card"
+        )
+    assert [
+        (i["stat"], i["entities"][0][0]) for i in response["result"]["ha_issues"]
+    ] == [
+        ("sensor.main_energy", "sensor.main_energy"),
+        ("sensor.main_energy", "sensor.main_power"),
+    ]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_validation_cached(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Every card asks every minute; HA's check runs at most once a minute."""
+    with patch.object(
+        energy_access, "async_validation", return_value=_validation()
+    ) as validation:
+        for _ in range(3):
+            await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert validation.call_count == 1

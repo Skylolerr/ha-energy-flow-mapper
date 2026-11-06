@@ -1335,3 +1335,13 @@ def test_card_ha_issues_allowlist_and_price_types() -> None:
             "entities": [["sensor.grid_import", None]],
         }
     ]
+
+
+def test_ha_issues_source_without_blocks_and_odd_issue() -> None:
+    """A source with no statistic and a malformed issue are skipped."""
+    prefs = deepcopy(HA_PREFS)
+    prefs["energy_sources"].append({"type": "gas"})
+    validation = _validation(
+        sources=[["not an issue"], [], [_issue("entity_unavailable", [["x", None]])]]
+    )
+    assert ha_issues(prefs, validation, []) == []

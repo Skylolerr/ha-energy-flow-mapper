@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import datetime
+from time import monotonic
 from typing import Any
 
 import probatio as vol
@@ -28,6 +29,7 @@ from . import energy_access
 from .candidates import (
     UNITS,
     async_candidates,
+    async_child_pairs,
     async_external_candidates,
     async_external_statistics,
     async_mark_created,
@@ -64,7 +66,9 @@ from .hierarchy import (
     Severity,
     apply_changes,
     build_tree,
+    card_ha_issues,
     diff,
+    ha_issues,
     has_errors,
     home_consumption,
     home_plausibility,
@@ -98,6 +102,9 @@ _OPTIONAL_TEXT = vol.Any(str, None)
 # Device changes name their list; without `kind` they change electricity.
 _KIND = vol.Optional("kind")
 _KINDS = vol.In([kind.value for kind in DeviceKind])
+# Every card asks every minute; HA's check of the energy dashboard runs at most
+# once a minute for all of them.
+CARD_VALIDATION_SECONDS = 60
 CHANGE_SCHEMA = cv.key_value_schemas(
     "type",
     {
@@ -258,6 +265,8 @@ async def websocket_get(
     )
     created = runtime.helpers.entries()
     async_mark_created(hass, [*stats.values(), *candidates, *water], created)
+    issues = _issues(hass, prefs)
+    validation = await energy_access.async_validation(hass)
     connection.send_result(
         msg["id"],
         {
@@ -268,8 +277,11 @@ async def websocket_get(
             "water_candidates": water,
             "power_candidates": async_power_candidates(hass, prefs),
             "flow_candidates": async_power_candidates(hass, prefs, DeviceKind.WATER),
-            "issues": [issue.as_dict() for issue in _issues(hass, prefs)],
+            "issues": [issue.as_dict() for issue in issues],
             "home_supported": energy_access.home_supported(),
+            "ha_issues": ha_issues(prefs, validation or {}, issues),
+            "child_pairs": async_child_pairs(hass, prefs),
+            "ignored_suggestions": runtime.suggestions.ignored(),
         },
     )
 
@@ -591,6 +603,19 @@ async def _async_home(
     return {"value": value, "basis": basis, "stale": stale}
 
 
+async def _async_card_validation(
+    hass: HomeAssistant, runtime: EnergyFlowMapperData
+) -> dict[str, Any] | None:
+    """Return HA's energy validation, at most once a minute for all cards."""
+    now = monotonic()
+    cache = runtime.validation_cache
+    if cache is not None and now - cache[0] < CARD_VALIDATION_SECONDS:
+        return cache[1]
+    validation = await energy_access.async_validation(hass)
+    runtime.validation_cache = (now, validation)
+    return validation
+
+
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/card",
@@ -608,7 +633,7 @@ async def websocket_card(
     sensor and area, the sources of the list, and with `period` the energy,
     untracked values and warnings. No prices or costs, and nothing to change.
     """
-    _runtime(hass)
+    runtime = _runtime(hass)
     kind = DeviceKind(msg[ATTR_KIND])
     prefs = await energy_access.async_get_prefs(hass)
     devices: list[Any] = prefs.get(DEVICE_KEYS[kind], [])
@@ -659,6 +684,11 @@ async def websocket_card(
         "water_unit": water_unit(hass),
         "home_supported": energy_access.home_supported(),
     }
+    allowed = stats | {rate for d in devices if isinstance(rate := d.get(RATE), str)}
+    validation = await _async_card_validation(hass, runtime)
+    result["ha_issues"] = card_ha_issues(
+        ha_issues(prefs, validation or {}, _issues(hass, prefs)), allowed
+    )
     if ATTR_PERIOD in msg:
         result |= await _async_period(
             hass,
