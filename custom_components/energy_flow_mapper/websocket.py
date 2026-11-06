@@ -173,6 +173,8 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_import_check)
     async_register_command(hass, websocket_import)
     async_register_command(hass, websocket_card)
+    async_register_command(hass, websocket_ignore_suggestion)
+    async_register_command(hass, websocket_clear_suggestions)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -774,3 +776,42 @@ async def websocket_import(
             connection, runtime, prefs, update, {"imported": 1}
         )
     connection.send_result(msg["id"], result)
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/ignore_suggestion",
+        vol.Required(ATTR_KIND): _KINDS,
+        vol.Required("stat"): str,
+        vol.Required("parent"): str,
+    }
+)
+@require_admin
+@async_response
+async def websocket_ignore_suggestion(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Stop suggesting `stat` below `parent`; returns the ignored list."""
+    runtime = _runtime(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    known = {
+        (kind.value, device[STAT])
+        for kind, key in DEVICE_KEYS.items()
+        for device in prefs.get(key, [])
+    }
+    await runtime.suggestions.async_ignore(
+        {"kind": msg[ATTR_KIND], "stat": msg["stat"], "parent": msg["parent"]}, known
+    )
+    connection.send_result(msg["id"], {"ignored": runtime.suggestions.ignored()})
+
+
+@websocket_command({vol.Required("type"): f"{DOMAIN}/clear_suggestions"})
+@require_admin
+@async_response
+async def websocket_clear_suggestions(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Show every ignored suggestion again."""
+    runtime = _runtime(hass)
+    await runtime.suggestions.async_clear()
+    connection.send_result(msg["id"], {"ignored": []})

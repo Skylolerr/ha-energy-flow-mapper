@@ -1,0 +1,69 @@
+"""Remember which suggestions an admin ignored, for every device and admin."""
+
+from __future__ import annotations
+
+from typing import TypedDict
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
+
+from .const import SUGGESTIONS_STORAGE_KEY, SUGGESTIONS_STORAGE_VERSION
+
+
+class SuggestionsData(TypedDict):
+    """Content of the store file."""
+
+    ignored: list[dict[str, str]]
+
+
+class SuggestionStore:
+    """Ignored "included in" suggestions as `{kind, stat, parent}`.
+
+    Not an energy setting: not part of backups, export or import.
+    """
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        """Create the store; call async_load before use."""
+        self._store: Store[SuggestionsData] = Store(
+            hass, SUGGESTIONS_STORAGE_VERSION, SUGGESTIONS_STORAGE_KEY
+        )
+        self._ignored: list[dict[str, str]] = []
+
+    async def async_load(self) -> None:
+        """Load the list from disk."""
+        data = await self._store.async_load()
+        self._ignored = list(data["ignored"]) if data else []
+
+    def ignored(self) -> list[dict[str, str]]:
+        """Return the ignored suggestions."""
+        return [dict(pair) for pair in self._ignored]
+
+    async def async_ignore(
+        self, pair: dict[str, str], known: set[tuple[str, str]]
+    ) -> None:
+        """Ignore a suggestion and save; `known` are the current (kind, stat).
+
+        Ignores whose devices are no longer in the energy dashboard are
+        dropped, the new one included.
+        """
+        pair = {"kind": pair["kind"], "stat": pair["stat"], "parent": pair["parent"]}
+        ignored = [p for p in self._ignored if p != pair] + [pair]
+        self._ignored = [
+            p
+            for p in ignored
+            if (p["kind"], p["stat"]) in known and (p["kind"], p["parent"]) in known
+        ]
+        await self._async_save()
+
+    async def async_clear(self) -> None:
+        """Show every suggestion again."""
+        self._ignored = []
+        await self._async_save()
+
+    async def async_remove(self) -> None:
+        """Delete the store file."""
+        self._ignored = []
+        await self._store.async_remove()
+
+    async def _async_save(self) -> None:
+        await self._store.async_save({"ignored": self._ignored})

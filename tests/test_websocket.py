@@ -535,6 +535,13 @@ async def test_schema_rejects_unknown_change_type(
         {"type": f"{DOMAIN}/import", "base_hash": "x", "document": {}},
         {"type": f"{DOMAIN}/energy", "period": "today"},
         {"type": f"{DOMAIN}/create_integral", "power_entity_id": "x", "name": "x"},
+        {
+            "type": f"{DOMAIN}/ignore_suggestion",
+            "kind": "electricity",
+            "stat": "x",
+            "parent": "y",
+        },
+        {"type": f"{DOMAIN}/clear_suggestions"},
     ],
 )
 async def test_admin_required(
@@ -1616,3 +1623,39 @@ async def test_home_meter_restore_and_import_refused_without_support(
         )
         assert response["error"]["translation_key"] == "home_not_supported"
     assert await energy_access.async_get_prefs(hass) == ENERGY_PREFS
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ignore_and_clear_suggestions(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Ignored suggestions are stored for every admin; unknown devices refused."""
+    pair = {
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+        "parent": "sensor.main_energy",
+    }
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/ignore_suggestion", **pair
+    )
+    assert response["success"]
+    assert response["result"] == {"ignored": [pair]}
+
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions")
+    assert response["result"] == {"ignored": []}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ignore_suggestion_of_unknown_device_is_dropped(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/ignore_suggestion",
+        kind="water",
+        stat="sensor.gone",
+        parent="sensor.main_energy",
+    )
+    assert response["success"]
+    assert response["result"] == {"ignored": []}

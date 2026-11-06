@@ -25,6 +25,7 @@ from .frontend import (
     async_unregister_panel,
 )
 from .models import EnergyFlowMapperConfigEntry, EnergyFlowMapperData
+from .suggestions import SuggestionStore
 from .websocket import async_setup_websocket
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
@@ -64,9 +65,15 @@ async def async_setup_entry(
     await backups.async_load()
     helpers = CreatedHelpers(hass)
     await helpers.async_load()
+    suggestions = SuggestionStore(hass)
+    await suggestions.async_load()
     card_url = await async_register_card(hass)
     entry.runtime_data = EnergyFlowMapperData(
-        backups=backups, helpers=helpers, supported=supported, card_url=card_url
+        backups=backups,
+        helpers=helpers,
+        suggestions=suggestions,
+        supported=supported,
+        card_url=card_url,
     )
     await async_register_panel(hass)
     return True
@@ -87,4 +94,5 @@ async def async_remove_entry(
     """Delete the stores; energy preferences and created helpers stay."""
     await BackupStore(hass).async_remove()
     await CreatedHelpers(hass).async_remove()
+    await SuggestionStore(hass).async_remove()
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API)

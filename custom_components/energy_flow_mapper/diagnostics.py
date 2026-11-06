@@ -33,6 +33,7 @@ async def async_get_config_entry_diagnostics(
         "backups": len(runtime.backups.entries()),
         "backup_limit": runtime.backups.limit,
         "created_helpers": len(runtime.helpers.entries()),
+        "ignored_suggestions": len(runtime.suggestions.ignored()),
     }
     if not runtime.supported:
         return result

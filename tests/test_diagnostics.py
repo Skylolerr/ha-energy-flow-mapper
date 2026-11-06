@@ -35,6 +35,7 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
         "backups": 1,
         "backup_limit": 20,
         "created_helpers": 0,
+        "ignored_suggestions": 0,
         "sources": {"grid": 1, "solar": 1, "battery": 1},
         "devices": 3,
         "water_devices": 2,
@@ -56,4 +57,5 @@ async def test_diagnostics_unsupported(
         "backups": 0,
         "backup_limit": 20,
         "created_helpers": 0,
+        "ignored_suggestions": 0,
     }

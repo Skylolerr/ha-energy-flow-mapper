@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 
 from .backups import BackupStore
 from .created_helpers import CreatedHelpers
+from .suggestions import SuggestionStore
 
 
 @dataclass
@@ -22,6 +23,7 @@ class EnergyFlowMapperData:
 
     backups: BackupStore
     helpers: CreatedHelpers
+    suggestions: SuggestionStore
     supported: bool
     card_url: str
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)

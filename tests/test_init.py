@@ -15,6 +15,7 @@ from custom_components.energy_flow_mapper.const import (
     HELPERS_STORAGE_KEY,
     ISSUE_UNSUPPORTED_ENERGY_API,
     STORAGE_KEY,
+    SUGGESTIONS_STORAGE_KEY,
 )
 
 from .common import MockConfigEntry
@@ -32,8 +33,13 @@ async def test_setup_unload_and_remove(
 
     await loaded_entry.runtime_data.backups.async_add({}, None, None, {})
     await loaded_entry.runtime_data.helpers.async_add("helper")
+    await loaded_entry.runtime_data.suggestions.async_ignore(
+        {"kind": "electricity", "stat": "a", "parent": "b"},
+        {("electricity", "a"), ("electricity", "b")},
+    )
     assert STORAGE_KEY in hass_storage
     assert HELPERS_STORAGE_KEY in hass_storage
+    assert SUGGESTIONS_STORAGE_KEY in hass_storage
 
     assert await hass.config_entries.async_unload(loaded_entry.entry_id)
     assert loaded_entry.state is ConfigEntryState.NOT_LOADED
@@ -42,6 +48,7 @@ async def test_setup_unload_and_remove(
     await hass.async_block_till_done()
     assert STORAGE_KEY not in hass_storage
     assert HELPERS_STORAGE_KEY not in hass_storage
+    assert SUGGESTIONS_STORAGE_KEY not in hass_storage
     assert "energy" in hass_storage
 
 
