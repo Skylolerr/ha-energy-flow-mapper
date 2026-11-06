@@ -107,6 +107,10 @@ export const de: Translations = {
   issue_children_exceed_parent: "Seine Untergeräte verbrauchen mehr als dieses Gerät",
   issue_devices_exceed_home: "Die Geräte verbrauchen mehr als das Zuhause",
   ha_reports: "Meldungen von Home Assistant",
+  coverage_toggle: "Abdeckung",
+  coverage_percent: "{percent} % von Geräten erfasst",
+  coverage_over: "über 100 % von Geräten erfasst",
+  coverage_below_one: "< 1 % von Geräten erfasst",
   backups_title: "Sicherungen",
   backups_empty: "Noch keine Sicherungen. Vor jedem Speichern wird eine angelegt.",
   backup_by: "von {user}",
@@ -208,4 +212,5 @@ export const de: Translations = {
   card_field_root: "Ab Gerät",
   card_field_show_sources: "Quellen anzeigen",
   card_field_show_untracked: "Nicht erfassten Verbrauch anzeigen",
+  card_field_show_coverage: "Anzeigen, wie viel die Geräte erfassen",
 };

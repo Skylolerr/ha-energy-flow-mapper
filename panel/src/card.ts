@@ -12,7 +12,7 @@ import {
   cardConfig,
   type CardConfig,
 } from "./card-config";
-import { buildTree, homeNow, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
+import { buildTree, coverage, homeNow, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
 import {
   arrowHead,
   arrowSize,
@@ -26,6 +26,7 @@ import {
   strokeWidth,
 } from "./layout";
 import {
+  coverageText,
   errorText,
   formatEnergy,
   formatFlow,
@@ -436,7 +437,23 @@ export class EnergyFlowMapperCardView extends LitElement {
       home?.value != null
         ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)
         : (["home_measured", measured] as const);
-    return value === null ? nothing : html`<span class="sub">${this._t(key, { power: this._format(value) })}</span>`;
+    if (value === null) {
+      return nothing;
+    }
+    const ratio =
+      this.config?.show_coverage && home?.value != null && !this.config.root
+        ? coverage(home.value, this._tops())
+        : null;
+    return html`<span class="sub">${this._t(key, { power: this._format(value) })}</span>${ratio === null
+        ? nothing
+        : html`<span class="sub coverage">${coverageText(this.hass, ratio)}</span>`}`;
+  }
+
+  /** Values of the top-level devices of the list. */
+  private _tops(): (number | null)[] {
+    const devices = this._devices();
+    const values = this._values(devices);
+    return buildTree(devices).map((node) => values.get(node.stat) ?? null);
   }
 
   private _renderDevice(block: Block, style: string): TemplateResult {
@@ -702,6 +719,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       },
       { name: "show_sources", selector: { boolean: {} } },
       { name: "show_untracked", selector: { boolean: {} } },
+      { name: "show_coverage", selector: { boolean: {} } },
     ];
   }
 
@@ -714,6 +732,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       orientation: "orientation_label",
       show_sources: "card_field_show_sources",
       show_untracked: "card_field_show_untracked",
+      show_coverage: "card_field_show_coverage",
     };
     return this._t(labels[field.name]);
   };
@@ -741,6 +760,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       orientation: "horizontal",
       show_sources: true,
       show_untracked: true,
+      show_coverage: false,
     };
     for (const [key, value] of Object.entries(defaults)) {
       if (next[key] === value) {

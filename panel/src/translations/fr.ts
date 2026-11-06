@@ -107,6 +107,10 @@ export const fr: Translations = {
   issue_children_exceed_parent: "Ses appareils enfant consomment plus que lui",
   issue_devices_exceed_home: "Les appareils consomment plus que la maison",
   ha_reports: "Signalé par Home Assistant",
+  coverage_toggle: "Couverture",
+  coverage_percent: "{percent} % couvert par les appareils",
+  coverage_over: "plus de 100 % couvert par les appareils",
+  coverage_below_one: "< 1 % couvert par les appareils",
   backups_title: "Sauvegardes",
   backups_empty: "Aucune sauvegarde pour l’instant. Une sauvegarde est créée avant chaque enregistrement.",
   backup_by: "par {user}",
@@ -208,4 +212,5 @@ export const fr: Translations = {
   card_field_root: "À partir de l’appareil",
   card_field_show_sources: "Afficher les sources",
   card_field_show_untracked: "Afficher la consommation non suivie",
+  card_field_show_coverage: "Afficher la part couverte par les appareils",
 };

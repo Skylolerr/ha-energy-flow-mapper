@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  coverageText,
   formatEnergy,
   formatFlow,
   formatNumber,
@@ -95,5 +96,16 @@ describe("formatting", () => {
     expect(formatPower(hass("en"), 42.4)).toBe("42 W");
     expect(formatPower(hass("en"), 1234)).toBe("1.23 kW");
     expect(formatPower(hass("en"), -1500)).toBe("-1.5 kW");
+  });
+});
+
+describe("coverageText", () => {
+  it("rounds to whole percent, with over 100 % and below 1 %", () => {
+    const h = hass("en");
+    expect(coverageText(h, 0.654)).toBe("65% covered by devices");
+    expect(coverageText(h, 1.2)).toBe("over 100% covered by devices");
+    expect(coverageText(h, 1)).toBe("100% covered by devices");
+    expect(coverageText(h, 0.004)).toBe("< 1% covered by devices");
+    expect(coverageText(hass("de"), 0.72)).toBe("72 % von Geräten erfasst");
   });
 });

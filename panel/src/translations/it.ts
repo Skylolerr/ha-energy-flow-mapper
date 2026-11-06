@@ -107,6 +107,10 @@ export const it: Translations = {
   issue_children_exceed_parent: "I suoi dispositivi figli consumano più di lui",
   issue_devices_exceed_home: "I dispositivi consumano più della casa",
   ha_reports: "Segnalazioni di Home Assistant",
+  coverage_toggle: "Copertura",
+  coverage_percent: "{percent}% coperto dai dispositivi",
+  coverage_over: "oltre il 100% coperto dai dispositivi",
+  coverage_below_one: "< 1% coperto dai dispositivi",
   backups_title: "Backup",
   backups_empty: "Ancora nessun backup. Ne viene creato uno prima di ogni salvataggio.",
   backup_by: "di {user}",
@@ -208,4 +212,5 @@ export const it: Translations = {
   card_field_root: "A partire dal dispositivo",
   card_field_show_sources: "Mostra le fonti",
   card_field_show_untracked: "Mostra il consumo non monitorato",
+  card_field_show_coverage: "Mostra quanto coprono i dispositivi",
 };

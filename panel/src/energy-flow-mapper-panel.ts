@@ -4,6 +4,7 @@ import {
   applyChanges,
   applySourceChanges,
   buildTree,
+  coverage,
   canMove,
   displayName,
   homeNow,
@@ -30,6 +31,7 @@ import {
   WATER_PLACEHOLDER_ROLES,
 } from "./layout";
 import {
+  coverageText,
   errorText,
   formatDateTime,
   formatEnergy,
@@ -82,6 +84,8 @@ export const TOUCH_DRAG_SCALE = 0.8;
 export const TOUCH_DRAG_LIFT = 48;
 /** Where this browser remembers the orientation of the diagram. */
 const ORIENTATION_KEY = "energy_flow_mapper.orientation";
+/** Where this browser remembers that the coverage at Home is switched off. */
+const COVERAGE_KEY = "energy_flow_mapper.coverage";
 
 interface Zoom {
   x: number;
@@ -164,6 +168,15 @@ function savedOrientation(): Orientation {
   }
 }
 
+/** Whether this browser shows the coverage at Home (on unless switched off). */
+function savedCoverage(): boolean {
+  try {
+    return localStorage.getItem(COVERAGE_KEY) !== "off";
+  } catch {
+    return true;
+  }
+}
+
 /** Navigate inside the Home Assistant frontend without reloading the page. */
 function navigate(path: string): void {
   history.pushState(null, "", path);
@@ -191,6 +204,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _zoom: { state: true },
     _period: { state: true },
     _orientation: { state: true },
+    _coverage: { state: true },
     _energy: { state: true },
     _tab: { state: true },
     _find: { state: true },
@@ -222,6 +236,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _zoom: Zoom;
   declare _period: Period;
   declare _orientation: Orientation;
+  declare _coverage: boolean;
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
   /** The device list shown: electricity or water. */
@@ -263,6 +278,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._zoom = { x: 0, y: 0, k: 1 };
     this._period = "now";
     this._orientation = savedOrientation();
+    this._coverage = savedCoverage();
     this._energy = null;
     this._tab = "electricity";
     this._find = "";
@@ -1114,6 +1130,16 @@ export class EnergyFlowMapperPanel extends LitElement {
     );
   }
 
+  /** Show or hide the coverage at Home and remember the choice. */
+  setCoverage(on: boolean): void {
+    this._coverage = on;
+    try {
+      localStorage.setItem(COVERAGE_KEY, on ? "on" : "off");
+    } catch {
+      // Blocked storage: the choice just lasts until the panel is opened again.
+    }
+  }
+
   /** Run the diagram the other way, fit it again and remember the choice. */
   setOrientation(orientation: Orientation): void {
     this._orientation = orientation;
@@ -1330,6 +1356,15 @@ export class EnergyFlowMapperPanel extends LitElement {
             )}
           </div>
           <div class="toolbar">
+            ${this._tab === "electricity"
+              ? html`<button
+                  class="coverage-toggle ${this._coverage ? "active" : ""}"
+                  aria-pressed=${String(this._coverage)}
+                  @click=${() => this.setCoverage(!this._coverage)}
+                >
+                  ${this._t("coverage_toggle")}
+                </button>`
+              : nothing}
             <div class="orientation" role="group" aria-label=${this._t("orientation_label")}>
               ${(["horizontal", "vertical"] as const).map(
                 (orientation) => html`<button
@@ -1483,9 +1518,20 @@ export class EnergyFlowMapperPanel extends LitElement {
       home?.value != null
         ? ([home.basis === "calculated" ? "home_calculated" : "home_measured", home.value] as const)
         : (["home_measured", measured] as const);
-    return value === null
-      ? nothing
-      : html`<span class="sub">${this._t(key, { power: this._formatValue(value) })}</span>`;
+    if (value === null) {
+      return nothing;
+    }
+    const ratio = this._coverage && home?.value != null ? coverage(home.value, this._tops()) : null;
+    return html`<span class="sub">${this._t(key, { power: this._formatValue(value) })}</span>${ratio === null
+        ? nothing
+        : html`<span class="sub coverage">${coverageText(this.hass, ratio)}</span>`}`;
+  }
+
+  /** Values of the top-level devices of the draft. */
+  private _tops(): (number | null)[] {
+    const devices = this.draft;
+    const values = this._values(devices);
+    return buildTree(devices).map((node) => values.get(node.stat) ?? null);
   }
 
   private _blockStyle(block: Block): string {
@@ -2819,6 +2865,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       border-radius: 0 8px 8px 0;
     }
     .periods button.active,
+    .coverage-toggle.active,
     .orientation button.active {
       background: var(--primary-color);
       border-color: var(--primary-color);

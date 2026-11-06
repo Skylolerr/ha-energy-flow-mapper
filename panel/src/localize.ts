@@ -146,3 +146,14 @@ export function haIssueText(hass: HomeAssistant | undefined, issue: HaIssue, blo
     .map(([entity, detail]) => (detail === null || detail === undefined ? entity : `${entity} (${String(detail)})`));
   return others.length ? `${title}: ${others.join(", ")}` : title;
 }
+
+/** "72 % covered by devices", "over 100 %" when the devices use more. */
+export function coverageText(hass: HomeAssistant | undefined, ratio: number): string {
+  if (ratio > 1) {
+    return localize(hass, "coverage_over");
+  }
+  if (ratio > 0 && ratio < 0.01) {
+    return localize(hass, "coverage_below_one");
+  }
+  return localize(hass, "coverage_percent", { percent: formatNumber(hass, Math.round(ratio * 100)) });
+}

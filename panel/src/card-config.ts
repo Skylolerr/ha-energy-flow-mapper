@@ -22,6 +22,8 @@ export interface CardConfig {
   orientation: Orientation;
   show_sources: boolean;
   show_untracked: boolean;
+  /** Show how much of the home the devices cover (electricity). */
+  show_coverage: boolean;
 }
 
 /** Check a configuration and fill in the defaults; throws for invalid values. */
@@ -55,5 +57,6 @@ export function cardConfig(config: unknown): CardConfig {
     orientation: orientation as Orientation,
     show_sources: raw.show_sources !== false,
     show_untracked: raw.show_untracked !== false,
+    show_coverage: raw.show_coverage === true,
   };
 }

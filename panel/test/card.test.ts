@@ -108,7 +108,9 @@ describe("card configuration", () => {
       orientation: "horizontal",
       show_sources: true,
       show_untracked: true,
+      show_coverage: false,
     });
+    expect(cardConfig({ show_coverage: true }).show_coverage).toBe(true);
     expect(cardConfig({ orientation: "vertical" }).orientation).toBe("vertical");
     expect(() => cardConfig({ orientation: "diagonal" })).toThrow("orientation must be one of");
     expect(cardConfig({ kind: "water", period: "now", show_sources: false, root: "sensor.a" })).toMatchObject({
@@ -480,6 +482,7 @@ describe("card editor", () => {
       "orientation",
       "show_sources",
       "show_untracked",
+      "show_coverage",
     ]);
     const root = schema[3].selector as { select: { options: { value: string; label: string }[] } };
     expect(root.select.options).toEqual([
@@ -503,6 +506,7 @@ describe("card editor", () => {
       "Orientation",
       "Show sources",
       "Show untracked consumption",
+      "Show how much the devices cover",
     ]);
     const form = el.shadowRoot!.querySelector("ha-form") as HTMLElement & { data: Record<string, unknown> };
     expect(form.data.root).toBe("");
@@ -587,5 +591,21 @@ describe("Home Assistant's checks on the card", () => {
     const el = await view({}, mock);
     expect(block(el, "sensor.nas")!.querySelector(".badge")!.getAttribute("title")).toBe("Entity unavailable");
     expect(mock.hass.loadBackendTranslation).toHaveBeenCalledWith("issues", "energy");
+  });
+});
+
+describe("coverage on the card", () => {
+  const withHome = (msg: Record<string, unknown>) =>
+    msg.period ? data({ ...periodValues(), home: { value: 20, basis: "measured", stale: null, untracked: 7.08 } }) : data();
+
+  it("is off by default", async () => {
+    const el = await view({ period: "week" }, mockHass(withHome));
+    expect(text(el)).not.toContain("covered by devices");
+  });
+
+  it("shows the share when switched on", async () => {
+    const el = await view({ period: "week", show_coverage: true }, mockHass(withHome));
+    // Server 12.5 kWh and TV 0.42 kWh of 20 kWh.
+    expect(text(el)).toContain("65% covered by devices");
   });
 });

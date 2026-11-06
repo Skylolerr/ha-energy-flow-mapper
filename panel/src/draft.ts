@@ -468,3 +468,14 @@ export function homeNow(hass: HomeAssistant, sources: Source[]): number | null {
   const rate = sources.find((s) => s.type === "home")?.stat_rate;
   return typeof rate === "string" ? powerInWatts(hass, rate) : null;
 }
+
+/**
+ * How much of the home the top-level devices cover (1 = all of it); null
+ * without a positive home value or when a top-level device has no value.
+ */
+export function coverage(home: number | null, tops: (number | null)[]): number | null {
+  if (home === null || home <= 0 || tops.some((v) => v === null)) {
+    return null;
+  }
+  return tops.reduce<number>((sum, v) => sum + (v ?? 0), 0) / home;
+}

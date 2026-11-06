@@ -5,6 +5,7 @@ import {
   applySourceChanges,
   buildTree,
   changeKind,
+  coverage,
   flowInLitresPerMinute,
   NEW_GRID,
   NEW_WATER,
@@ -490,5 +491,20 @@ describe("suggestionsFor", () => {
     expect(suggestionsFor(devices, [pair("sensor.o1", "sensor.strip", "water")], [], "electricity")).toEqual([]);
     expect(suggestionsFor(devices, [pair("sensor.gone", "sensor.strip")], [], "electricity")).toEqual([]);
     expect(suggestionsFor(devices, [pair("sensor.o1", "sensor.gone")], [], "electricity")).toEqual([]);
+  });
+});
+
+describe("coverage", () => {
+  it("is the share of the home the top-level devices cover", () => {
+    expect(coverage(10, [2, 3])).toBe(0.5);
+    expect(coverage(10, [])).toBe(0);
+    expect(coverage(10, [8, 4])).toBe(1.2);
+  });
+
+  it("has no value without a positive home or with a device without value", () => {
+    expect(coverage(null, [1])).toBeNull();
+    expect(coverage(0, [1])).toBeNull();
+    expect(coverage(-2, [1])).toBeNull();
+    expect(coverage(10, [2, null])).toBeNull();
   });
 });

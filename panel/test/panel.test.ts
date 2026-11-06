@@ -1859,6 +1859,46 @@ describe("home meter", () => {
     expect(root(el).querySelector('.block.untracked[data-parent="home"]')).toBeNull();
   });
 
+  it("shows how much of the home the devices cover, switchable", async () => {
+    localStorage.clear();
+    const mock = homeMock(true, WITH_HOME);
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: 20, basis: "measured", stale: null, untracked: 7 });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const home = () => root(el).querySelector(".block.home")!.textContent!.replace(/\s+/g, " ");
+    // Server 12.5 kWh and TV 0.5 kWh of 20 kWh.
+    expect(home()).toContain("65% covered by devices");
+    const toggle = buttonWith(el, "Coverage");
+    expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    toggle.click();
+    await settle(el);
+    expect(home()).not.toContain("covered by devices");
+    expect(localStorage.getItem("energy_flow_mapper.coverage")).toBe("off");
+    document.body.innerHTML = "";
+    const again = await mount(mock);
+    expect(buttonWith(again, "Coverage").getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("shows over 100 % when the devices use more than the home", async () => {
+    localStorage.clear();
+    const mock = homeMock(true, WITH_HOME);
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: 12, basis: "calculated", stale: null, untracked: -1 });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("over 100% covered by devices");
+  });
+
+  it("shows no coverage in the water tab", async () => {
+    localStorage.clear();
+    const el = await mount(homeMock(true, WITH_HOME));
+    el._tab = "water";
+    await settle(el);
+    expect(text(el)).not.toContain("covered by devices");
+    expect([...root(el).querySelectorAll("button")].some((b) => b.textContent!.includes("Coverage"))).toBe(false);
+  });
+
   it("measures Home now with the home meter's power sensor", async () => {
     const mock = homeMock(true, WITH_HOME);
     mock.hass.states["sensor.main_power"] = entity("sensor.main_power", "200");

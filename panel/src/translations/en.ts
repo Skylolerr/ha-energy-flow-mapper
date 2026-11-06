@@ -105,6 +105,10 @@ export const en = {
   issue_children_exceed_parent: "Its child devices use more than this device",
   issue_devices_exceed_home: "The devices use more than the home",
   ha_reports: "Home Assistant reports",
+  coverage_toggle: "Coverage",
+  coverage_percent: "{percent}% covered by devices",
+  coverage_over: "over 100% covered by devices",
+  coverage_below_one: "< 1% covered by devices",
   backups_title: "Backups",
   backups_empty: "No backups yet. One is created before every save.",
   backup_by: "by {user}",
@@ -206,4 +210,5 @@ export const en = {
   card_field_root: "Start at device",
   card_field_show_sources: "Show sources",
   card_field_show_untracked: "Show untracked consumption",
+  card_field_show_coverage: "Show how much the devices cover",
 };
