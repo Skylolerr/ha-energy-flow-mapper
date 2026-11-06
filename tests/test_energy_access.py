@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from homeassistant.components.energy import data as energy_data
+from homeassistant.components.energy import validate as energy_validate
 from homeassistant.components.energy.data import async_get_manager
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -112,3 +114,45 @@ def test_home_supported(monkeypatch: pytest.MonkeyPatch) -> None:
     assert energy_access.home_supported() is False
     monkeypatch.setattr(energy_data, "HOME_SOURCE_SCHEMA", object(), raising=False)
     assert energy_access.home_supported() is True
+
+
+async def test_async_validation_passes_through(hass: HomeAssistant) -> None:
+    """HA's result comes back with lists instead of sets, by index."""
+    result = energy_validate.EnergyPreferencesValidation()
+    result.energy_sources.append(energy_validate.ValidationIssues())
+    device = energy_validate.ValidationIssues()
+    device.add_issue(hass, "entity_unavailable", "sensor.kitchen_energy", "unavailable")
+    result.device_consumption.extend([energy_validate.ValidationIssues(), device])
+    with patch.object(energy_validate, "async_validate", return_value=result):
+        validation = await energy_access.async_validation(hass)
+    assert validation == {
+        "energy_sources": [[]],
+        "device_consumption": [
+            [],
+            [
+                {
+                    "type": "entity_unavailable",
+                    "affected_entities": [["sensor.kitchen_energy", "unavailable"]],
+                    "translation_placeholders": None,
+                }
+            ],
+        ],
+        "device_consumption_water": [],
+    }
+
+
+async def test_async_validation_error_gives_none(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A failing validation (recorder not ready) gives no messages, logged once."""
+    energy_access._LOGGED.clear()
+    with patch.object(energy_validate, "async_validate", side_effect=KeyError("x")):
+        assert await energy_access.async_validation(hass) is None
+        assert await energy_access.async_validation(hass) is None
+    assert caplog.text.count("energy validation") == 1
+
+
+async def test_async_validation_without_recorder(hass: HomeAssistant) -> None:
+    """The test HA has no recorder; the real validation then gives None."""
+    energy_access._LOGGED.clear()
+    assert await energy_access.async_validation(hass) is None

@@ -7,17 +7,25 @@ contains complete lists, because the energy manager replaces each key it gets.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any
 
 import probatio as vol
 from homeassistant.components.energy import data as energy_data
+from homeassistant.components.energy import validate as energy_validate
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .const import DOMAIN
 from .hierarchy import KEY_DEVICES, KEY_DEVICES_WATER, KEY_SOURCES, prefs_hash
+
+_LOGGER = logging.getLogger(__name__)
+
+# Failures already logged, so a validation that keeps failing (for example
+# while the recorder starts) is reported once and not on every request.
+_LOGGED: set[str] = set()
 
 REQUIRED_NAMES = (
     "async_get_manager",
@@ -117,3 +125,37 @@ async def async_write(
     if expected_hash is not None and prefs_hash(_prefs(manager)) != expected_hash:
         raise PrefsChangedError
     await manager.async_update(validated)  # type: ignore[arg-type]
+
+
+def _plain_issue(issue: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "type": issue["type"],
+        "affected_entities": sorted(
+            ([entity, detail] for entity, detail in issue["affected_entities"]),
+            key=lambda item: (str(item[0]), str(item[1])),
+        ),
+        "translation_placeholders": issue.get("translation_placeholders"),
+    }
+
+
+async def async_validation(hass: HomeAssistant) -> dict[str, Any] | None:
+    """Return Home Assistant's own check of the energy dashboard, or None.
+
+    The same as the energy settings page shows, per list and entry index,
+    with lists instead of sets. Any failure gives None: the messages are
+    extra information and must never break the panel or the card.
+    """
+    try:
+        result = (await energy_validate.async_validate(hass)).as_dict()
+        return {
+            key: [[_plain_issue(issue) for issue in issues] for issues in lists]
+            for key, lists in result.items()
+        }
+    except Exception:
+        if "validation" not in _LOGGED:
+            _LOGGED.add("validation")
+            _LOGGER.warning(
+                "Home Assistant's energy validation failed; its messages are not shown",
+                exc_info=True,
+            )
+        return None

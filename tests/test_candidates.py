@@ -15,6 +15,7 @@ from custom_components.energy_flow_mapper.candidates import (
     ENERGY_UNITS,
     WATER_UNITS,
     async_candidates,
+    async_child_pairs,
     async_external_candidates,
     async_external_statistics,
     async_integral_sources,
@@ -418,3 +419,64 @@ def test_names_by_device_from_2026_11(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(candidates_module, "MAJOR_VERSION", 2027)
     monkeypatch.setattr(candidates_module, "MINOR_VERSION", 1)
     assert candidates_module.names_by_device() is True
+
+
+async def test_child_pairs_from_registry(hass: HomeAssistant) -> None:
+    """A child device below a device with one energy meter gives a pair."""
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    strip = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "strip")}, name="Strip"
+    )
+    outlet = devices.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "outlet_1")},
+        parent_device_id=strip.id,
+        name="Outlet 1",
+    )
+    _meter(hass, "sensor.strip_energy", device_id=strip.id)
+    _meter(hass, "sensor.outlet_1_energy", device_id=outlet.id)
+    prefs = {
+        "energy_sources": [],
+        "device_consumption": [
+            {"stat_consumption": "sensor.strip_energy"},
+            {"stat_consumption": "sensor.outlet_1_energy"},
+            {"stat_consumption": "external:not_an_entity"},
+        ],
+        "device_consumption_water": [],
+    }
+    assert async_child_pairs(hass, prefs) == [
+        {
+            "kind": "electricity",
+            "stat": "sensor.outlet_1_energy",
+            "parent": "sensor.strip_energy",
+        }
+    ]
+
+
+async def test_child_pairs_via_device_ignored(hass: HomeAssistant) -> None:
+    """Devices linked only by via_device (connectivity) give no pair."""
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    stick = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "stick")}, name="Stick"
+    )
+    plug = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "plug")},
+        name="Plug",
+        via_device_id=stick.id,
+    )
+    assert plug.via_device_id == stick.id
+    _meter(hass, "sensor.stick_energy", device_id=stick.id)
+    _meter(hass, "sensor.plug_energy", device_id=plug.id)
+    prefs = {
+        "energy_sources": [],
+        "device_consumption": [
+            {"stat_consumption": "sensor.stick_energy"},
+            {"stat_consumption": "sensor.plug_energy"},
+        ],
+    }
+    assert async_child_pairs(hass, prefs) == []
