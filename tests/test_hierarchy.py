@@ -11,15 +11,19 @@ from custom_components.energy_flow_mapper.hierarchy import (
     HOME,
     NEW_GRID,
     NEW_WATER,
+    PRICE_ISSUE_TYPES,
     ChangeError,
     DeviceKind,
+    Issue,
     IssueCode,
     Node,
     Severity,
     apply_changes,
     build_tree,
+    card_ha_issues,
     child_pairs,
     diff,
+    ha_issues,
     has_errors,
     home_consumption,
     home_plausibility,
@@ -1155,3 +1159,179 @@ def test_child_pairs_never_itself() -> None:
     # A child device whose parent is its own device (broken registry data).
     stat_devices = {"sensor.outlet_1": "dev_o1"}
     assert child_pairs(stat_devices, {"dev_o1": "dev_o1"}, DeviceKind.WATER) == []
+
+
+# Home Assistant's energy validation at the blocks
+
+HA_PREFS: dict[str, Any] = {
+    "energy_sources": [
+        {
+            "type": "grid",
+            "stat_energy_from": "sensor.grid_import",
+            "stat_energy_to": "sensor.grid_export",
+            "entity_energy_price": "sensor.price",
+        },
+        {"type": "solar", "stat_energy_from": "sensor.solar"},
+    ],
+    "device_consumption": [
+        {"stat_consumption": "sensor.fridge", "stat_rate": "sensor.fridge_power"},
+        {"stat_consumption": "sensor.tv"},
+    ],
+    "device_consumption_water": [{"stat_consumption": "sensor.shower"}],
+}
+
+
+def _issue(kind: str, entities: list[list[Any]], **placeholders: str) -> dict[str, Any]:
+    return {
+        "type": kind,
+        "affected_entities": entities,
+        "translation_placeholders": placeholders or None,
+    }
+
+
+def _validation(**lists: list[list[dict[str, Any]]]) -> dict[str, Any]:
+    return {
+        "energy_sources": lists.get("sources", [[], []]),
+        "device_consumption": lists.get("devices", [[], []]),
+        "device_consumption_water": lists.get("water", [[]]),
+    }
+
+
+def test_ha_issues_device_by_index() -> None:
+    validation = _validation(
+        devices=[[], [_issue("entity_unavailable", [["sensor.tv", "unavailable"]])]],
+        water=[[_issue("entity_negative_state", [["sensor.shower", -3]])]],
+    )
+    assert ha_issues(HA_PREFS, validation, []) == [
+        {
+            "stat": "sensor.tv",
+            "kind": "electricity",
+            "type": "entity_unavailable",
+            "placeholders": None,
+            "entities": [["sensor.tv", "unavailable"]],
+        },
+        {
+            "stat": "sensor.shower",
+            "kind": "water",
+            "type": "entity_negative_state",
+            "placeholders": None,
+            "entities": [["sensor.shower", -3]],
+        },
+    ]
+
+
+def test_ha_issues_grid_export_entity_goes_to_export_block() -> None:
+    validation = _validation(
+        sources=[[_issue("entity_unavailable", [["sensor.grid_export", None]])], []]
+    )
+    (issue,) = ha_issues(HA_PREFS, validation, [])
+    assert issue["stat"] == "sensor.grid_export"
+
+
+def test_ha_issues_price_entity_goes_to_first_source_block() -> None:
+    validation = _validation(
+        sources=[
+            [
+                _issue(
+                    "entity_unexpected_unit_energy_price",
+                    [["sensor.price", "EUR"]],
+                    price_units="EUR/kWh",
+                )
+            ],
+            [],
+        ]
+    )
+    (issue,) = ha_issues(HA_PREFS, validation, [])
+    assert issue["stat"] == "sensor.grid_import"
+    assert issue["placeholders"] == {"price_units": "EUR/kWh"}
+
+
+def test_ha_issues_index_beyond_list_dropped() -> None:
+    validation = _validation(
+        devices=[[], [], [_issue("entity_unavailable", [["sensor.x", None]])]],
+        sources=[[], [], [_issue("entity_unavailable", [["sensor.y", None]])]],
+    )
+    assert ha_issues(HA_PREFS, validation, []) == []
+
+
+def test_ha_issues_overlap_with_own_issue_dropped() -> None:
+    validation = _validation(
+        devices=[
+            [
+                _issue("statistics_not_defined", [["sensor.fridge", None]]),
+                _issue("entity_unexpected_unit_energy", [["sensor.fridge", "W"]]),
+                _issue("entity_unavailable", [["sensor.fridge_power", None]]),
+            ],
+            [],
+        ]
+    )
+    own = [
+        Issue(IssueCode.STATISTIC_MISSING, Severity.ERROR, "sensor.fridge"),
+        Issue(IssueCode.NOT_ENERGY_UNIT, Severity.WARNING, "sensor.fridge"),
+    ]
+    assert [i["type"] for i in ha_issues(HA_PREFS, validation, own)] == [
+        "entity_unavailable"
+    ]
+
+
+def test_ha_issues_overlap_only_for_the_same_kind() -> None:
+    validation = _validation(
+        water=[[_issue("entity_unexpected_unit_water", [["sensor.shower", "W"]])]]
+    )
+    own = [Issue(IssueCode.NOT_ENERGY_UNIT, Severity.WARNING, "sensor.shower")]
+    assert len(ha_issues(HA_PREFS, validation, own)) == 1
+
+
+def test_ha_issues_stat_both_source_and_device() -> None:
+    prefs = deepcopy(HA_PREFS)
+    prefs["device_consumption"][1]["stat_consumption"] = "sensor.solar"
+    validation = _validation(
+        sources=[[], [_issue("entity_unavailable", [["sensor.solar", None]])]],
+        devices=[[], [_issue("entity_unavailable", [["sensor.solar", None]])]],
+    )
+    issues = ha_issues(prefs, validation, [])
+    assert [(i["stat"], i["kind"]) for i in issues] == [
+        ("sensor.solar", "electricity"),
+        ("sensor.solar", "electricity"),
+    ]
+
+
+def test_ha_issues_tolerates_missing_or_odd_data() -> None:
+    assert ha_issues(HA_PREFS, {}, []) == []
+    odd = {"device_consumption": [[{"type": "x"}], "nonsense"]}
+    (issue,) = ha_issues(HA_PREFS, odd, [])
+    assert issue == {
+        "stat": "sensor.fridge",
+        "kind": "electricity",
+        "type": "x",
+        "placeholders": None,
+        "entities": [],
+    }
+
+
+def test_card_ha_issues_allowlist_and_price_types() -> None:
+    issues = [
+        {
+            "stat": "sensor.grid_import",
+            "kind": "electricity",
+            "type": t,
+            "placeholders": None,
+            "entities": e,
+        }
+        for t, e in [
+            ("entity_unexpected_unit_energy_price", [["sensor.grid_import", "x"]]),
+            ("entity_unavailable", [["sensor.price", None]]),
+            ("entity_unexpected_state_class", [["sensor.grid_import_cost", None]]),
+            ("entity_unavailable", [["sensor.grid_import", None], ["sensor.price", 1]]),
+        ]
+    ]
+    assert "entity_gas_price_unit_mismatch" in PRICE_ISSUE_TYPES
+    assert card_ha_issues(issues, {"sensor.grid_import"}) == [
+        {
+            "stat": "sensor.grid_import",
+            "kind": "electricity",
+            "type": "entity_unavailable",
+            "placeholders": None,
+            "entities": [["sensor.grid_import", None]],
+        }
+    ]

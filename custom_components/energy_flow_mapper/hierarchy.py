@@ -14,7 +14,7 @@ from collections.abc import Collection, Iterator, Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any
+from typing import Any, Final
 
 from .const import PLAUSIBILITY_MIN_KWH, PLAUSIBILITY_RATIO
 
@@ -804,6 +804,118 @@ def home_plausibility(
             {"home": home, "devices": round(home + excess, 9), "excess": excess},
         )
     return None
+
+
+# Home Assistant's issue types that our own checks already report for the
+# same statistic; HA's message is then not shown a second time.
+_OWN_COVERS: dict[str, IssueCode] = {
+    "statistics_not_defined": IssueCode.STATISTIC_MISSING,
+    "entity_unexpected_unit_energy": IssueCode.NOT_ENERGY_UNIT,
+    "entity_unexpected_unit_water": IssueCode.NOT_WATER_UNIT,
+}
+
+PRICE_ISSUE_TYPES: Final = frozenset(
+    {
+        "entity_unexpected_unit_energy_price",
+        "entity_unexpected_unit_gas_price",
+        "entity_unexpected_unit_water_price",
+        "entity_gas_price_unit_mismatch",
+    }
+)
+
+
+def _entities(issue: Mapping[str, Any]) -> list[list[Any]]:
+    return [
+        [entity[0], entity[1]]
+        for entity in issue.get("affected_entities") or []
+        if isinstance(entity, list | tuple) and len(entity) == 2
+    ]
+
+
+def _entries(validation: Mapping[str, Any], key: str) -> list[tuple[int, Any]]:
+    value = validation.get(key)
+    if not isinstance(value, list):
+        return []
+    return [
+        (index, issues)
+        for index, issues in enumerate(value)
+        if isinstance(issues, list)
+    ]
+
+
+def ha_issues(
+    prefs: Prefs, validation: Mapping[str, Any], own: Sequence[Issue]
+) -> list[dict[str, Any]]:
+    """Attach Home Assistant's energy validation to the blocks of the diagram.
+
+    `validation` has HA's shape: per list, one list of issues for each entry,
+    indexed like the saved preferences. A device's issues go to the device; a
+    source's issues go to the block whose statistic is the affected entity, or
+    to the source's first block (prices, power sensors). Where one of our own
+    issues already says the same about a statistic, HA's is left out.
+    """
+    covered = {(issue.stat, issue.kind.value, issue.code) for issue in own}
+    targets: list[tuple[str, str, list[str], Any]] = []
+    sources = prefs.get(KEY_SOURCES, [])
+    for index, issues in _entries(validation, KEY_SOURCES):
+        if index >= len(sources):
+            continue
+        source = sources[index]
+        blocks = [stat for _, stat in source_roles([source])]
+        if blocks:
+            targets.append((source_kind(source).value, blocks[0], blocks, issues))
+    for device_kind, key in DEVICE_KEYS.items():
+        devices = prefs.get(key, [])
+        for index, issues in _entries(validation, key):
+            if index < len(devices):
+                stat = devices[index][STAT]
+                targets.append((device_kind.value, stat, [stat], issues))
+
+    result: list[dict[str, Any]] = []
+    for kind, first, blocks, issues in targets:
+        for issue in issues:
+            if not isinstance(issue, Mapping):
+                continue
+            kind_type = str(issue.get("type"))
+            own_code = _OWN_COVERS.get(kind_type)
+            entities = _entities(issue)
+            by_block: dict[str, list[list[Any]]] = {}
+            for entity in entities:
+                block = entity[0] if entity[0] in blocks else first
+                if (
+                    own_code
+                    and entity[0] == block
+                    and (block, kind, own_code) in covered
+                ):
+                    continue
+                by_block.setdefault(block, []).append(entity)
+            if not entities:
+                by_block[first] = []
+            result.extend(
+                {
+                    "stat": block,
+                    "kind": kind,
+                    "type": kind_type,
+                    "placeholders": issue.get("translation_placeholders"),
+                    "entities": found,
+                }
+                for block, found in by_block.items()
+            )
+    return result
+
+
+def card_ha_issues(
+    issues: Sequence[Mapping[str, Any]], allowed: set[str]
+) -> list[dict[str, Any]]:
+    """Keep only what the card may show: never prices, only allowed entities."""
+    result: list[dict[str, Any]] = []
+    for issue in issues:
+        if issue["type"] in PRICE_ISSUE_TYPES:
+            continue
+        entities = [e for e in issue["entities"] if e[0] in allowed]
+        if entities:
+            result.append({**issue, "entities": entities})
+    return result
 
 
 def child_pairs(
