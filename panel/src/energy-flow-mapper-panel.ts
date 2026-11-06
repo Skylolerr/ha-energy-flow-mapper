@@ -3083,7 +3083,6 @@ export class EnergyFlowMapperPanel extends LitElement {
     .orientation button:last-child {
       border-radius: 0 8px 8px 0;
     }
-    .periods button.active,
     .block .suggestion {
       position: absolute;
       top: 4px;
@@ -3107,6 +3106,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       align-items: center;
       margin: 8px 0;
     }
+    .periods button.active,
     .coverage-toggle.active,
     .orientation button.active {
       background: var(--primary-color);

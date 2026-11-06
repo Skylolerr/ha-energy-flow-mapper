@@ -1020,7 +1020,6 @@ const w=globalThis,x=e=>e,k=w.trustedTypes,A=k?k.createPolicy("lit-html",{create
     .orientation button:last-child {
       border-radius: 0 8px 8px 0;
     }
-    .periods button.active,
     .block .suggestion {
       position: absolute;
       top: 4px;
@@ -1044,6 +1043,7 @@ const w=globalThis,x=e=>e,k=w.trustedTypes,A=k?k.createPolicy("lit-html",{create
       align-items: center;
       margin: 8px 0;
     }
+    .periods button.active,
     .coverage-toggle.active,
     .orientation button.active {
       background: var(--primary-color);
