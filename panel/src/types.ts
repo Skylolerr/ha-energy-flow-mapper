@@ -20,6 +20,9 @@ export interface HomeAssistant {
   /** Unit system of the instance; `volume` is "L" or "gal". */
   config?: { unit_system?: { volume?: string } };
   callWS<T>(msg: { type: string; [key: string]: unknown }): Promise<T>;
+  /** Home Assistant's own translations (for its energy check messages). */
+  localize?(key: string, values?: Record<string, unknown>): string;
+  loadBackendTranslation?(category: string, integration?: string): Promise<unknown>;
 }
 
 /** The device lists of the energy dashboard, one tab each. */
@@ -97,6 +100,16 @@ export interface Issue {
   kind?: DeviceKind;
 }
 
+/** A message of Home Assistant's own energy check, attached to a block. */
+export interface HaIssue {
+  stat: string;
+  kind: DeviceKind;
+  type: string;
+  placeholders: Record<string, string> | null;
+  /** Affected entities with HA's detail (state, unit, ...). */
+  entities: [string, unknown][];
+}
+
 /** "`stat` is included in `parent`", from Home Assistant's child devices. */
 export interface ChildPair {
   kind: DeviceKind;
@@ -118,6 +131,11 @@ export interface Snapshot {
   issues: Issue[];
   /** Whether Home Assistant knows the home meter (2026.11 and newer). */
   home_supported?: boolean;
+  /** Home Assistant's own check of the saved energy settings. */
+  ha_issues?: HaIssue[];
+  /** Child device suggestions and the ignored ones. */
+  child_pairs?: ChildPair[];
+  ignored_suggestions?: ChildPair[];
 }
 
 /** Device changes name their list; without `kind` they change electricity. */

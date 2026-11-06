@@ -565,3 +565,27 @@ describe("card home meter without a value", () => {
     expect(week.shadowRoot!.querySelector(".block.home")!.textContent).not.toContain("measured");
   });
 });
+
+describe("Home Assistant's checks on the card", () => {
+  it("marks the device with HA's text", async () => {
+    const mock = mockHass(() =>
+      data({
+        ha_issues: [
+          {
+            stat: "sensor.nas",
+            kind: "electricity",
+            type: "entity_unavailable",
+            placeholders: null,
+            entities: [["sensor.nas", null]],
+          },
+        ],
+      }),
+    );
+    mock.hass.localize = (key: string) =>
+      key === "component.energy.issues.entity_unavailable.title" ? "Entity unavailable" : "";
+    mock.hass.loadBackendTranslation = vi.fn(async () => undefined);
+    const el = await view({}, mock);
+    expect(block(el, "sensor.nas")!.querySelector(".badge")!.getAttribute("title")).toBe("Entity unavailable");
+    expect(mock.hass.loadBackendTranslation).toHaveBeenCalledWith("issues", "energy");
+  });
+});

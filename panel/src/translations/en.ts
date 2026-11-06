@@ -104,6 +104,7 @@ export const en = {
   issue_not_energy_unit: "Unit {unit} is not an energy unit",
   issue_children_exceed_parent: "Its child devices use more than this device",
   issue_devices_exceed_home: "The devices use more than the home",
+  ha_reports: "Home Assistant reports",
   backups_title: "Backups",
   backups_empty: "No backups yet. One is created before every save.",
   backup_by: "by {user}",

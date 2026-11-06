@@ -31,10 +31,11 @@ import {
   formatFlow,
   formatPower,
   formatVolume,
+  haIssueText,
   localize,
   type StringKey,
 } from "./localize";
-import type { Device, DeviceKind, HomeAssistant, HomeResult, Issue } from "./types";
+import type { Device, DeviceKind, HaIssue, HomeAssistant, HomeResult, Issue } from "./types";
 
 const DOMAIN = "energy_flow_mapper";
 /** How often the card reads the tree and the period values again. */
@@ -75,6 +76,8 @@ export interface CardData {
   home_supported?: boolean;
   /** Home consumption of the period (electricity). */
   home?: HomeResult;
+  /** Home Assistant's own check, only for what the card shows. */
+  ha_issues?: HaIssue[];
 }
 
 /** Only entities have a history to show; external statistics have none. */
@@ -102,6 +105,8 @@ export class EnergyFlowMapperCardView extends LitElement {
   private _centred = false;
   private _orientation: CardConfig["orientation"] | null = null;
   private _request = 0;
+  /** Whether Home Assistant's texts for its energy check were requested. */
+  private _haTexts = false;
   private _timer: ReturnType<typeof setInterval> | undefined;
   private _resizeObserver?: ResizeObserver;
 
@@ -185,6 +190,10 @@ export class EnergyFlowMapperCardView extends LitElement {
       });
       if (request === this._request) {
         this._data = data;
+        if (!this._haTexts && data.ha_issues?.length && this.hass.loadBackendTranslation) {
+          this._haTexts = true;
+          void this.hass.loadBackendTranslation("issues", "energy").then(() => this.requestUpdate());
+        }
         this._error = null;
       }
     } catch (err) {
@@ -393,6 +402,9 @@ export class EnergyFlowMapperCardView extends LitElement {
             <span class="node-name">${this._t(`role_${role}` as StringKey)}</span>
             <span class="sub">${block.source?.name ?? block.stat}</span>
           </div>
+          ${block.stat && this._haTitles(block.stat).length
+            ? html`<span class="badge" title=${this._haTitles(block.stat).join("\n")}>!</span>`
+            : nothing}
         </div>`;
       }
       case "untracked": {
@@ -433,6 +445,10 @@ export class EnergyFlowMapperCardView extends LitElement {
     const value = this._values(this._devices().filter((d) => d.stat_consumption === stat)).get(stat) ?? null;
     const sub = [value === null ? null : this._format(value), device?.area].filter(Boolean).join(" · ");
     const issues = (this._data?.issues ?? []).filter((i) => i.stat === stat);
+    const titles = [
+      ...(issues.length ? [this._t("issue_children_exceed_parent")] : []),
+      ...this._haTitles(stat),
+    ];
     const entity = isEntity(stat);
     return html`<div
       class="block device ${entity ? "link" : ""}"
@@ -452,10 +468,15 @@ export class EnergyFlowMapperCardView extends LitElement {
         <span class="node-name" title=${device?.name ?? stat}>${device?.name ?? stat}</span>
         ${sub ? html`<span class="sub">${sub}</span>` : nothing}
       </div>
-      ${issues.length
-        ? html`<span class="badge" title=${this._t("issue_children_exceed_parent")}>!</span>`
-        : nothing}
+      ${titles.length ? html`<span class="badge" title=${titles.join("\n")}>!</span>` : nothing}
     </div>`;
+  }
+
+  /** Home Assistant's check messages for a block, in HA's words. */
+  private _haTitles(stat: string): string[] {
+    return (this._data?.ha_issues ?? [])
+      .filter((issue) => issue.stat === stat)
+      .map((issue) => haIssueText(this.hass, issue, stat));
   }
 
   /** Open Home Assistant's dialog with the history of the meter. */

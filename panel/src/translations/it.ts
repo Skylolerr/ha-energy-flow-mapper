@@ -106,6 +106,7 @@ export const it: Translations = {
   issue_not_energy_unit: "L’unità {unit} non è un’unità di energia",
   issue_children_exceed_parent: "I suoi dispositivi figli consumano più di lui",
   issue_devices_exceed_home: "I dispositivi consumano più della casa",
+  ha_reports: "Segnalazioni di Home Assistant",
   backups_title: "Backup",
   backups_empty: "Ancora nessun backup. Ne viene creato uno prima di ogni salvataggio.",
   backup_by: "di {user}",

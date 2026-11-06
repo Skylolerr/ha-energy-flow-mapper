@@ -1917,3 +1917,70 @@ describe("home meter from a nested device", () => {
     expect(text(el)).toContain("Use as home meter");
   });
 });
+
+describe("Home Assistant's checks", () => {
+  function withHa(mock: Mock, issues: Snapshot["ha_issues"]): Mock {
+    mock.responses["energy_flow_mapper/get"] = { ...snapshot(), ha_issues: issues };
+    mock.hass.localize = vi.fn((key: string) =>
+      key === "component.energy.issues.entity_unavailable.title" ? "Entity unavailable" : "",
+    );
+    mock.hass.loadBackendTranslation = vi.fn(async () => undefined);
+    return mock;
+  }
+  const unavailable = (stat: string, entity = stat) => ({
+    stat,
+    kind: "electricity" as const,
+    type: "entity_unavailable",
+    placeholders: null,
+    entities: [[entity, "unavailable"]] as [string, unknown][],
+  });
+
+  it("marks the device and loads HA's texts", async () => {
+    const mock = withHa(mockHass(), [unavailable("sensor.tv")]);
+    const el = await mount(mock);
+    expect(mock.hass.loadBackendTranslation).toHaveBeenCalledWith("issues", "energy");
+    const badge = node(el, "sensor.tv").querySelector(".badge")!;
+    expect(badge.getAttribute("title")).toBe("Entity unavailable");
+    expect(node(el, "sensor.tv").classList.contains("has-warning")).toBe(true);
+  });
+
+  it("lists HA's messages in their own group in the details", async () => {
+    const el = await mount(withHa(mockHass(), [unavailable("sensor.tv")]));
+    node(el, "sensor.tv").click();
+    await settle(el);
+    expect(text(el)).toContain("Home Assistant reports");
+    expect(text(el)).toContain("Entity unavailable");
+  });
+
+  it("names an affected sensor that is not the block's own", async () => {
+    const el = await mount(withHa(mockHass(), [unavailable("sensor.server", "sensor.server_power")]));
+    expect(node(el, "sensor.server").querySelector(".badge")!.getAttribute("title")).toBe(
+      "Entity unavailable: sensor.server_power (unavailable)",
+    );
+  });
+
+  it("falls back to the type without a translation", async () => {
+    const el = await mount(withHa(mockHass(), [{ ...unavailable("sensor.tv"), type: "something_new" }]));
+    expect(node(el, "sensor.tv").querySelector(".badge")!.getAttribute("title")).toBe("something_new");
+  });
+
+  it("marks a source block", async () => {
+    const el = await mount(withHa(mockHass(), [unavailable("sensor.import")]));
+    const source = root(el).querySelector('.block.source[data-role="import"]')!;
+    expect(source.querySelector(".badge")!.getAttribute("title")).toBe("Entity unavailable");
+  });
+
+  it("shows nothing for a device the draft removed", async () => {
+    const el = await mount(withHa(mockHass(), [unavailable("sensor.tv")]));
+    el._change({ type: "remove", stat: "sensor.tv" });
+    await settle(el);
+    expect([...root(el).querySelectorAll(".badge")].map((b) => b.getAttribute("title"))).not.toContain(
+      "Entity unavailable",
+    );
+  });
+
+  it("ignores messages of the other tab", async () => {
+    const el = await mount(withHa(mockHass(), [{ ...unavailable("sensor.tv"), kind: "water" }]));
+    expect(node(el, "sensor.tv").querySelector(".badge")).toBeNull();
+  });
+});

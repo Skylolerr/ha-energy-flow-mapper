@@ -2,7 +2,7 @@ import { de } from "./translations/de";
 import { en } from "./translations/en";
 import { fr } from "./translations/fr";
 import { it } from "./translations/it";
-import type { HomeAssistant, WSError } from "./types";
+import type { HaIssue, HomeAssistant, WSError } from "./types";
 
 export type StringKey = keyof typeof en;
 export type Translations = Record<StringKey, string>;
@@ -131,4 +131,18 @@ export function errorText(hass: HomeAssistant | undefined, err: unknown): string
     return localize(hass, key, placeholders);
   }
   return localize(hass, "error_unknown", { message: error.message ?? String(err) });
+}
+
+/**
+ * A message of Home Assistant's energy check in HA's own words (from its
+ * backend translations), with the affected sensors that are not the block's.
+ */
+export function haIssueText(hass: HomeAssistant | undefined, issue: HaIssue, blockStat: string): string {
+  const title =
+    hass?.localize?.(`component.energy.issues.${issue.type}.title`, issue.placeholders ?? undefined) ||
+    issue.type;
+  const others = issue.entities
+    .filter(([entity]) => entity !== blockStat)
+    .map(([entity, detail]) => (detail === null || detail === undefined ? entity : `${entity} (${String(detail)})`));
+  return others.length ? `${title}: ${others.join(", ")}` : title;
 }

@@ -37,6 +37,7 @@ import {
   formatNumber,
   formatPower,
   formatVolume,
+  haIssueText,
   hasKey,
   localize,
   type StringKey,
@@ -52,6 +53,7 @@ import type {
   DeviceKind,
   DiffEntry,
   EnergyResult,
+  HaIssue,
   HomeAssistant,
   HomeResult,
   Issue,
@@ -205,6 +207,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _changes: Change[];
   declare _validation: ValidateResult | null;
   declare _selected: string | null;
+  /** Whether Home Assistant's texts for its energy check were requested. */
+  private _haTexts = false;
   declare _collapsed: Set<string>;
   declare _dragged: Dragged | null;
   declare _dropTarget: string | null;
@@ -306,12 +310,22 @@ export class EnergyFlowMapperPanel extends LitElement {
     try {
       this._snapshot = await this.hass.callWS<Snapshot>({ type: `${DOMAIN}/get` });
       this._loadError = null;
+      this._loadHaTexts();
     } catch (err) {
       this._loadError = errorText(this.hass, err);
     } finally {
       this._loading = false;
     }
     await Promise.all([this._validate(), this._loadEnergy()]);
+  }
+
+  /** Load Home Assistant's texts for its energy check, once. */
+  private _loadHaTexts(): void {
+    if (this._haTexts || !this.hass?.loadBackendTranslation) {
+      return;
+    }
+    this._haTexts = true;
+    void this.hass.loadBackendTranslation("issues", "energy").then(() => this.requestUpdate());
   }
 
   /** Show live power ("now") or the energy of a period. */
@@ -474,6 +488,19 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _issues(): Issue[] {
     const base = this._validation?.issues ?? this._snapshot?.issues ?? [];
     return this._period === "now" ? base : [...base, ...(this._energy?.issues ?? [])];
+  }
+
+  /** Home Assistant's own check messages for a block in the current tab. */
+  private _haIssuesFor(stat: string): HaIssue[] {
+    return (this._snapshot?.ha_issues ?? []).filter((issue) => issue.stat === stat && issue.kind === this._tab);
+  }
+
+  /** Every message of a block, ours first, as badge tooltip. */
+  private _badgeTitle(stat: string, issues: Issue[]): string {
+    return [
+      ...issues.map((i) => this._issueText(i)),
+      ...this._haIssuesFor(stat).map((i) => haIssueText(this.hass, i, stat)),
+    ].join("\n");
   }
 
   /** Issues of a device in the current tab. */
@@ -1533,6 +1560,9 @@ export class EnergyFlowMapperPanel extends LitElement {
               ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
               : nothing}
           </div>
+          ${block.stat && this._haIssuesFor(block.stat).length
+            ? html`<span class="badge" title=${this._badgeTitle(block.stat, [])}>!</span>`
+            : nothing}
         </button>`;
       }
       case "untracked": {
@@ -1554,6 +1584,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const node = block.node!;
     const name = this._name(stat, devices);
     const issues = this._issuesFor(stat);
+    const warned = issues.length > 0 || this._haIssuesFor(stat).length > 0;
     const hasError = issues.some((i) => i.severity === "error") || node.problem !== null;
     const handlers = this._dragHandlers(stat);
     const device = devices.find((d) => d.stat_consumption === stat);
@@ -1567,7 +1598,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       class="block device node ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
       stat
         ? "drop"
-        : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""} ${this._dragged?.stat ===
+        : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""} ${this._dragged?.stat ===
       stat
         ? "dragged"
         : this._dragged && this._canDrop(stat)
@@ -1608,10 +1639,8 @@ export class EnergyFlowMapperPanel extends LitElement {
         <span class="node-name" title=${name}>${name}</span>
         ${sub ? html`<span class="sub">${sub}</span>` : nothing}
       </div>
-      ${issues.length || node.problem
-        ? html`<span class="badge" title=${issues.map((i) => this._issueText(i)).join("\n")}
-            >!</span
-          >`
+      ${warned || node.problem
+        ? html`<span class="badge" title=${this._badgeTitle(stat, issues)}>!</span>`
         : nothing}
       <button
         class="icon"
@@ -1706,6 +1735,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   ): TemplateResult {
     const name = this._name(node.stat, devices);
     const issues = this._issuesFor(node.stat);
+    const warned = issues.length > 0 || this._haIssuesFor(node.stat).length > 0;
     const hasError = issues.some((i) => i.severity === "error") || node.problem !== null;
     const collapsed = this._collapsed.has(node.stat);
     const handlers = this._dragHandlers(node.stat);
@@ -1716,7 +1746,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         <div
           class="node ${this._selected === node.stat ? "selected" : ""} ${this._dropTarget === node.stat
             ? "drop"
-            : ""} ${hasError ? "has-error" : issues.length ? "has-warning" : ""}"
+            : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""}"
           draggable="true"
           data-stat=${node.stat}
           @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "device", stat: node.stat })}
@@ -1753,12 +1783,8 @@ export class EnergyFlowMapperPanel extends LitElement {
               </button>`
             : html`<span class="toggle"></span>`}
           <span class="node-name">${name}</span>
-          ${issues.length || node.problem
-            ? html`<span
-                class="badge"
-                title=${issues.map((i) => this._issueText(i)).join("\n")}
-                >!</span
-              >`
+          ${warned || node.problem
+            ? html`<span class="badge" title=${this._badgeTitle(node.stat, issues)}>!</span>`
             : nothing}
           <span class="node-power">${watts === null ? nothing : this._formatValue(watts)}</span>
           <button
@@ -1913,6 +1939,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 ${issues.map((i) => html`<li class=${i.severity}>${this._issueText(i)}</li>`)}
               </ul>`
           : nothing}
+        ${this._renderHaIssues(stat)}
       </section>
     `;
   }
@@ -1934,6 +1961,17 @@ export class EnergyFlowMapperPanel extends LitElement {
       <button @click=${() => this._discard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
     </div>`;
+  }
+
+  /** Home Assistant's messages for a block, as their own group. */
+  private _renderHaIssues(stat: string): TemplateResult | typeof nothing {
+    const issues = this._haIssuesFor(stat);
+    return issues.length
+      ? html`<h3>${this._t("ha_reports")}</h3>
+          <ul class="issues ha-issues">
+            ${issues.map((i) => html`<li class="warning">${haIssueText(this.hass, i, stat)}</li>`)}
+          </ul>`
+      : nothing;
   }
 
   _issueText(issue: Issue): string {
@@ -2287,6 +2325,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           !source.power_config;
         return html`<h2>${dialog.label}</h2>
           ${dialog.stat ? html`<p>${this._name(dialog.stat)}</p>` : nothing}
+          ${dialog.stat ? this._renderHaIssues(dialog.stat) : nothing}
           ${dialog.stat && assign && lastMeter ? html`<p class="hint">${this._t("source_last_meter")}</p>` : nothing}
           <div class="dialog-actions column-actions">
             ${assign
