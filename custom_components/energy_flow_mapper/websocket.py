@@ -6,6 +6,7 @@ dashboard shows every user anyway (see SPEC.md §2).
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Mapping
 from datetime import datetime
 from time import monotonic
@@ -620,7 +621,17 @@ async def _async_card_validation(
         and now - cache[0] < CARD_VALIDATION_SECONDS
     ):
         return cache[2]
-    validation = await energy_access.async_validation(hass)
+    running = runtime.validation_running
+    if running is None or running[0] != current:
+        task = hass.async_create_task(
+            energy_access.async_validation(hass), "energy_flow_mapper validation"
+        )
+        running = runtime.validation_running = (current, task)
+    try:
+        validation = await asyncio.shield(running[1])
+    finally:
+        if runtime.validation_running is running and running[1].done():
+            runtime.validation_running = None
     runtime.validation_cache = (now, current, validation)
     return validation
 
@@ -693,7 +704,9 @@ async def websocket_card(
         "water_unit": water_unit(hass),
         "home_supported": energy_access.home_supported(),
     }
-    allowed = stats | {rate for d in devices if isinstance(rate := d.get(RATE), str)}
+    allowed = stats | {
+        rate for item in (*devices, *sources) if isinstance(rate := item.get(RATE), str)
+    }
     validation = await _async_card_validation(hass, runtime, prefs)
     result["ha_issues"] = card_ha_issues(
         ha_issues(prefs, validation or {}, _issues(hass, prefs)), allowed

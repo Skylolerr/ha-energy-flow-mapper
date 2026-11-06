@@ -7,6 +7,7 @@ contains complete lists, because the energy manager replaces each key it gets.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable, Mapping
 from copy import deepcopy
@@ -21,6 +22,10 @@ from .const import DOMAIN
 from .hierarchy import KEY_DEVICES, KEY_DEVICES_WATER, KEY_SOURCES, prefs_hash
 
 _LOGGER = logging.getLogger(__name__)
+
+# Longest wait for HA's check; a busy recorder must not keep the panel or the
+# cards waiting, the messages are extra information.
+VALIDATION_TIMEOUT = 10
 
 # Failures already logged, so a validation that keeps failing (for example
 # while the recorder starts) is reported once and not on every request.
@@ -151,7 +156,8 @@ async def async_validation(hass: HomeAssistant) -> dict[str, Any] | None:
             validate as energy_validate,
         )
 
-        result = (await energy_validate.async_validate(hass)).as_dict()
+        async with asyncio.timeout(VALIDATION_TIMEOUT):
+            result = (await energy_validate.async_validate(hass)).as_dict()
         return {
             key: [[_plain_issue(issue) for issue in issues] for issues in lists]
             for key, lists in result.items()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from typing import Any
@@ -184,3 +185,17 @@ async def test_async_validation_without_the_module(
     with patch.object(energy_validate, "async_validate", return_value=None) as check:
         assert await energy_access.async_validation(hass) is None
     check.assert_not_called()
+
+
+async def test_async_validation_gives_up_when_it_takes_too_long(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A busy recorder must not keep the panel or the cards waiting."""
+    energy_access._LOGGED.clear()
+    monkeypatch.setattr(energy_access, "VALIDATION_TIMEOUT", 0.01)
+
+    async def forever(_hass: HomeAssistant) -> None:
+        await asyncio.sleep(3600)
+
+    with patch.object(energy_validate, "async_validate", side_effect=forever):
+        assert await energy_access.async_validation(hass) is None

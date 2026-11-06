@@ -9,6 +9,8 @@ from homeassistant.helpers.storage import Store
 
 from .const import SUGGESTIONS_STORAGE_KEY, SUGGESTIONS_STORAGE_VERSION
 
+_KEYS = ("kind", "stat", "parent")
+
 
 class SuggestionsData(TypedDict):
     """Content of the store file."""
@@ -30,9 +32,15 @@ class SuggestionStore:
         self._ignored: list[dict[str, str]] = []
 
     async def async_load(self) -> None:
-        """Load the list from disk."""
+        """Load the list from disk; damaged entries are left out."""
         data = await self._store.async_load()
-        self._ignored = list(data["ignored"]) if data else []
+        raw = data.get("ignored") if isinstance(data, dict) else None
+        self._ignored = [
+            {key: entry[key] for key in _KEYS}
+            for entry in raw or []
+            if isinstance(entry, dict)
+            and all(isinstance(entry.get(key), str) for key in _KEYS)
+        ]
 
     def ignored(self) -> list[dict[str, str]]:
         """Return the ignored suggestions."""

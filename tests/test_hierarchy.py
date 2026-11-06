@@ -1292,7 +1292,6 @@ def test_ha_issues_stat_both_source_and_device() -> None:
     issues = ha_issues(prefs, validation, [])
     assert [(i["stat"], i["kind"]) for i in issues] == [
         ("sensor.solar", "electricity"),
-        ("sensor.solar", "electricity"),
     ]
 
 
@@ -1345,3 +1344,28 @@ def test_ha_issues_source_without_blocks_and_odd_issue() -> None:
         sources=[["not an issue"], [], [_issue("entity_unavailable", [["x", None]])]]
     )
     assert ha_issues(prefs, validation, []) == []
+
+
+def test_ha_issues_same_sensor_reported_twice_shows_once() -> None:
+    """The home meter may be the grid import meter; HA checks it per source."""
+    prefs = {
+        "energy_sources": [
+            {"type": "grid", "stat_energy_from": "sensor.meter"},
+            {"type": "home", "stat_energy_to": "sensor.meter"},
+        ],
+        "device_consumption": [],
+        "device_consumption_water": [],
+    }
+    unavailable = _issue("entity_unavailable", [["sensor.meter", "unavailable"]])
+    validation = _validation(sources=[[unavailable], [dict(unavailable)]])
+    assert [(i["stat"], i["type"]) for i in ha_issues(prefs, validation, [])] == [
+        ("sensor.meter", "entity_unavailable")
+    ]
+
+
+def test_ha_issues_missing_entity_covered_by_own_check() -> None:
+    validation = _validation(
+        devices=[[_issue("entity_not_defined", [["sensor.fridge", None]])], []]
+    )
+    own = [Issue(IssueCode.STATISTIC_MISSING, Severity.ERROR, "sensor.fridge")]
+    assert ha_issues(HA_PREFS, validation, own) == []

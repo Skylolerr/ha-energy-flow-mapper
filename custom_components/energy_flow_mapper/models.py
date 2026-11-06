@@ -32,6 +32,8 @@ class EnergyFlowMapperData:
     # HA's energy validation for the cards: (monotonic time, hash of the
     # energy settings it belongs to, result).
     validation_cache: tuple[float, str, dict[str, Any] | None] | None = None
+    # The validation that is running for the cards: (hash, task).
+    validation_running: tuple[str, asyncio.Task[dict[str, Any] | None]] | None = None
 
 
 type EnergyFlowMapperConfigEntry = ConfigEntry[EnergyFlowMapperData]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import timedelta
 from typing import Any
 from unittest.mock import patch
@@ -1708,7 +1709,11 @@ async def test_get_returns_ha_issues_child_pairs_ignored(
         ("sensor.grid_import", "entity_unexpected_unit_energy_price"),
         ("sensor.grid_import", "entity_unavailable"),
         ("sensor.main_energy", "entity_unavailable"),
-        ("sensor.main_energy", "entity_unavailable"),
+    ]
+    # The device and its power sensor share one message.
+    assert result["ha_issues"][-1]["entities"] == [
+        ["sensor.main_energy", "unavailable"],
+        ["sensor.main_power", "unavailable"],
     ]
     assert result["child_pairs"] == []
     assert result["ignored_suggestions"] == []
@@ -1736,11 +1741,9 @@ async def test_card_ha_issues_without_prices(
             hass_ws_client, hass, hass_read_only_access_token, type=f"{DOMAIN}/card"
         )
     assert [
-        (i["stat"], i["entities"][0][0]) for i in response["result"]["ha_issues"]
-    ] == [
-        ("sensor.main_energy", "sensor.main_energy"),
-        ("sensor.main_energy", "sensor.main_power"),
-    ]
+        (i["stat"], [e[0] for e in i["entities"]])
+        for i in response["result"]["ha_issues"]
+    ] == [("sensor.main_energy", ["sensor.main_energy", "sensor.main_power"])]
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -1770,3 +1773,68 @@ async def test_card_validation_cache_follows_the_settings(
         )
         await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
     assert validation.call_count == 2
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_shows_issues_of_a_source_power_sensor(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The card uses the home meter's power sensor, so it shows its messages."""
+    prefs = {
+        "energy_sources": [
+            {
+                "type": "home",
+                "stat_energy_to": "sensor.main_energy",
+                "stat_rate": "sensor.main_power",
+            }
+        ],
+        "device_consumption": [],
+        "device_consumption_water": [],
+    }
+    validation = {
+        "energy_sources": [
+            [
+                {
+                    "type": "entity_unavailable",
+                    "affected_entities": [["sensor.main_power", "unavailable"]],
+                    "translation_placeholders": None,
+                }
+            ]
+        ],
+        "device_consumption": [],
+        "device_consumption_water": [],
+    }
+    with (
+        patch.object(energy_access, "async_get_prefs", return_value=prefs),
+        patch.object(energy_access, "async_validation", return_value=validation),
+    ):
+        response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert [i["entities"] for i in response["result"]["ha_issues"]] == [
+        [["sensor.main_power", "unavailable"]]
+    ]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_validation_runs_once_for_simultaneous_cards(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Cards of one dashboard load together; HA's check runs once for them."""
+    calls = 0
+
+    async def slow(_hass: HomeAssistant) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(0.05)
+        return {
+            "energy_sources": [],
+            "device_consumption": [],
+            "device_consumption_water": [],
+        }
+
+    client = await hass_ws_client(hass)
+    with patch.object(energy_access, "async_validation", side_effect=slow):
+        for _ in range(5):
+            await client.send_json_auto_id({"type": f"{DOMAIN}/card"})
+        for _ in range(5):
+            assert (await client.receive_json())["success"]
+    assert calls == 1

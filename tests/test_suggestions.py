@@ -56,3 +56,22 @@ async def test_remove(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None
     await store.async_remove()
     assert SUGGESTIONS_STORAGE_KEY not in hass_storage
     assert store.ignored() == []
+
+
+async def test_load_skips_broken_content(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A hand-edited or damaged file must not stop the integration."""
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 1,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {"ignored": [PAIR, {"kind": "electricity"}, "nonsense", None]},
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.ignored() == [PAIR]
+
+    hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] = {"ignored": None}
+    other = SuggestionStore(hass)
+    await other.async_load()
+    assert other.ignored() == []

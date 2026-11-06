@@ -809,6 +809,7 @@ def home_plausibility(
 # Home Assistant's issue types that our own checks already report for the
 # same statistic; HA's message is then not shown a second time.
 _OWN_COVERS: dict[str, IssueCode] = {
+    "entity_not_defined": IssueCode.STATISTIC_MISSING,
     "statistics_not_defined": IssueCode.STATISTIC_MISSING,
     "entity_unexpected_unit_energy": IssueCode.NOT_ENERGY_UNIT,
     "entity_unexpected_unit_water": IssueCode.NOT_WATER_UNIT,
@@ -855,6 +856,20 @@ def ha_issues(
     issues already says the same about a statistic, HA's is left out.
     """
     covered = {(issue.stat, issue.kind.value, issue.code) for issue in own}
+    # One entry per block and message: HA checks a sensor once per source,
+    # and the home meter may be the grid import meter.
+    merged: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for kind, first, blocks, issues in _ha_targets(prefs, validation):
+        for issue in issues:
+            if isinstance(issue, Mapping):
+                _merge_ha_issue(merged, issue, (kind, first, blocks), covered)
+    return list(merged.values())
+
+
+def _ha_targets(
+    prefs: Prefs, validation: Mapping[str, Any]
+) -> list[tuple[str, str, list[str], Any]]:
+    """(kind, first block, block statistics, HA issues) per checked entry."""
     targets: list[tuple[str, str, list[str], Any]] = []
     sources = prefs.get(KEY_SOURCES, [])
     for index, issues in _entries(validation, KEY_SOURCES):
@@ -870,38 +885,45 @@ def ha_issues(
             if index < len(devices):
                 stat = devices[index][STAT]
                 targets.append((device_kind.value, stat, [stat], issues))
+    return targets
 
-    result: list[dict[str, Any]] = []
-    for kind, first, blocks, issues in targets:
-        for issue in issues:
-            if not isinstance(issue, Mapping):
-                continue
-            kind_type = str(issue.get("type"))
-            own_code = _OWN_COVERS.get(kind_type)
-            entities = _entities(issue)
-            by_block: dict[str, list[list[Any]]] = {}
-            for entity in entities:
-                block = entity[0] if entity[0] in blocks else first
-                if (
-                    own_code
-                    and entity[0] == block
-                    and (block, kind, own_code) in covered
-                ):
-                    continue
-                by_block.setdefault(block, []).append(entity)
-            if not entities:
-                by_block[first] = []
-            result.extend(
-                {
-                    "stat": block,
-                    "kind": kind,
-                    "type": kind_type,
-                    "placeholders": issue.get("translation_placeholders"),
-                    "entities": found,
-                }
-                for block, found in by_block.items()
-            )
-    return result
+
+def _merge_ha_issue(
+    merged: dict[tuple[str, str, str], dict[str, Any]],
+    issue: Mapping[str, Any],
+    target: tuple[str, str, list[str]],
+    covered: set[tuple[str, str, IssueCode]],
+) -> None:
+    """Add one HA issue to the blocks it concerns, without repeating it.
+
+    `target` is (kind, first block, block statistics) of the checked entry.
+    """
+    kind, first, blocks = target
+    kind_type = str(issue.get("type"))
+    own_code = _OWN_COVERS.get(kind_type)
+    entities = _entities(issue)
+    by_block: dict[str, list[list[Any]]] = {}
+    for entity in entities:
+        block = entity[0] if entity[0] in blocks else first
+        if own_code and entity[0] == block and (block, kind, own_code) in covered:
+            continue
+        by_block.setdefault(block, []).append(entity)
+    if not entities:
+        by_block[first] = []
+    for block, found in by_block.items():
+        entry = merged.setdefault(
+            (block, kind, kind_type),
+            {
+                "stat": block,
+                "kind": kind,
+                "type": kind_type,
+                "placeholders": issue.get("translation_placeholders"),
+                "entities": [],
+            },
+        )
+        entry["entities"].extend(
+            entity for entity in found if entity not in entry["entities"]
+        )
 
 
 def card_ha_issues(
