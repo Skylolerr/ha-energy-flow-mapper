@@ -2024,3 +2024,90 @@ describe("Home Assistant's checks", () => {
     expect(node(el, "sensor.tv").querySelector(".badge")).toBeNull();
   });
 });
+
+describe("suggestions from child devices", () => {
+  const pair = (stat: string, parent: string) => ({ kind: "electricity" as const, stat, parent });
+
+  function withPairs(pairs: ReturnType<typeof pair>[], ignored: ReturnType<typeof pair>[] = []): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption.push({ stat_consumption: "sensor.lamp" });
+    snap.stats["sensor.lamp"] = info("sensor.lamp", "Lamp");
+    snap.child_pairs = pairs;
+    snap.ignored_suggestions = ignored;
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.responses["energy_flow_mapper/ignore_suggestion"] = (msg: { kind: string; stat: string; parent: string }) => ({
+      ignored: [...ignored, { kind: msg.kind, stat: msg.stat, parent: msg.parent }],
+    });
+    mock.responses["energy_flow_mapper/clear_suggestions"] = { ignored: [] };
+    return mock;
+  }
+
+  const hasButton = (el: EnergyFlowMapperPanel, label: string) =>
+    [...root(el).querySelectorAll("button")].some((b) => b.textContent!.includes(label));
+
+  it("shows nothing without child devices", async () => {
+    const el = await mount(withPairs([]));
+    expect(root(el).querySelector(".suggested")).toBeNull();
+    expect(hasButton(el, "Apply all suggestions")).toBe(false);
+    expect(hasButton(el, "Show ignored suggestions again")).toBe(false);
+  });
+
+  it("marks the device and explains the suggestion in the details", async () => {
+    const el = await mount(withPairs([pair("sensor.tv", "sensor.server")]));
+    expect(node(el, "sensor.tv").classList.contains("suggested")).toBe(true);
+    expect(node(el, "sensor.server").classList.contains("suggested")).toBe(false);
+    node(el, "sensor.tv").click();
+    await settle(el);
+    expect(text(el)).toContain("Suggestion: included in Server & co");
+  });
+
+  it("applies a suggestion as a normal change of the draft", async () => {
+    const el = await mount(withPairs([pair("sensor.tv", "sensor.server")]));
+    node(el, "sensor.tv").click();
+    await settle(el);
+    buttonWith(el, "Apply").click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "move", stat: "sensor.tv", parent: "sensor.server" }]);
+    expect(root(el).querySelector(".suggested")).toBeNull();
+  });
+
+  it("ignores a suggestion in Home Assistant and shows it again on request", async () => {
+    const mock = withPairs([pair("sensor.tv", "sensor.server")]);
+    const el = await mount(mock);
+    node(el, "sensor.tv").click();
+    await settle(el);
+    buttonWith(el, "Ignore").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/ignore_suggestion")).toEqual({
+      type: "energy_flow_mapper/ignore_suggestion",
+      kind: "electricity",
+      stat: "sensor.tv",
+      parent: "sensor.server",
+    });
+    expect(root(el).querySelector(".suggested")).toBeNull();
+    expect(el._changes).toEqual([]);
+    buttonWith(el, "Show ignored suggestions again").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/clear_suggestions")).toBeDefined();
+    expect(node(el, "sensor.tv").classList.contains("suggested")).toBe(true);
+  });
+
+  it("offers applying all only from two suggestions", async () => {
+    const one = await mount(withPairs([pair("sensor.tv", "sensor.server")]));
+    expect(hasButton(one, "Apply all suggestions")).toBe(false);
+    document.body.innerHTML = "";
+    const el = await mount(withPairs([pair("sensor.tv", "sensor.server"), pair("sensor.lamp", "sensor.server")]));
+    buttonWith(el, "Apply all suggestions").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "move", stat: "sensor.tv", parent: "sensor.server" },
+      { type: "move", stat: "sensor.lamp", parent: "sensor.server" },
+    ]);
+  });
+
+  it("does not suggest what the tree already shows", async () => {
+    const el = await mount(withPairs([pair("sensor.sonos", "sensor.server")]));
+    expect(root(el).querySelector(".suggested")).toBeNull();
+  });
+});

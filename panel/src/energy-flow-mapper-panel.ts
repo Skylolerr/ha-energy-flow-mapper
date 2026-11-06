@@ -8,6 +8,7 @@ import {
   canMove,
   displayName,
   homeNow,
+  suggestionsFor,
   moveTargets,
   rateValue,
   sourceRows,
@@ -51,6 +52,7 @@ import type {
   ImportCheckResult,
   Candidate,
   Change,
+  ChildPair,
   Device,
   DeviceKind,
   DiffEntry,
@@ -205,6 +207,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _period: { state: true },
     _orientation: { state: true },
     _coverage: { state: true },
+    _ignored: { state: true },
     _energy: { state: true },
     _tab: { state: true },
     _find: { state: true },
@@ -237,6 +240,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _period: Period;
   declare _orientation: Orientation;
   declare _coverage: boolean;
+  /** Suggestions an admin ignored, stored in Home Assistant. */
+  declare _ignored: ChildPair[];
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
   /** The device list shown: electricity or water. */
@@ -279,6 +284,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._period = "now";
     this._orientation = savedOrientation();
     this._coverage = savedCoverage();
+    this._ignored = [];
     this._energy = null;
     this._tab = "electricity";
     this._find = "";
@@ -326,6 +332,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     try {
       this._snapshot = await this.hass.callWS<Snapshot>({ type: `${DOMAIN}/get` });
       this._loadError = null;
+      this._ignored = this._snapshot.ignored_suggestions ?? [];
       this._loadHaTexts();
     } catch (err) {
       this._loadError = errorText(this.hass, err);
@@ -504,6 +511,60 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _issues(): Issue[] {
     const base = this._validation?.issues ?? this._snapshot?.issues ?? [];
     return this._period === "now" ? base : [...base, ...(this._energy?.issues ?? [])];
+  }
+
+  /** Child device suggestions that still apply to the draft of this tab. */
+  _suggestions(): ChildPair[] {
+    return suggestionsFor(this.draft, this._snapshot?.child_pairs ?? [], this._ignored, this._tab);
+  }
+
+  private _suggestionFor(stat: string): ChildPair | undefined {
+    return this._suggestions().find((s) => s.stat === stat);
+  }
+
+  /** Put a device below the device Home Assistant names as its parent. */
+  _applySuggestion(pair: ChildPair): void {
+    this._change({ type: "move", stat: pair.stat, parent: pair.parent, ...this._kind() });
+  }
+
+  /** Apply every suggestion that still fits after the ones before it. */
+  _applyAllSuggestions(): void {
+    for (const pair of this._suggestions()) {
+      if (suggestionsFor(this.draft, [pair], this._ignored, this._tab).length) {
+        this._applySuggestion(pair);
+      }
+    }
+  }
+
+  /** Stop suggesting this, for every admin and device. */
+  async _ignoreSuggestion(pair: ChildPair): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    try {
+      const result = await this.hass.callWS<{ ignored: ChildPair[] }>({
+        type: `${DOMAIN}/ignore_suggestion`,
+        kind: pair.kind,
+        stat: pair.stat,
+        parent: pair.parent,
+      });
+      this._ignored = result.ignored;
+    } catch (err) {
+      this._showToast(errorText(this.hass, err));
+    }
+  }
+
+  /** Show every ignored suggestion again. */
+  async _clearIgnored(): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    try {
+      const result = await this.hass.callWS<{ ignored: ChildPair[] }>({ type: `${DOMAIN}/clear_suggestions` });
+      this._ignored = result.ignored;
+    } catch (err) {
+      this._showToast(errorText(this.hass, err));
+    }
   }
 
   /** Home Assistant's own check messages for a block in the current tab. */
@@ -1356,6 +1417,11 @@ export class EnergyFlowMapperPanel extends LitElement {
             )}
           </div>
           <div class="toolbar">
+            ${this._suggestions().length >= 2
+              ? html`<button class="apply-all" @click=${() => this._applyAllSuggestions()}>
+                  ${icon("lightbulb")} ${this._t("suggestion_apply_all")}
+                </button>`
+              : nothing}
             ${this._tab === "electricity"
               ? html`<button
                   class="coverage-toggle ${this._coverage ? "active" : ""}"
@@ -1403,6 +1469,11 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>
         </div>
         <p class="hint">
+          ${this._ignored.some((p) => p.kind === this._tab)
+            ? html`<button class="link" @click=${() => void this._clearIgnored()}>
+                ${this._t("suggestion_show_ignored")}
+              </button>`
+            : nothing}
           ${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}
           ${this._period !== "now" && this._energy === null
             ? html`<span class="loading">${this._t("energy_loading")}</span>`
@@ -1631,6 +1702,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const name = this._name(stat, devices);
     const issues = this._issuesFor(stat);
     const warned = issues.length > 0 || this._haIssuesFor(stat).length > 0;
+    const suggestion = this._suggestionFor(stat);
     const hasError = issues.some((i) => i.severity === "error") || node.problem !== null;
     const handlers = this._dragHandlers(stat);
     const device = devices.find((d) => d.stat_consumption === stat);
@@ -1641,7 +1713,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       .join(" · ");
     const collapsed = this._collapsed.has(stat);
     return html`<div
-      class="block device node ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
+      class="block device node ${suggestion ? "suggested" : ""} ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
       stat
         ? "drop"
         : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""} ${this._dragged?.stat ===
@@ -1687,6 +1759,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       </div>
       ${warned || node.problem
         ? html`<span class="badge" title=${this._badgeTitle(stat, issues)}>!</span>`
+        : nothing}
+      ${suggestion
+        ? html`<span class="suggestion" title=${this._t("suggestion_text", { parent: this._name(suggestion.parent, devices) })}
+            >${icon("lightbulb")}</span
+          >`
         : nothing}
       <button
         class="icon"
@@ -1985,7 +2062,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 ${issues.map((i) => html`<li class=${i.severity}>${this._issueText(i)}</li>`)}
               </ul>`
           : nothing}
-        ${this._renderHaIssues(stat)}
+        ${this._renderHaIssues(stat)} ${this._renderSuggestion(stat, devices)}
       </section>
     `;
   }
@@ -2006,6 +2083,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       </button>
       <button @click=${() => this._discard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
+    </div>`;
+  }
+
+  /** The suggestion for a device, with Apply and Ignore. */
+  private _renderSuggestion(stat: string, devices: Device[]): TemplateResult | typeof nothing {
+    const suggestion = this._suggestionFor(stat);
+    if (!suggestion) {
+      return nothing;
+    }
+    return html`<div class="suggestion-line">
+      <p>${icon("lightbulb")} ${this._t("suggestion_text", { parent: this._name(suggestion.parent, devices) })}</p>
+      <div class="dialog-actions">
+        <button class="primary" @click=${() => this._applySuggestion(suggestion)}>${this._t("suggestion_apply")}</button>
+        <button @click=${() => void this._ignoreSuggestion(suggestion)}>${this._t("suggestion_ignore")}</button>
+      </div>
     </div>`;
   }
 
@@ -2865,6 +2957,23 @@ export class EnergyFlowMapperPanel extends LitElement {
       border-radius: 0 8px 8px 0;
     }
     .periods button.active,
+    .block .suggestion {
+      position: absolute;
+      top: 4px;
+      right: 36px;
+      color: var(--warning-color, #ffa600);
+    }
+    .block .suggestion .mdi,
+    .suggestion-line .mdi,
+    .apply-all .mdi {
+      width: 16px;
+      height: 16px;
+      vertical-align: -3px;
+      fill: currentColor;
+    }
+    .block.suggested {
+      border-style: dashed;
+    }
     .coverage-toggle.active,
     .orientation button.active {
       background: var(--primary-color);
