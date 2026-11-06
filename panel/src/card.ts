@@ -193,7 +193,12 @@ export class EnergyFlowMapperCardView extends LitElement {
         this._data = data;
         if (!this._haTexts && data.ha_issues?.length && this.hass.loadBackendTranslation) {
           this._haTexts = true;
-          void this.hass.loadBackendTranslation("issues", "energy").then(() => this.requestUpdate());
+          this.hass
+            .loadBackendTranslation("issues", "energy")
+            .then(() => this.requestUpdate())
+            .catch(() => {
+              this._haTexts = false;
+            });
         }
         this._error = null;
       }

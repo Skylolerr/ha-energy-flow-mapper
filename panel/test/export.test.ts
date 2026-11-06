@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { anonymize, diagramSvg, exportScale, FOOTER_H, MAX_CANVAS, type ExportBlock } from "../src/export";
+import { anonymize, diagramSvg, escapeXml, exportScale, FOOTER_H, MAX_CANVAS, type ExportBlock } from "../src/export";
 import type { Block, Layout } from "../src/layout";
 
 const theme = {
@@ -111,5 +111,30 @@ describe("canvas area limit", () => {
     const scale = exportScale(7300, 640);
     expect(7300 * scale * 640 * scale).toBeLessThanOrEqual(MAX_AREA);
     expect(exportScale(1000, 800)).toBe(2);
+  });
+});
+
+describe("lines and markers in the picture", () => {
+  it("draws each sub line of a block on its own line", () => {
+    const home = { ...blocks()[1], sub: "20 kWh measured\n65% covered by devices" };
+    const svg = diagramSvg(LAYOUT, [home], [], options);
+    expect(svg).toContain(">20 kWh measured</text>");
+    expect(svg).toContain(">65% covered by devices</text>");
+  });
+
+  it("marks a collapsed device with the number of hidden child devices", () => {
+    const device = { ...blocks()[2], hidden: 3 };
+    expect(diagramSvg(LAYOUT, [device], [], options)).toContain("▸ +3");
+  });
+
+  it("makes the picture wide enough for the footer", () => {
+    const narrow = { ...LAYOUT, width: 268 };
+    const svg = diagramSvg(narrow, [], [], options);
+    const width = Number(/width="(\d+)"/.exec(svg)![1]);
+    expect(width).toBeGreaterThanOrEqual(24 + options.footer.length * 7);
+  });
+
+  it("leaves out characters XML does not allow", () => {
+    expect(escapeXml("TV\u000bcorner\u0000")).toBe("TVcorner");
   });
 });

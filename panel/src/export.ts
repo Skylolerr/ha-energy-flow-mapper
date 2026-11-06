@@ -16,6 +16,8 @@ export interface ExportBlock {
   warn: boolean;
   /** The sub names a sensor (a late home meter); hidden with the names. */
   named?: boolean;
+  /** Child devices hidden because the device is collapsed. */
+  hidden?: number;
 }
 
 export interface ExportEdge {
@@ -41,9 +43,11 @@ export const MAX_AREA = 16_777_216;
 
 const FONT = "Roboto, Noto, system-ui, sans-serif";
 
-/** Escape text for SVG content and attributes. */
+/** Escape text for SVG content and attributes; drop what XML does not allow. */
 export function escapeXml(text: string): string {
   return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffe\uffff]/g, "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -54,7 +58,13 @@ export function escapeXml(text: string): string {
 function blockSvg(item: ExportBlock, index: number, options: ExportOptions): string {
   const { x, y, w, h } = item.block;
   const { theme } = options;
-  const sub = [item.sub, item.area].filter(Boolean).join(" · ");
+  // Each sub line on its own line, like in the diagram; the area after the
+  // first one (the value).
+  const lines = (item.sub ?? "").split("\n").filter(Boolean);
+  if (item.area) {
+    lines[0] = lines.length ? `${lines[0]} · ${item.area}` : item.area;
+  }
+  const titleY = y + h / 2 + 5 - 10 * lines.length;
   const dashed = item.block.kind === "untracked" || item.block.kind === "placeholder";
   return [
     `<clipPath id="c${index}"><rect x="${x + 10}" y="${y}" width="${w - 20}" height="${h}"/></clipPath>`,
@@ -63,13 +73,21 @@ function blockSvg(item: ExportBlock, index: number, options: ExportOptions): str
     }" stroke-width="${item.warn ? 2 : 1}"${dashed ? ' stroke-dasharray="6 4"' : ""}/>`,
     `<rect x="${x}" y="${y + 8}" width="4" height="${h - 16}" rx="2" fill="${item.color}"/>`,
     `<g clip-path="url(#c${index})">`,
-    `<text x="${x + 14}" y="${y + (sub ? h / 2 - 4 : h / 2 + 5)}" font-family="${FONT}" font-size="14" font-weight="500" fill="${
+    `<text x="${x + 14}" y="${titleY}" font-family="${FONT}" font-size="14" font-weight="500" fill="${
       theme.text
     }">${escapeXml(item.title)}</text>`,
-    sub
-      ? `<text x="${x + 14}" y="${y + h / 2 + 16}" font-family="${FONT}" font-size="12" fill="${theme.secondary}">${escapeXml(sub)}</text>`
-      : "",
+    ...lines.map(
+      (line, n) =>
+        `<text x="${x + 14}" y="${titleY + 19 + 15 * n}" font-family="${FONT}" font-size="12" fill="${
+          theme.secondary
+        }">${escapeXml(line)}</text>`,
+    ),
     `</g>`,
+    item.hidden
+      ? `<text x="${x + w - 10}" y="${y + h - 8}" text-anchor="end" font-family="${FONT}" font-size="11" fill="${
+          theme.secondary
+        }">▸ +${item.hidden}</text>`
+      : "",
     item.warn
       ? `<circle cx="${x + w - 14}" cy="${y + 14}" r="8" fill="#ffa600"/><text x="${x + w - 14}" y="${
           y + 18
@@ -88,7 +106,9 @@ function edgeSvg(edge: ExportEdge): string {
 
 /** The whole diagram as a standalone SVG, with the footer line below it. */
 export function diagramSvg(layout: Layout, blocks: ExportBlock[], edges: ExportEdge[], options: ExportOptions): string {
-  const width = layout.width;
+  // A small diagram (one water device) is wider than its blocks so the
+  // footer fits; about 7 px per character at 12 px.
+  const width = Math.max(layout.width, Math.ceil(48 + options.footer.length * 7));
   const height = layout.height + FOOTER_H;
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,

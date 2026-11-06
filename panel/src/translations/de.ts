@@ -124,7 +124,7 @@ export const de: Translations = {
   export_device: "Gerät {n}",
   export_footer: "Energy Flow Mapper · {tab} · {period} · {time}",
   export_draft: "Entwurf, nicht gespeichert",
-  export_failed: "Das Bild konnte nicht erstellt werden. Versuch es mit der vertikalen Ansicht.",
+  export_failed: "Das Bild konnte nicht erstellt werden.",
   backups_title: "Sicherungen",
   backups_empty: "Noch keine Sicherungen. Vor jedem Speichern wird eine angelegt.",
   backup_by: "von {user}",

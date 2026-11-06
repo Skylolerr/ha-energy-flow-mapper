@@ -233,6 +233,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _selected: string | null;
   /** Whether Home Assistant's texts for its energy check were requested. */
   private _haTexts = false;
+  /** Whether an image is being made (a second click does nothing). */
+  private _exporting = false;
+  /** The suggestions of the last draft, so blocks do not compute them again. */
+  private _suggestionMemo: { key: unknown[]; value: ChildPair[] } | null = null;
   /** Turns the picture of the diagram into a PNG; replaced in tests. */
   _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
@@ -357,7 +361,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     this._haTexts = true;
-    void this.hass.loadBackendTranslation("issues", "energy").then(() => this.requestUpdate());
+    this.hass
+      .loadBackendTranslation("issues", "energy")
+      .then(() => this.requestUpdate())
+      .catch(() => {
+        // Tried again with the next load.
+        this._haTexts = false;
+      });
   }
 
   /** Show live power ("now") or the energy of a period. */
@@ -524,7 +534,14 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** Child device suggestions that still apply to the draft of this tab. */
   _suggestions(): ChildPair[] {
-    return suggestionsFor(this.draft, this._snapshot?.child_pairs ?? [], this._ignored, this._tab);
+    const key = [this._snapshot, this._changes, this._ignored, this._tab];
+    const memo = this._suggestionMemo;
+    if (memo && memo.key.every((part, i) => part === key[i])) {
+      return memo.value;
+    }
+    const value = suggestionsFor(this.draft, this._snapshot?.child_pairs ?? [], this._ignored, this._tab);
+    this._suggestionMemo = { key, value };
+    return value;
   }
 
   private _suggestionFor(stat: string): ChildPair | undefined {
@@ -1228,6 +1245,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         area: this._info(stat)?.area_name ?? null,
         color: this._cssColor("var(--primary-color, #03a9f4)"),
         warn,
+        hidden: this._collapsed.has(stat) ? (block.node?.children.length ?? 0) : 0,
       };
     }
     const color =
@@ -1236,11 +1254,23 @@ export class EnergyFlowMapperPanel extends LitElement {
         : "var(--secondary-text-color, #727272)";
     // A late home meter is named in the text of Home.
     const named = block.kind === "home" && this._home()?.stale != null;
-    return { block, title, sub: subs.join(" · ") || null, area: null, color: this._cssColor(color), warn, named };
+    return { block, title, sub: subs.join("\n") || null, area: null, color: this._cssColor(color), warn, named };
   }
 
   /** Save the whole diagram of this tab as a PNG, optionally without names. */
   async _saveImage(hideNames: boolean): Promise<void> {
+    if (this._exporting) {
+      return;
+    }
+    this._exporting = true;
+    try {
+      await this._writeImage(hideNames);
+    } finally {
+      this._exporting = false;
+    }
+  }
+
+  private async _writeImage(hideNames: boolean): Promise<void> {
     const result = this.diagramLayout();
     const byId = new Map(result.blocks.map((b) => [b.id, b]));
     const devices = this.draft;
@@ -1293,6 +1323,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       downloadBlob(`energy-flow-mapper-${this._tab}-${fileStamp(now).slice(0, 10)}.png`, png);
       this._close();
     } catch {
+      // Closed first: the message would be hidden behind the dialog.
+      this._close();
       this._showToast(this._t("export_failed"));
     }
   }
