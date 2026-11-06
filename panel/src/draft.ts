@@ -471,10 +471,11 @@ export function homeNow(hass: HomeAssistant, sources: Source[]): number | null {
 
 /**
  * How much of the home the top-level devices cover (1 = all of it); null
- * without a positive home value or when a top-level device has no value.
+ * without a positive home value, or when a top-level device has no value or a
+ * negative one (a meter that went backwards gives no meaningful share).
  */
 export function coverage(home: number | null, tops: (number | null)[]): number | null {
-  if (home === null || home <= 0 || tops.some((v) => v === null)) {
+  if (home === null || home <= 0 || tops.some((v) => v === null || v < 0)) {
     return null;
   }
   return tops.reduce<number>((sum, v) => sum + (v ?? 0), 0) / home;

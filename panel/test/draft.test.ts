@@ -506,5 +506,7 @@ describe("coverage", () => {
     expect(coverage(0, [1])).toBeNull();
     expect(coverage(-2, [1])).toBeNull();
     expect(coverage(10, [2, null])).toBeNull();
+    // A meter that went backwards (reset, mixed statistics) gives no share.
+    expect(coverage(10, [5, -1])).toBeNull();
   });
 });
