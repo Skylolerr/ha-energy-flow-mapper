@@ -71,6 +71,11 @@ solar, battery or water meter, and which meters are not used yet.
 - **Names and terms like Home Assistant** – upstream device, child devices, untracked
   consumption; with Home Assistant 2026.11 or newer, devices are named after their device,
   as in the energy dashboard.
+- **Coverage** – Home shows how much of the house the devices cover, for example
+  *72 % covered by devices*. Switch it off with *Coverage* above the diagram.
+- **Home Assistant's own checks** – what the energy settings of Home Assistant report
+  (sensor unavailable, entity gone, wrong unit, …) is marked right at the block, in Home
+  Assistant's own words.
 - **Plausibility warnings** – a device is flagged when its child devices used clearly more
   than it did (more than 5 % and 0.1 kWh, water 10 L) – usually a wrong assignment.
 - **Find a device** – the search field highlights matches, opens collapsed devices and
@@ -86,6 +91,10 @@ solar, battery or water meter, and which meters are not used yet.
   your supplier's portal) that are not in the dashboard yet, added with one drag.
 - **Meters for power and flow sensors** – "Create meter" turns a power sensor (a UPS, PoE
   ports, …) or a flow sensor into an ordinary integral helper and puts it in the diagram.
+- **Suggestions from child devices** – where an integration registers a device as part of
+  another one (an outlet of a power strip, a channel of a multi-channel meter), the panel
+  suggests including it there. *Apply* puts it into the draft, *Ignore* hides it for every
+  admin. Nothing changes by itself, and connections such as a Zigbee stick never count.
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. *Undo change*
   takes back a step, and every save stores a backup first.
@@ -93,6 +102,9 @@ solar, battery or water meter, and which meters are not used yet.
 **Everywhere**
 
 - **Dashboard card** – the same tree, read-only, on any dashboard and for every user.
+- **Save as image** – the whole diagram as a PNG for a question, a forum post or your own
+  records; *Hide names* turns devices into *Device 1, 2, …* and leaves out areas and
+  sensor names. The image is made in your browser and sent nowhere.
 - **Water tab** – water devices and meters, in litres and m³ (gallons with US units).
 - **Backups, export and import** – restore any earlier state or keep a copy elsewhere.
 - **English, German, French and Italian**, light and dark theme, phone layout.
@@ -157,6 +169,7 @@ title: Kitchen         # optional; an empty title hides the header
 orientation: vertical  # horizontal (top-down, default) or vertical (left to right)
 show_sources: true     # sources before Home (not with root)
 show_untracked: true   # blocks for untracked consumption
+show_coverage: false   # "72 % covered by devices" at Home (electricity, off by default)
 ```
 
 A tree wider than the card is shown at half size at least; then the card scrolls
@@ -179,6 +192,8 @@ the sensors live.
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
 | Take back a change of the draft | *Undo change* in the bar at the bottom, or Ctrl+Z |
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
+| Use a suggestion | Tap the device with the light bulb → *Apply* (or *Ignore*) |
+| Share or keep a picture | *Save as image*, optionally with *Hide names* |
 | Save | *Save* in the bar at the bottom, check the list of changes, confirm |
 | Go back | *Undo last save* or *Backups* → *Restore* |
 | Keep a copy elsewhere | *Backups* → *Export current settings*, or *Export* next to a backup |

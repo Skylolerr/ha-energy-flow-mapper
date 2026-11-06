@@ -11,6 +11,22 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Home Assistant's own checks at the block:** what Home Assistant's energy settings
+  report (sensor unavailable, entity gone, wrong unit or state class, negative state,
+  excluded from the recorder) is marked at the device, source or home meter, in Home
+  Assistant's own words. Also on the dashboard card, without anything about prices.
+- **Coverage at Home:** *72 % covered by devices*, switchable with *Coverage* above the
+  diagram; on the card with the option `show_coverage` (off by default).
+- **Suggestions from child devices:** where an integration registers a device as part of
+  another one, the panel suggests including it there. *Apply* puts the move into the
+  draft, *Ignore* hides the suggestion for every admin (stored in Home Assistant),
+  *Show ignored suggestions again* brings them back. Only Home Assistant's child devices
+  count, never how a device is connected.
+- **Save as image:** the whole diagram of the tab as a PNG, with the period and the date;
+  *Hide names* turns devices into *Device 1, 2, …* and leaves out areas and sensor names.
+
 ## [0.7.0] - 2026-11-04
 
 > **Highlight:** see what your whole home uses – and how much of it no device covers yet.

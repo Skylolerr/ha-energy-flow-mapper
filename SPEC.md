@@ -54,6 +54,7 @@ README-Abgrenzung: «Not another energy card – a visual editor that maps your 
 | Begriffe und Namen | Ab v0.7.0 (Wunsch des Maintainers vom 2026-11-04): Begriffe wie in HA 2026.11, in allen vier Sprachen: «vorgelagertes Gerät» (upstream device), «Untergeräte» (child devices), «Nicht erfasster Verbrauch» (untracked consumption). Ab HA 2026.11 heisst ein Gerät ohne eigenen Namen wie im Energie-Dashboard von HA nach seinem HA-Gerät, mit dem vorgelagerten HA-Gerät (`via_device`) davor; Entities ohne Gerät und externe Statistiken behalten ihren Namen (Feld `energy_name` der Statistik-Infos). Unter 2026.10 bleibt der Entity-Name |
 | Gas | nur Anzeige der Gas-Quellen im Reiter «Strom», keine Bearbeitung und kein eigener Reiter (Entscheid des Maintainers vom 2026-10-25: HA kennt keine Gas-Geräte, ein Reiter hätte nur die Quellen) |
 | Nicht erfasster Verbrauch | **Nur im Panel**, keine eigenen Sensoren. Sensoren erst, wenn jemand danach fragt |
+| HA-Prüfung, Abdeckung, Vorschläge, Bild | Ab v0.8.0 (Wunsch des Maintainers vom 2026-11-06): HAs eigene Prüfung des Energie-Dashboards am betroffenen Block (Panel und Karte, auf der Karte nie Preise); «X % von Geräten erfasst» bei «Zuhause» (Panel an und abschaltbar, Karte `show_coverage` aus); Vorschläge «enthalten in» nur aus HAs Untergeräten (`parent_device_id`, nie `via_device_id`), nie automatisch übernommen, «Ignorieren» in HA gespeichert; das ganze Diagramm als PNG, wahlweise ohne Namen und Bereiche. Entwurf: `docs/superpowers/specs/2026-11-06-insights-design.md` |
 | Plausibilitäts-Warnung | wenn untergeordnete Geräte zusammen **> 5 % und > 0,1 kWh** (Wasser: **> 10 L**) mehr verbrauchen als das übergeordnete |
 | Sicherungen | Standard die letzten **20**, in den Optionen der Integration **5 bis 100** einstellbar (Wunsch des Maintainers vom 2026-10-24). Ablage fest in `.storage`, **kein** frei wählbarer Speicherort |
 | Export/Import | Aktuelle Einstellungen und jede Sicherung als JSON-Datei exportieren; Import geht durch Prüfung, Bestätigung und Sicherung wie jedes Speichern (2026-10-24) |
@@ -226,6 +227,11 @@ HACS installiert das ZIP des Releases (`zip_release`, ab v0.3.0); GitHub zählt 
 
 ---
 
+- **HA-Prüfung am Block** (ab v0.8.0): HAs eigene Prüfung des Energie-Dashboards (`energy/validate`, über `energy_access.py`) erscheint am betroffenen Gerät, an der Quelle oder am Hauszähler, mit HAs eigenem Text (`component.energy.issues.<type>.title`) als eigene Gruppe «Meldungen von Home Assistant»; sie blockiert nie das Speichern. Sagt unsere Prüfung dasselbe (Statistik fehlt, falsche Einheit), erscheint nur unsere Meldung.
+- **Abdeckung** (ab v0.8.0, nur Strom): «X % von Geräten erfasst» unter dem Hausverbrauch = oberste Geräte ÷ Hausverbrauch, ganzzahlig; «über 100 %» wenn die Geräte mehr verbrauchen, «< 1 %» darunter; kein Wert ohne Hausverbrauch, wenn ein oberstes Gerät keinen oder einen negativen Wert hat. Schalter «Abdeckung» in der Werkzeugleiste, Standard an, pro Browser gemerkt.
+- **Vorschläge** (ab v0.8.0): Ist ein Gerät laut HA ein Untergerät (`parent_device_id`) eines HA-Geräts, das genau eine Statistik derselben Liste trägt, und zeigt der Baum das noch nicht (auch nicht über ein Zwischengerät, kein Kreis), bekommt der Block eine Glühbirne; in den Details «Vorschlag: enthalten in …» mit «Übernehmen» (normale Verschiebung im Entwurf) und «Ignorieren» (in HA gespeichert, `.storage/energy_flow_mapper.suggestions`, nicht Teil von Sicherungen oder Export). Ab zwei Vorschlägen «Alle Vorschläge übernehmen»; «Ignorierte Vorschläge wieder zeigen» im Hinweis unter der Werkzeugleiste. `via_device_id` zählt nie.
+- **Als Bild speichern** (ab v0.8.0): das ganze Diagramm des Reiters als PNG (`energy-flow-mapper-<reiter>-<datum>.png`), mit Reiter, Zeitraum, Zeit und bei einem Entwurf «Entwurf, nicht gespeichert» in der Fusszeile. «Namen ausblenden» macht aus Geräten «Gerät 1, 2, …» (Reihenfolge im Diagramm) und lässt Bereiche, Sensornamen und den Namen eines verspäteten Hauszählers weg. Das Bild entsteht im Browser.
+
 ### Dashboard-Karte (ab v0.5.0)
 
 - `custom:energy-flow-mapper-card`, nur Anzeige, für alle Benutzer (§2). Bearbeiten bleibt im Panel.
@@ -328,7 +334,7 @@ Alle Befehle nur für Admins, ausser dem Lese-Befehl der Dashboard-Karte ab v0.5
 
 | Befehl | Eingabe | Ausgabe |
 |---|---|---|
-| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`, `flow_candidates`), Prüfergebnis, `home_supported` (ab v0.7.0) |
+| `energy_flow_mapper/get` | – | Energie-Konfiguration, Hash, Metadaten pro Statistik (Name, Einheit, Entity, HA-Gerät, Bereich, Stockwerk), freie Sensoren (`candidates`, `water_candidates`, `power_candidates`, `flow_candidates`), Prüfergebnis, `home_supported` (ab v0.7.0); ab v0.8.0 `ha_issues` (HAs eigene Prüfung je Block: `stat`, `kind`, `type`, `placeholders`, `entities`), `child_pairs` (Vorschläge aus Untergeräten: `kind`, `stat`, `parent`) und `ignored_suggestions` |
 | `energy_flow_mapper/validate` | `base_hash`, `changes` | `valid`, Fehler und Warnungen, `rejected` (Meldung von HAs Schemas), `diff` |
 | `energy_flow_mapper/save` | `base_hash`, `changes` | neuer Hash, ID der Sicherung; oder Fehler `conflict` / `invalid_changes` / `rejected_by_home_assistant` |
 | `energy_flow_mapper/backups` | – | Liste der Sicherungen (ohne Inhalt) |
@@ -338,7 +344,9 @@ Alle Befehle nur für Admins, ausser dem Lese-Befehl der Dashboard-Karte ab v0.5
 | `energy_flow_mapper/export` | optional `backup_id` | Export-Datei der aktuellen Einstellungen bzw. der Sicherung (§11) |
 | `energy_flow_mapper/import_check` | `base_hash`, `document` | wie `validate`, dazu `changed`; Fehler `invalid_import` bei falschen Dateien |
 | `energy_flow_mapper/import` | `base_hash`, `document` | neuer Hash, ID der Sicherung; oder Fehler `invalid_import` / `invalid_changes` / `rejected_by_home_assistant` / `conflict` |
-| `energy_flow_mapper/card` (**alle Benutzer**, ab v0.5.0) | optional `kind` (Standard `electricity`), optional `period` (`today`, `week`, `month`) | `kind`, `devices` (Statistik, Name, übergeordnetes Gerät, Leistungs-/Durchflusssensor, Bereich), `sources` der Liste (Typ, Rolle, Statistik, Name), `water_unit`; mit `period` dazu `energy`, `untracked`, `issues` wie bei `energy`. Keine Preise oder Kosten; ab v0.7.0 `home_supported`, beim Hauszähler in `sources` auch `stat_rate`, mit `period` für Strom `home` wie bei `energy` |
+| `energy_flow_mapper/card` (**alle Benutzer**, ab v0.5.0) | optional `kind` (Standard `electricity`), optional `period` (`today`, `week`, `month`) | `kind`, `devices` (Statistik, Name, übergeordnetes Gerät, Leistungs-/Durchflusssensor, Bereich), `sources` der Liste (Typ, Rolle, Statistik, Name), `water_unit`; mit `period` dazu `energy`, `untracked`, `issues` wie bei `energy`. Keine Preise oder Kosten; ab v0.7.0 `home_supported`, beim Hauszähler in `sources` auch `stat_rate`, mit `period` für Strom `home` wie bei `energy`; ab v0.8.0 `ha_issues` nur für die gezeigten Statistiken und Leistungs-/Durchflusssensoren, nie Meldungen zu Preisen oder Kosten (HAs Prüfung höchstens einmal pro Minute für alle Karten) |
+| `energy_flow_mapper/ignore_suggestion` (ab v0.8.0) | `kind`, `stat`, `parent` | `ignored` (Liste); Vorschläge zu Geräten, die nicht mehr im Energie-Dashboard sind, fallen dabei weg |
+| `energy_flow_mapper/clear_suggestions` (ab v0.8.0) | – | `ignored` (leer) |
 
 Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kann.
 
@@ -411,6 +419,8 @@ Wie bei Daily Challenge: `scripts/deploy.sh` baut das Panel und kopiert `custom_
 **v0.5.0 – Dashboard-Karte** *(veröffentlicht 2026-10-25, getestet mit HA 2026.10.4; Entscheid des Maintainers vom 2026-10-25; siehe §6 «Dashboard-Karte»)*: Lovelace-Karte nur zur Anzeige, für alle Benutzer, schlanke erste Version: Strom oder Wasser, Zeitraum, «ab Gerät», Diagramm wie im Panel mit «Nicht erfasst» und Warnungen; Antippen öffnet den Verlauf des Sensors; Einstellungen im Karten-Editor. Bearbeiten bleibt im Panel. Die Integration liefert die Karte mit (kleines Startskript auf jeder Seite, der Code der Karte lädt erst, wenn sie auf dem Dashboard steht). Eine kompakte Listen-Darstellung kommt höchstens später.
 
 **v0.6.0 – Vertikale Ansicht** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0b5; Wunsch des Maintainers vom 2026-10-31; siehe §6 «Ausrichtung»)*: Knöpfe «Horizontal» und «Vertikal» über dem Diagramm, Karten-Option `orientation`. Dazu die Aufnahme in die HACS-Standardliste (hacs/default#12520, gemerged am 2026-11-04); das README führt mit der HACS-Suche.
+
+**v0.8.0 – HA-Prüfung, Abdeckung, Vorschläge, Bild** *(in Arbeit, noch nicht veröffentlicht; Wunsch des Maintainers vom 2026-11-06; siehe §2)*: HAs eigene Meldungen am Block, Abdeckung bei «Zuhause», Vorschläge aus Untergeräten mit gespeichertem «Ignorieren», Diagramm als Bild. Der Maintainer nimmt eventuell noch weitere Punkte dazu, bevor veröffentlicht wird.
 
 **v0.7.0 – Hauszähler** *(veröffentlicht 2026-11-04, getestet mit HA 2026.10.4 und 2026.11.0; Wunsch des Maintainers vom 2026-11-04; siehe §2 «Hauszähler» und §6)*: HAs Hauszähler (ab 2026.11) bei «Zuhause» zuweisen, ersetzen, entfernen oder aus einem Gerät machen; Hausverbrauch gemessen oder berechnet; «Nicht erfasster Verbrauch» und Warnung auf oberster Ebene; dasselbe auf der Karte. Mindestversion bleibt HA 2026.10.
 
