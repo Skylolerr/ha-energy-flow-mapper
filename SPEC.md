@@ -353,7 +353,9 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 - `quality_scale.yaml` als interne Checkliste. Ziel: Silver vollständig, Gold soweit sinnvoll
 - mypy strict für eigene Module, Ruff
 
-### Tests (`pytest-homeassistant-custom-component`)
+### Tests
+
+- Testpaket: ab HA 2026.11 das offizielle `pytest-homeassistant` von Home Assistant (CI-Job `latest`); für die Mindestversion 2026.10.0, für die es dieses Paket nicht gibt, `pytest-homeassistant-custom-component` (CI-Job `minimum`). Nie beide zusammen installieren. Die Tests holen die Hilfsmittel aus `tests/common.py`; `pyproject.toml` hat die Einstellungen aus der Anleitung von `pytest-homeassistant` (`-p no:respx`, `pythonpath`)
 
 - `hierarchy.py` zuerst und vollständig: Kreise über mehrere Ebenen, fehlende übergeordnete Geräte, Entfernen mit Hochrutschen der Kinder, **unbekannte Felder bleiben erhalten**, nicht erfasst, Plausibilitäts-Schwelle (Grenzfälle 5 % / 0,1 kWh), beide Listen getrennt
 - Quellen: bestehender Netz- bzw. Wasser-Eintrag behält Preise und `power_config`, Batterie nur als Paar, Sensor nicht gleichzeitig Quelle und Gerät, Gas bleibt unverändert
@@ -369,8 +371,8 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 ## 14. CI / Release
 
-- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy, Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren. Die HACS-Warnung «manifest has no categories» bleibt vorerst: Das Hassfest-Image der Action kennt den Manifest-Schlüssel `categories` noch nicht (Stand 2026-10-23). Sobald es ihn kennt, `"categories": ["energy"]` ergänzen.
-- **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version, damit Änderungen am Energie-Format früh auffallen.
+- **`validate.yml`** (Push + PR): hassfest, Ruff, mypy (gegen die Mindest- und die neueste HA-Version), Panel-Build mit Bundle-Check (`git diff --exit-code`). `hacs/action` mit `category: integration` ohne Ignores; der Job wird übersprungen, solange das Repo privat ist (`if: !github.event.repository.private`), statt Prüfungen zu ignorieren. Die HACS-Warnung «manifest has no categories» bleibt vorerst: Das Hassfest-Image der Action kennt den Manifest-Schlüssel `categories` noch nicht (Stand 2026-10-23). Sobald es ihn kennt, `"categories": ["energy"]` ergänzen.
+- **`tests.yml`:** pytest mit Coverage, gegen die Mindestversion **und** die neueste HA-Version (mit `pytest-homeassistant`), damit Änderungen am Energie-Format früh auffallen.
 - **`scripts/release.sh`:** erstellt den Release erst, wenn main sauber und gepusht ist, der CHANGELOG-Abschnitt existiert und Validate/Tests für den Commit grün sind; die Release-Notes sind der CHANGELOG-Abschnitt. Es baut `energy_flow_mapper.zip` aus dem Integrations-Ordner des Commits (`git archive`, Dateien zuoberst) und hängt es gleich beim Erstellen an, damit HACS nie einen Release ohne ZIP sieht.
 - **`release.yml`:** prüft Tag `vX.Y.Z` == `manifest.json` → `version` und dass CHANGELOG.md einen Abschnitt `## [X.Y.Z]` hat; hängt das ZIP nur an, wenn der Release noch keines hat (ein vorhandenes wird nie ersetzt).
 - Releases sind echte GitHub-Releases mit Changelog (Release-Notes aus dem CHANGELOG-Abschnitt der Version), auch vor 1.0 **normale Releases, keine Pre-Releases**: HACS zeigt Pre-Releases nur mit Beta-Schalter an. Der Beta-Hinweis steht im README. SemVer; vor 1.0 dürfen Minor-Releases Breaking Changes enthalten, im CHANGELOG klar markiert.

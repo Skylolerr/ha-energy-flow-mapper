@@ -17,9 +17,10 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_flow_mapper.const import DOMAIN
+
+from .common import MockConfigEntry
 
 ENERGY_PREFS: dict[str, Any] = {
     "energy_sources": [

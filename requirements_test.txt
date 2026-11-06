@@ -1,4 +1,6 @@
 # Pins Home Assistant 2026.10.0, the minimum in hacs.json; raise both together.
+# From a minimum of 2026.11 on, use pytest-homeassistant==<that version> instead
+# (never both). CI tests the latest release with pytest-homeassistant.
 pytest-homeassistant-custom-component==0.13.371
 ruff==0.17.1
 mypy==2.4.0

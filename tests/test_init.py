@@ -8,7 +8,6 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import issue_registry as ir
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper.const import (
@@ -17,6 +16,8 @@ from custom_components.energy_flow_mapper.const import (
     ISSUE_UNSUPPORTED_ENERGY_API,
     STORAGE_KEY,
 )
+
+from .common import MockConfigEntry
 
 
 async def test_setup_unload_and_remove(

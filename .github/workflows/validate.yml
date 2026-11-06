@@ -42,7 +42,14 @@ jobs:
         run: ruff check --output-format=github .
       - name: Ruff format
         run: ruff format --check .
-      - name: mypy
+      - name: mypy (Home Assistant minimum)
+        run: mypy custom_components/energy_flow_mapper
+      - name: Upgrade to the latest Home Assistant
+        # Never install both test packages together, they supply the same fixtures.
+        run: |
+          pip uninstall --yes pytest-homeassistant-custom-component
+          pip install --upgrade pytest-homeassistant
+      - name: mypy (Home Assistant latest)
         run: mypy custom_components/energy_flow_mapper
 
   panel:

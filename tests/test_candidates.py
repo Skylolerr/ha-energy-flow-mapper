@@ -9,7 +9,6 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper.candidates import (
@@ -27,6 +26,7 @@ from custom_components.energy_flow_mapper.candidates import (
 )
 from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
+from .common import MockConfigEntry
 from .conftest import ENERGY_PREFS, _meter
 
 

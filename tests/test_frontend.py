@@ -8,8 +8,6 @@ from http import HTTPStatus
 import pytest
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, DATA_PANELS
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.typing import ClientSessionGenerator
 
 from custom_components.energy_flow_mapper import frontend as frontend_module
 from custom_components.energy_flow_mapper.frontend import (
@@ -23,6 +21,8 @@ from custom_components.energy_flow_mapper.frontend import (
     card_hash,
     panel_hash,
 )
+
+from .common import ClientSessionGenerator, MockConfigEntry
 
 
 async def test_panel_registered_for_admins(

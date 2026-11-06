@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from homeassistant.core import HomeAssistant
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper.diagnostics import (
     async_get_config_entry_diagnostics,
 )
+
+from .common import MockConfigEntry
 
 
 async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -> None:

@@ -11,8 +11,6 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-from pytest_homeassistant_custom_component.typing import WebSocketGenerator
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper import energy_access
@@ -21,6 +19,7 @@ from custom_components.energy_flow_mapper import websocket as websocket_module
 from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
 from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
+from .common import MockConfigEntry, WebSocketGenerator
 from .conftest import ENERGY_PREFS
 
 pytestmark = pytest.mark.usefixtures("sensors")

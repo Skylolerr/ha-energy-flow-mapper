@@ -34,9 +34,15 @@ own repo. Never create, edit or commit files of one project in the other's folde
 - **Translations:** EN is the base (`strings.json` + `translations/en.json`), plus DE, FR, IT.
   Every new user-facing string (config flow, exceptions, repair issues, panel) must be
   added to all existing translation files in the same change.
-- **Tests are mandatory.** Every feature or bug fix comes with tests
-  (`pytest-homeassistant-custom-component`). Target ≥ 90 % coverage of the Python
-  modules. Test `hierarchy.py` changes first.
+- **Tests are mandatory.** Every feature or bug fix comes with tests. Target ≥ 90 %
+  coverage of the Python modules. Test `hierarchy.py` changes first.
+- **Test package:** Home Assistant's own `pytest-homeassistant` for HA 2026.11 and
+  newer (CI job `latest`), `pytest-homeassistant-custom-component` only for the minimum
+  version 2026.10.0, which has no `pytest-homeassistant` (`requirements_test.txt`, CI
+  job `minimum`). Never install both together. Tests import the helpers from
+  `tests/common.py`, which picks the installed package. `pyproject.toml` keeps the
+  settings the `pytest-homeassistant` docs ask for (`-p no:respx`, `pythonpath`).
+  When the minimum version is raised to 2026.11 or newer, drop the old package.
 - **Never lose energy settings.** Writes always send the complete list of each changed
   key, built from a fresh deep copy; unknown fields are passed through unchanged; a
   backup is stored before every write.
