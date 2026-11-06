@@ -1,7 +1,7 @@
 // Pure draft logic of the panel. It mirrors hierarchy.py so the tree can be
 // shown and edited before anything is sent; the backend checks again on save.
 
-import type { Change, Device, DeviceKind, HomeAssistant, Source, StatInfo } from "./types";
+import type { Change, ChildPair, Device, DeviceKind, HomeAssistant, Source, StatInfo } from "./types";
 
 /** A grid connection without costs, as the energy settings page creates it. */
 export const NEW_GRID: Source = {
@@ -214,6 +214,31 @@ export function canMove(devices: Device[], stat: string, target: string | null):
     return false;
   }
   return target === null || !subtree(devices, stat).has(target);
+}
+
+/**
+ * The child device suggestions that still apply to a draft: same list, not
+ * ignored, both devices present, not already below the parent (also through
+ * another device), and a move that is allowed (no cycle).
+ */
+export function suggestionsFor(
+  devices: Device[],
+  pairs: ChildPair[],
+  ignored: ChildPair[],
+  kind: DeviceKind,
+): ChildPair[] {
+  const known = new Set(devices.map((d) => d.stat_consumption));
+  const isIgnored = (p: ChildPair) =>
+    ignored.some((i) => i.kind === p.kind && i.stat === p.stat && i.parent === p.parent);
+  return pairs.filter(
+    (p) =>
+      p.kind === kind &&
+      !isIgnored(p) &&
+      known.has(p.stat) &&
+      known.has(p.parent) &&
+      !subtree(devices, p.parent).has(p.stat) &&
+      canMove(devices, p.stat, p.parent),
+  );
 }
 
 /** Devices `stat` can be moved under, in configuration order. */

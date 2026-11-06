@@ -97,6 +97,13 @@ export interface Issue {
   kind?: DeviceKind;
 }
 
+/** "`stat` is included in `parent`", from Home Assistant's child devices. */
+export interface ChildPair {
+  kind: DeviceKind;
+  stat: string;
+  parent: string;
+}
+
 export interface Snapshot {
   prefs: Prefs;
   hash: string;

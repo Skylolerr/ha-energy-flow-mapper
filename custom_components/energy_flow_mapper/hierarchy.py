@@ -806,6 +806,34 @@ def home_plausibility(
     return None
 
 
+def child_pairs(
+    stat_devices: Mapping[str, str | None],
+    device_parents: Mapping[str, str],
+    kind: DeviceKind,
+) -> list[dict[str, str]]:
+    """Return "included in" suggestions from Home Assistant's child devices.
+
+    `stat_devices` maps each device statistic of one list to its HA device,
+    `device_parents` a child HA device to its parent. A child statistic is
+    paired with its parent device's statistic only when that parent carries
+    exactly one statistic of the same list; otherwise it is unclear which one
+    is the total, so there is no suggestion.
+    """
+    by_device: dict[str, list[str]] = {}
+    for stat, device_id in stat_devices.items():
+        if device_id is not None:
+            by_device.setdefault(device_id, []).append(stat)
+    pairs: list[dict[str, str]] = []
+    for stat, device_id in stat_devices.items():
+        parent_device = device_parents.get(device_id) if device_id else None
+        if parent_device is None or parent_device == device_id:
+            continue
+        parent_stats = by_device.get(parent_device, [])
+        if len(parent_stats) == 1 and parent_stats[0] != stat:
+            pairs.append({"kind": kind.value, "stat": stat, "parent": parent_stats[0]})
+    return pairs
+
+
 def prefs_hash(prefs: Prefs) -> str:
     """Return a short, stable fingerprint of the preferences."""
     payload = json.dumps(

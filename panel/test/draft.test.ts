@@ -17,11 +17,12 @@ import {
   sourceKind,
   sourceRows,
   subtree,
+  suggestionsFor,
   type TreeNode,
   untracked,
   walk,
 } from "../src/draft";
-import type { Device, HomeAssistant } from "../src/types";
+import type { ChildPair, Device, HomeAssistant } from "../src/types";
 
 function device(stat: string, parent?: string, extra: Partial<Device> = {}): Device {
   return {
@@ -449,5 +450,45 @@ describe("device names like Home Assistant", () => {
     expect(displayName("a", [{ stat_consumption: "a" }], stats)).toBe("Office hub A");
     expect(displayName("b", [{ stat_consumption: "b" }], stats)).toBe("B energy");
     expect(displayName("c", [], stats)).toBe("c");
+  });
+});
+
+describe("suggestionsFor", () => {
+  const devices: Device[] = [
+    { stat_consumption: "sensor.strip" },
+    { stat_consumption: "sensor.mid", included_in_stat: "sensor.strip" },
+    { stat_consumption: "sensor.o1" },
+    { stat_consumption: "sensor.o2", included_in_stat: "sensor.mid" },
+  ];
+  const pair = (stat: string, parent: string, kind: ChildPair["kind"] = "electricity"): ChildPair => ({
+    kind,
+    stat,
+    parent,
+  });
+
+  it("keeps a valid pair", () => {
+    expect(suggestionsFor(devices, [pair("sensor.o1", "sensor.strip")], [], "electricity")).toEqual([
+      pair("sensor.o1", "sensor.strip"),
+    ]);
+  });
+
+  it("drops ignored", () => {
+    const p = pair("sensor.o1", "sensor.strip");
+    expect(suggestionsFor(devices, [p], [{ ...p }], "electricity")).toEqual([]);
+  });
+
+  it("drops already below parent (also via an intermediate device)", () => {
+    expect(suggestionsFor(devices, [pair("sensor.mid", "sensor.strip")], [], "electricity")).toEqual([]);
+    expect(suggestionsFor(devices, [pair("sensor.o2", "sensor.strip")], [], "electricity")).toEqual([]);
+  });
+
+  it("drops cycles", () => {
+    expect(suggestionsFor(devices, [pair("sensor.strip", "sensor.o2")], [], "electricity")).toEqual([]);
+  });
+
+  it("drops other kind and unknown devices", () => {
+    expect(suggestionsFor(devices, [pair("sensor.o1", "sensor.strip", "water")], [], "electricity")).toEqual([]);
+    expect(suggestionsFor(devices, [pair("sensor.gone", "sensor.strip")], [], "electricity")).toEqual([]);
+    expect(suggestionsFor(devices, [pair("sensor.o1", "sensor.gone")], [], "electricity")).toEqual([]);
   });
 });

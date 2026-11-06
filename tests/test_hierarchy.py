@@ -18,6 +18,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     Severity,
     apply_changes,
     build_tree,
+    child_pairs,
     diff,
     has_errors,
     home_consumption,
@@ -1111,3 +1112,46 @@ def test_use_as_home_meter_keeps_the_name() -> None:
             "name": "Main",
         }
     ]
+
+
+# Suggestions from child devices
+
+
+def test_child_pairs_exactly_one_parent_stat() -> None:
+    stat_devices = {"sensor.strip": "dev_strip", "sensor.outlet_1": "dev_o1"}
+    parents = {"dev_o1": "dev_strip"}
+    assert child_pairs(stat_devices, parents, DeviceKind.ELECTRICITY) == [
+        {"kind": "electricity", "stat": "sensor.outlet_1", "parent": "sensor.strip"}
+    ]
+
+
+def test_child_pairs_none_or_several_parent_stats() -> None:
+    parents = {"dev_o1": "dev_strip"}
+    none = {"sensor.outlet_1": "dev_o1"}
+    several = {
+        "sensor.strip_a": "dev_strip",
+        "sensor.strip_b": "dev_strip",
+        "sensor.outlet_1": "dev_o1",
+    }
+    assert child_pairs(none, parents, DeviceKind.ELECTRICITY) == []
+    assert child_pairs(several, parents, DeviceKind.ELECTRICITY) == []
+
+
+def test_child_pairs_ignores_devices_without_registry_device() -> None:
+    stat_devices = {"sensor.strip": "dev_strip", "sensor.external": None}
+    assert child_pairs(stat_devices, {}, DeviceKind.ELECTRICITY) == []
+
+
+def test_child_pairs_other_list_parent() -> None:
+    # The parent HA device only carries a water meter: no electricity pair.
+    electricity = {"sensor.outlet_1": "dev_o1"}
+    water = {"sensor.water": "dev_strip"}
+    parents = {"dev_o1": "dev_strip"}
+    assert child_pairs(electricity, parents, DeviceKind.ELECTRICITY) == []
+    assert child_pairs(water, parents, DeviceKind.WATER) == []
+
+
+def test_child_pairs_never_itself() -> None:
+    # A child device whose parent is its own device (broken registry data).
+    stat_devices = {"sensor.outlet_1": "dev_o1"}
+    assert child_pairs(stat_devices, {"dev_o1": "dev_o1"}, DeviceKind.WATER) == []
