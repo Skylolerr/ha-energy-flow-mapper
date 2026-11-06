@@ -14,6 +14,8 @@ export interface ExportBlock {
   area: string | null;
   color: string;
   warn: boolean;
+  /** The sub names a sensor (a late home meter); hidden with the names. */
+  named?: boolean;
 }
 
 export interface ExportEdge {
@@ -113,7 +115,7 @@ export function anonymize(blocks: ExportBlock[], deviceLabel: (n: number) => str
     if (n !== undefined) {
       return { ...b, title: deviceLabel(n), area: null };
     }
-    if (b.block.kind === "source") {
+    if (b.block.kind === "source" || b.named) {
       return { ...b, sub: null, area: null };
     }
     return { ...b, area: null };

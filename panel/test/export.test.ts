@@ -97,3 +97,10 @@ describe("exportScale", () => {
     expect(scale).toBeGreaterThan(0);
   });
 });
+
+describe("anonymize texts that name a sensor", () => {
+  it("drops a sub marked as naming a sensor", () => {
+    const home: ExportBlock = { block: LAYOUT.blocks[1], title: "Home", sub: "Main meter: data not recent enough", area: null, color: "#727272", warn: false, named: true };
+    expect(anonymize([home], (n) => `Device ${n}`)[0].sub).toBeNull();
+  });
+});

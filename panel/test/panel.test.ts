@@ -2173,6 +2173,30 @@ describe("save as image", () => {
     expect(svg).toContain("Grid import");
   });
 
+  it("hides the meter name of a late home meter", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.home_supported = true;
+    snap.prefs.energy_sources.push({ type: "home", stat_energy_to: "sensor.main" });
+    snap.stats["sensor.main"] = info("sensor.main", "Main meter");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.responses["energy_flow_mapper/energy"] = (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-10-17T00:00:00+02:00",
+      end: "2026-10-23T15:00:00+02:00",
+      energy: {},
+      untracked: {},
+      issues: [],
+      home: { value: null, basis: null, stale: "sensor.main", untracked: null },
+    });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const { toPng } = capture(el);
+    await save(el, true);
+    expect(toPng.mock.calls[0][0]).not.toContain("Main meter");
+  });
+
   it("marks a draft that is not saved", async () => {
     const el = await mount(mockHass());
     const { toPng } = capture(el);

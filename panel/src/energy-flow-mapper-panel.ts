@@ -1234,7 +1234,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       block.kind === "source" || block.kind === "placeholder"
         ? (SOURCE_COLORS[block.role ?? ""] ?? "var(--divider-color, #e0e0e0)")
         : "var(--secondary-text-color, #727272)";
-    return { block, title, sub: subs.join(" · ") || null, area: null, color: this._cssColor(color), warn };
+    // A late home meter is named in the text of Home.
+    const named = block.kind === "home" && this._home()?.stale != null;
+    return { block, title, sub: subs.join(" · ") || null, area: null, color: this._cssColor(color), warn, named };
   }
 
   /** Save the whole diagram of this tab as a PNG, optionally without names. */
