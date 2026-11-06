@@ -604,15 +604,24 @@ async def _async_home(
 
 
 async def _async_card_validation(
-    hass: HomeAssistant, runtime: EnergyFlowMapperData
+    hass: HomeAssistant, runtime: EnergyFlowMapperData, prefs: Prefs
 ) -> dict[str, Any] | None:
-    """Return HA's energy validation, at most once a minute for all cards."""
+    """Return HA's energy validation, at most once a minute for all cards.
+
+    The result is indexed like the energy settings, so a change of them
+    (another device order) asks again at once.
+    """
     now = monotonic()
+    current = prefs_hash(prefs)
     cache = runtime.validation_cache
-    if cache is not None and now - cache[0] < CARD_VALIDATION_SECONDS:
-        return cache[1]
+    if (
+        cache is not None
+        and cache[1] == current
+        and now - cache[0] < CARD_VALIDATION_SECONDS
+    ):
+        return cache[2]
     validation = await energy_access.async_validation(hass)
-    runtime.validation_cache = (now, validation)
+    runtime.validation_cache = (now, current, validation)
     return validation
 
 
@@ -685,7 +694,7 @@ async def websocket_card(
         "home_supported": energy_access.home_supported(),
     }
     allowed = stats | {rate for d in devices if isinstance(rate := d.get(RATE), str)}
-    validation = await _async_card_validation(hass, runtime)
+    validation = await _async_card_validation(hass, runtime, prefs)
     result["ha_issues"] = card_ha_issues(
         ha_issues(prefs, validation or {}, _issues(hass, prefs)), allowed
     )

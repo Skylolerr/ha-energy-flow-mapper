@@ -36,6 +36,8 @@ export interface ExportOptions {
 export const FOOTER_H = 40;
 /** Largest canvas side browsers reliably draw. */
 export const MAX_CANVAS = 16384;
+/** Largest canvas area iOS (Safari, the Companion app) draws, in pixels. */
+export const MAX_AREA = 16_777_216;
 
 const FONT = "Roboto, Noto, system-ui, sans-serif";
 
@@ -124,7 +126,9 @@ export function anonymize(blocks: ExportBlock[], deviceLabel: (n: number) => str
 
 /** The scale of the PNG: 2× for sharpness, less where the canvas would be too big. */
 export function exportScale(width: number, height: number, scale = 2): number {
-  return Math.min(scale, MAX_CANVAS / Math.max(width, 1), MAX_CANVAS / Math.max(height, 1));
+  const w = Math.max(width, 1);
+  const h = Math.max(height, 1);
+  return Math.min(scale, MAX_CANVAS / w, MAX_CANVAS / h, Math.sqrt(MAX_AREA / (w * h)) * 0.999);
 }
 
 /** Turn the SVG into a PNG in the browser. */

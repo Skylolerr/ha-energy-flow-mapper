@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import sys
 from typing import Any
 from unittest.mock import patch
 
@@ -156,3 +158,29 @@ async def test_async_validation_without_recorder(hass: HomeAssistant) -> None:
     """The test HA has no recorder; the real validation then gives None."""
     energy_access._LOGGED.clear()
     assert await energy_access.async_validation(hass) is None
+
+
+async def test_async_validation_failure_is_logged_quietly(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A recorder that is not ready yet is no reason for a warning."""
+    energy_access._LOGGED.clear()
+    caplog.set_level(logging.DEBUG)
+    with patch.object(energy_validate, "async_validate", side_effect=KeyError("x")):
+        assert await energy_access.async_validation(hass) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert any("energy validation" in r.getMessage() for r in caplog.records)
+
+
+async def test_async_validation_without_the_module(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A release without energy.validate gives no messages instead of failing."""
+    energy_access._LOGGED.clear()
+    # Imported only when needed, so a moved module cannot stop the integration.
+    assert not hasattr(energy_access, "energy_validate")
+    monkeypatch.setitem(sys.modules, "homeassistant.components.energy.validate", None)
+    monkeypatch.delattr(sys.modules["homeassistant.components.energy"], "validate")
+    with patch.object(energy_validate, "async_validate", return_value=None) as check:
+        assert await energy_access.async_validation(hass) is None
+    check.assert_not_called()

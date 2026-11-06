@@ -29,8 +29,9 @@ class EnergyFlowMapperData:
     supported: bool
     card_url: str
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # HA's energy validation for the cards: (monotonic time, result).
-    validation_cache: tuple[float, dict[str, Any] | None] | None = None
+    # HA's energy validation for the cards: (monotonic time, hash of the
+    # energy settings it belongs to, result).
+    validation_cache: tuple[float, str, dict[str, Any] | None] | None = None
 
 
 type EnergyFlowMapperConfigEntry = ConfigEntry[EnergyFlowMapperData]

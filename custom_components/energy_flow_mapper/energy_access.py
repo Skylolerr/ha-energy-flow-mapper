@@ -14,7 +14,6 @@ from typing import Any
 
 import probatio as vol
 from homeassistant.components.energy import data as energy_data
-from homeassistant.components.energy import validate as energy_validate
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
@@ -146,6 +145,12 @@ async def async_validation(hass: HomeAssistant) -> dict[str, Any] | None:
     extra information and must never break the panel or the card.
     """
     try:
+        # Imported here: a release that moves HA's check must not stop the
+        # integration from loading, it only loses these messages.
+        from homeassistant.components.energy import (  # noqa: PLC0415
+            validate as energy_validate,
+        )
+
         result = (await energy_validate.async_validate(hass)).as_dict()
         return {
             key: [[_plain_issue(issue) for issue in issues] for issues in lists]
@@ -154,7 +159,9 @@ async def async_validation(hass: HomeAssistant) -> dict[str, Any] | None:
     except Exception:
         if "validation" not in _LOGGED:
             _LOGGED.add("validation")
-            _LOGGER.warning(
+            # Usually the recorder is not ready yet after a restart; the
+            # messages are extra information, so this is no warning.
+            _LOGGER.debug(
                 "Home Assistant's energy validation failed; its messages are not shown",
                 exc_info=True,
             )

@@ -1292,8 +1292,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       const png = await this._toPng(svg, result.width, result.height + FOOTER_H);
       downloadBlob(`energy-flow-mapper-${this._tab}-${fileStamp(now).slice(0, 10)}.png`, png);
       this._close();
-    } catch (err) {
-      this._showToast(errorText(this.hass, err));
+    } catch {
+      this._showToast(this._t("export_failed"));
     }
   }
 

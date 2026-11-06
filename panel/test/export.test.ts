@@ -104,3 +104,12 @@ describe("anonymize texts that name a sensor", () => {
     expect(anonymize([home], (n) => `Device ${n}`)[0].sub).toBeNull();
   });
 });
+
+describe("canvas area limit", () => {
+  it("keeps the PNG below the canvas area iOS can draw", async () => {
+    const { MAX_AREA } = await import("../src/export");
+    const scale = exportScale(7300, 640);
+    expect(7300 * scale * 640 * scale).toBeLessThanOrEqual(MAX_AREA);
+    expect(exportScale(1000, 800)).toBe(2);
+  });
+});

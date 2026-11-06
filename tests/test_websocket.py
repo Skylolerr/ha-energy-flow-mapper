@@ -1754,3 +1754,19 @@ async def test_card_validation_cached(
         for _ in range(3):
             await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
     assert validation.call_count == 1
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_validation_cache_follows_the_settings(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """After a change of the energy settings the cards check again at once."""
+    with patch.object(
+        energy_access, "async_validation", return_value=_validation()
+    ) as validation:
+        await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+        await energy_access.async_write(
+            hass, {"device_consumption": ENERGY_PREFS["device_consumption"][1:]}
+        )
+        await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert validation.call_count == 2

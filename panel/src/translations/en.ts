@@ -122,6 +122,7 @@ export const en = {
   export_device: "Device {n}",
   export_footer: "Energy Flow Mapper · {tab} · {period} · {time}",
   export_draft: "Draft, not saved",
+  export_failed: "The image could not be created. Try the vertical view or a smaller part of the diagram.",
   backups_title: "Backups",
   backups_empty: "No backups yet. One is created before every save.",
   backup_by: "by {user}",
