@@ -1877,6 +1877,8 @@ describe("home meter", () => {
     expect(localStorage.getItem("energy_flow_mapper.coverage")).toBe("off");
     document.body.innerHTML = "";
     const again = await mount(mock);
+    again.setPeriod("week");
+    await settle(again);
     expect(buttonWith(again, "Coverage").getAttribute("aria-pressed")).toBe("false");
   });
 
@@ -1888,6 +1890,21 @@ describe("home meter", () => {
     el.setPeriod("week");
     await settle(el);
     expect(root(el).querySelector(".block.home")!.textContent).toContain("over 100% covered by devices");
+  });
+
+  it("offers the coverage switch only when there is a coverage to show", async () => {
+    localStorage.clear();
+    const mock = homeMock(true, WITH_HOME);
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: null, basis: null, stale: null, untracked: null });
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    const hasToggle = () => [...root(el).querySelectorAll("button")].some((b) => b.textContent!.includes("Coverage"));
+    expect(hasToggle()).toBe(false);
+    mock.responses["energy_flow_mapper/energy"] = energy({ value: 20, basis: "measured", stale: null, untracked: 7 });
+    el.setPeriod("month");
+    await settle(el);
+    expect(hasToggle()).toBe(true);
   });
 
   it("shows no coverage in the water tab", async () => {
@@ -2019,6 +2036,20 @@ describe("Home Assistant's checks", () => {
     );
   });
 
+  it("shows the messages of a grid connection with only a power sensor at grid import", async () => {
+    const mock = withHa(mockHass(), [unavailable("sensor.grid_power")]);
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.prefs.energy_sources = [
+      { type: "grid", stat_energy_from: null, stat_energy_to: null, power_config: { stat_rate: "sensor.grid_power" } },
+    ] as Snapshot["prefs"]["energy_sources"];
+    const el = await mount(mock);
+    const placeholder = root(el).querySelector('.block.placeholder[data-role="import"]') as HTMLElement;
+    expect(placeholder.querySelector(".badge")!.getAttribute("title")).toBe("Entity unavailable");
+    placeholder.click();
+    await settle(el);
+    expect(text(el)).toContain("Home Assistant reports");
+  });
+
   it("ignores messages of the other tab", async () => {
     const el = await mount(withHa(mockHass(), [{ ...unavailable("sensor.tv"), kind: "water" }]));
     expect(node(el, "sensor.tv").querySelector(".badge")).toBeNull();
@@ -2089,7 +2120,11 @@ describe("suggestions from child devices", () => {
     expect(el._changes).toEqual([]);
     buttonWith(el, "Show ignored suggestions again").click();
     await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/clear_suggestions")).toBeDefined();
+    // Only the ignores of this tab come back.
+    expect(lastCall(mock, "energy_flow_mapper/clear_suggestions")).toEqual({
+      type: "energy_flow_mapper/clear_suggestions",
+      kind: "electricity",
+    });
     expect(node(el, "sensor.tv").classList.contains("suggested")).toBe(true);
   });
 
@@ -2109,6 +2144,23 @@ describe("suggestions from child devices", () => {
   it("does not suggest what the tree already shows", async () => {
     const el = await mount(withPairs([pair("sensor.sonos", "sensor.server")]));
     expect(root(el).querySelector(".suggested")).toBeNull();
+  });
+
+  it("suggests a meter the draft adds as a device", async () => {
+    const el = await mount(withPairs([pair("sensor.attic", "sensor.server")]));
+    expect(el._suggestions()).toEqual([]);
+    el._change({ type: "add", stat: "sensor.attic" });
+    await settle(el);
+    expect(node(el, "sensor.attic").classList.contains("suggested")).toBe(true);
+  });
+
+  it("checks the draft once when applying all suggestions", async () => {
+    const mock = withPairs([pair("sensor.tv", "sensor.server"), pair("sensor.lamp", "sensor.server")]);
+    const el = await mount(mock);
+    buttonWith(el, "Apply all suggestions").click();
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/validate")).toHaveLength(1);
   });
 });
 

@@ -512,6 +512,11 @@ describe("card editor", () => {
     expect(form.data.root).toBe("");
   });
 
+  it("offers the coverage only for electricity", async () => {
+    const el = await editor({ kind: "water" });
+    expect(el.schema().map((f) => f.name)).not.toContain("show_coverage");
+  });
+
   it("reports changes; another list drops the device", async () => {
     const el = await editor({ kind: "electricity", root: "sensor.server", title: "Home" });
     const changes: Record<string, unknown>[] = [];

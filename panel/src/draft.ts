@@ -353,6 +353,15 @@ export function sourceKind(source: Source): DeviceKind {
   return source.type === "water" ? "water" : "electricity";
 }
 
+const POWER_CONFIG_KEYS = ["stat_rate", "stat_rate_inverted", "stat_rate_from", "stat_rate_to"] as const;
+
+/** Power sensors of a source: `stat_rate`, then those of `power_config`. */
+export function powerStats(source: Source): string[] {
+  const config = source.power_config as Record<string, unknown> | null | undefined;
+  const values: unknown[] = [source.stat_rate, ...POWER_CONFIG_KEYS.map((key) => config?.[key])];
+  return values.filter((value): value is string => typeof value === "string");
+}
+
 /** One row per energy statistic of the sources (of one tab, if `kind` is given). */
 export function sourceRows(sources: Source[], kind?: DeviceKind): SourceRow[] {
   const rows: SourceRow[] = [];

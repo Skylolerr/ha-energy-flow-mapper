@@ -726,7 +726,8 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       },
       { name: "show_sources", selector: { boolean: {} } },
       { name: "show_untracked", selector: { boolean: {} } },
-      { name: "show_coverage", selector: { boolean: {} } },
+      // Coverage is measured against the home consumption: electricity only.
+      ...(this._config?.kind === "water" ? [] : [{ name: "show_coverage", selector: { boolean: {} } }]),
     ];
   }
 

@@ -8,6 +8,7 @@ import {
   canMove,
   displayName,
   homeNow,
+  powerStats,
   suggestionsFor,
   moveTargets,
   rateValue,
@@ -550,15 +551,24 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** Put a device below the device Home Assistant names as its parent. */
   _applySuggestion(pair: ChildPair): void {
-    this._change({ type: "move", stat: pair.stat, parent: pair.parent, ...this._kind() });
+    this._change(this._suggestionChange(pair));
   }
 
-  /** Apply every suggestion that still fits after the ones before it. */
+  private _suggestionChange(pair: ChildPair): Change {
+    return { type: "move", stat: pair.stat, parent: pair.parent, ...this._kind() };
+  }
+
+  /** Apply every suggestion that still fits after the ones before it, checked once. */
   _applyAllSuggestions(): void {
+    const before = this._changes.length;
     for (const pair of this._suggestions()) {
       if (suggestionsFor(this.draft, [pair], this._ignored, this._tab).length) {
-        this._applySuggestion(pair);
+        this._changes = [...this._changes, this._suggestionChange(pair)];
       }
+    }
+    if (this._changes.length > before) {
+      void this._validate();
+      void this._loadEnergy();
     }
   }
 
@@ -580,13 +590,16 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Show every ignored suggestion again. */
+  /** Show the ignored suggestions of this tab again. */
   async _clearIgnored(): Promise<void> {
     if (!this.hass) {
       return;
     }
     try {
-      const result = await this.hass.callWS<{ ignored: ChildPair[] }>({ type: `${DOMAIN}/clear_suggestions` });
+      const result = await this.hass.callWS<{ ignored: ChildPair[] }>({
+        type: `${DOMAIN}/clear_suggestions`,
+        kind: this._tab,
+      });
       this._ignored = result.ignored;
     } catch (err) {
       this._showToast(errorText(this.hass, err));
@@ -596,6 +609,13 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Home Assistant's own check messages for a block in the current tab. */
   private _haIssuesFor(stat: string): HaIssue[] {
     return (this._snapshot?.ha_issues ?? []).filter((issue) => issue.stat === stat && issue.kind === this._tab);
+  }
+
+  /** Power sensors of grid connections without an energy meter (shown at grid import). */
+  private _powerOnlyGridStats(): string[] {
+    return this.draftSources
+      .filter((s) => s.type === "grid" && !s.stat_energy_from && !s.stat_energy_to)
+      .flatMap((s) => powerStats(s));
   }
 
   /** Every message of a block, ours first, as badge tooltip. */
@@ -1562,7 +1582,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                   ${icon("lightbulb")} ${this._t("suggestion_apply_all")}
                 </button>`
               : nothing}
-            ${this._tab === "electricity"
+            ${this._tab === "electricity" && (this._coverageRatio() !== null || this._energyLoading())
               ? html`<button
                   class="coverage-toggle ${this._coverage ? "active" : ""}"
                   aria-pressed=${String(this._coverage)}
@@ -1618,7 +1638,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               </button>`
             : nothing}
           ${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}
-          ${this._period !== "now" && this._energy === null
+          ${this._energyLoading()
             ? html`<span class="loading">${this._t("energy_loading")}</span>`
             : nothing}
         </p>
@@ -1735,10 +1755,21 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (value === null) {
       return nothing;
     }
-    const ratio = this._coverage && home?.value != null ? coverage(home.value, this._tops()) : null;
+    const ratio = this._coverage ? this._coverageRatio() : null;
     return html`<span class="sub">${this._t(key, { power: this._formatValue(value) })}</span>${ratio === null
         ? nothing
         : html`<span class="sub coverage">${coverageText(this.hass, ratio)}</span>`}`;
+  }
+
+  /** Share of Home the top-level devices cover, or null without one. */
+  private _coverageRatio(): number | null {
+    const home = this._home();
+    return home?.value != null && !home.stale ? coverage(home.value, this._tops()) : null;
+  }
+
+  /** Whether the energy of the chosen period is still being loaded. */
+  private _energyLoading(): boolean {
+    return this._period !== "now" && this._energy === null;
   }
 
   /** Values of the top-level devices of the draft. */
@@ -1793,6 +1824,11 @@ export class EnergyFlowMapperPanel extends LitElement {
             : this._t(`role_${role}` as StringKey);
         const assign = assignRole(role);
         const key = assign ? `${SOURCE_TARGET}${assign}:${block.id}` : null;
+        const haStats = block.stat
+          ? [block.stat]
+          : block.kind === "placeholder" && role === "import"
+            ? this._powerOnlyGridStats()
+            : [];
         const drop = key ? this._dragHandlers(key) : null;
         return html`<button
           class="block source ${block.kind} ${key && this._dropTarget === key ? "drop" : ""} ${key &&
@@ -1820,8 +1856,10 @@ export class EnergyFlowMapperPanel extends LitElement {
               ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
               : nothing}
           </div>
-          ${block.stat && this._haIssuesFor(block.stat).length
-            ? html`<span class="badge" title=${this._badgeTitle(block.stat, [])}>!</span>`
+          ${haStats.some((stat) => this._haIssuesFor(stat).length)
+            ? html`<span class="badge" title=${haStats.map((stat) => this._badgeTitle(stat, [])).filter(Boolean).join("\n")}
+                >!</span
+              >`
             : nothing}
         </button>`;
       }
@@ -2642,6 +2680,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "assign":
         return html`<h2>${this._t("assign_title", { role: this._roleLabel(dialog.role) })}</h2>
           <p class="hint">${this._t(dialog.role === "water" ? "assign_hint_water" : "assign_hint")}</p>
+          ${dialog.role === "import" ? this._powerOnlyGridStats().map((stat) => this._renderHaIssues(stat)) : nothing}
           ${this._sensorList([], (stat) => this._assign(dialog.role, stat, dialog.replace ?? null))}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
