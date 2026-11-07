@@ -11,6 +11,12 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-11-07
+
+> **Highlight:** see at a glance what is wrong and what is missing – Home Assistant's own
+> checks right at the device, how much of Home your devices cover, and suggestions where
+> they belong. Save the diagram as an image to share it.
+
 ### ✨ Added
 
 - **Home Assistant's own checks at the block:** what Home Assistant's energy settings
@@ -26,6 +32,13 @@ and Home Assistant show when they offer the update.
   count, never how a device is connected.
 - **Save as image:** the whole diagram of the tab as a PNG, with the period and the date;
   *Hide names* turns devices into *Device 1, 2, …* and leaves out areas and sensor names.
+
+### 🐛 Fixed
+
+- Without a home meter, Home no longer shows a negative sum of the devices (for example
+  after a meter was reset); it shows no measured value instead.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.0 · minimum 2026.10.0*
 
 ## [0.7.0] - 2026-11-04
 
