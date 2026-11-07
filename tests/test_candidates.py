@@ -480,3 +480,34 @@ async def test_child_pairs_via_device_ignored(hass: HomeAssistant) -> None:
         ],
     }
     assert async_child_pairs(hass, prefs) == []
+
+
+async def test_child_pairs_with_free_meters(hass: HomeAssistant) -> None:
+    """A free meter of a child device gets a pair, so a draft can use it."""
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    strip = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "strip")}, name="Strip"
+    )
+    outlet = devices.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "outlet_1")},
+        parent_device_id=strip.id,
+        name="Outlet 1",
+    )
+    _meter(hass, "sensor.strip_energy", device_id=strip.id)
+    _meter(hass, "sensor.outlet_1_energy", device_id=outlet.id)
+    prefs = {
+        "energy_sources": [],
+        "device_consumption": [{"stat_consumption": "sensor.strip_energy"}],
+        "device_consumption_water": [],
+    }
+    free = {DeviceKind.ELECTRICITY: ["sensor.outlet_1_energy"]}
+    assert async_child_pairs(hass, prefs, free) == [
+        {
+            "kind": "electricity",
+            "stat": "sensor.outlet_1_energy",
+            "parent": "sensor.strip_energy",
+        }
+    ]

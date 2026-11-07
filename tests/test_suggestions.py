@@ -75,3 +75,18 @@ async def test_load_skips_broken_content(
     other = SuggestionStore(hass)
     await other.async_load()
     assert other.ignored() == []
+
+
+async def test_clear_one_kind(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Clearing one tab keeps the ignores of the other one."""
+    store = SuggestionStore(hass)
+    await store.async_load()
+    water = {"kind": "water", "stat": "sensor.tap", "parent": "sensor.main"}
+    known = {*KNOWN, ("water", "sensor.tap"), ("water", "sensor.main")}
+    await store.async_ignore(PAIR, known)
+    await store.async_ignore(water, known)
+    await store.async_clear("water")
+    assert store.ignored() == [PAIR]
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {"ignored": [PAIR]}

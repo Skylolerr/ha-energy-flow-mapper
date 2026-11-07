@@ -408,20 +408,26 @@ def async_mark_created(
 
 
 @callback
-def async_child_pairs(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, str]]:
+def async_child_pairs(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    free: Mapping[DeviceKind, Collection[str]] | None = None,
+) -> list[dict[str, str]]:
     """Return "included in" suggestions from Home Assistant's child devices.
 
-    Only the child device link (`parent_device_id`) counts; `via_device_id`
-    describes how Home Assistant reaches a device, not where its energy flows.
+    `free` are the free meters per list, so a meter that a draft adds as a
+    device gets its suggestion too. Only the child device link
+    (`parent_device_id`) counts; `via_device_id` describes how Home Assistant
+    reaches a device, not where its energy flows.
     """
     entities = er.async_get(hass)
     devices = dr.async_get(hass)
     pairs: list[dict[str, str]] = []
     for kind, key in DEVICE_KEYS.items():
+        saved = [device[STAT] for device in prefs.get(key, [])]
         stat_devices: dict[str, str | None] = {}
         parents: dict[str, str] = {}
-        for device in prefs.get(key, []):
-            stat = device[STAT]
+        for stat in [*saved, *(free or {}).get(kind, [])]:
             entry = entities.async_get(stat)
             device_id = entry.device_id if entry is not None else None
             stat_devices[stat] = device_id
@@ -429,5 +435,5 @@ def async_child_pairs(hass: HomeAssistant, prefs: Prefs) -> list[dict[str, str]]
             parent = getattr(registry_device, "parent_device_id", None)
             if device_id and isinstance(parent, str):
                 parents[device_id] = parent
-        pairs.extend(child_pairs(stat_devices, parents, kind))
+        pairs.extend(child_pairs(stat_devices, parents, kind, set(saved)))
     return pairs

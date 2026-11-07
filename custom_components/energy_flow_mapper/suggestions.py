@@ -63,9 +63,11 @@ class SuggestionStore:
         ]
         await self._async_save()
 
-    async def async_clear(self) -> None:
-        """Show every suggestion again."""
-        self._ignored = []
+    async def async_clear(self, kind: str | None = None) -> None:
+        """Show the suggestions of `kind` again, or all of them."""
+        self._ignored = [
+            p for p in self._ignored if kind is not None and p["kind"] != kind
+        ]
         await self._async_save()
 
     async def async_remove(self) -> None:

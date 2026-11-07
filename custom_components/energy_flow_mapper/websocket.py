@@ -281,7 +281,14 @@ async def websocket_get(
             "issues": [issue.as_dict() for issue in issues],
             "home_supported": energy_access.home_supported(),
             "ha_issues": ha_issues(prefs, validation or {}, issues),
-            "child_pairs": async_child_pairs(hass, prefs),
+            "child_pairs": async_child_pairs(
+                hass,
+                prefs,
+                {
+                    DeviceKind.ELECTRICITY: [c["stat"] for c in candidates],
+                    DeviceKind.WATER: [c["stat"] for c in water],
+                },
+            ),
             "ignored_suggestions": runtime.suggestions.ignored(),
         },
     )
@@ -846,10 +853,15 @@ async def websocket_ignore_suggestion(
     """Stop suggesting `stat` below `parent`; returns the ignored list."""
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
+    # Devices and free meters: a draft may add a free meter as a device.
     known = {
         (kind.value, device[STAT])
         for kind, key in DEVICE_KEYS.items()
         for device in prefs.get(key, [])
+    } | {
+        (kind.value, candidate["stat"])
+        for kind in DEVICE_KEYS
+        for candidate in async_candidates(hass, prefs, kind)
     }
     await runtime.suggestions.async_ignore(
         {"kind": msg[ATTR_KIND], "stat": msg["stat"], "parent": msg["parent"]}, known
@@ -857,13 +869,18 @@ async def websocket_ignore_suggestion(
     connection.send_result(msg["id"], {"ignored": runtime.suggestions.ignored()})
 
 
-@websocket_command({vol.Required("type"): f"{DOMAIN}/clear_suggestions"})
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/clear_suggestions",
+        vol.Optional(ATTR_KIND): _KINDS,
+    }
+)
 @require_admin
 @async_response
 async def websocket_clear_suggestions(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Show every ignored suggestion again."""
+    """Show the ignored suggestions of one list (or all) again."""
     runtime = _runtime(hass)
-    await runtime.suggestions.async_clear()
-    connection.send_result(msg["id"], {"ignored": []})
+    await runtime.suggestions.async_clear(msg.get(ATTR_KIND))
+    connection.send_result(msg["id"], {"ignored": runtime.suggestions.ignored()})

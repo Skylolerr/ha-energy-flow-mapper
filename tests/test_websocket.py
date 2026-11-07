@@ -11,6 +11,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
@@ -22,7 +23,7 @@ from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
 from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
 from .common import MockConfigEntry, WebSocketGenerator
-from .conftest import ENERGY_PREFS
+from .conftest import ENERGY_PREFS, _meter
 
 pytestmark = pytest.mark.usefixtures("sensors")
 
@@ -1643,6 +1644,11 @@ async def test_ignore_and_clear_suggestions(
     assert response["success"]
     assert response["result"] == {"ignored": [pair]}
 
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions", kind="water"
+    )
+    assert response["result"] == {"ignored": [pair]}
+
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions")
     assert response["result"] == {"ignored": []}
 
@@ -1838,3 +1844,33 @@ async def test_card_validation_runs_once_for_simultaneous_cards(
         for _ in range(5):
             assert (await client.receive_json())["success"]
     assert calls == 1
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_suggestion_for_a_free_meter(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A free meter of a child device is suggested and can be ignored."""
+    main_device = er.async_get(hass).async_get("sensor.main_energy").device_id
+    devices = dr.async_get(hass)
+    # A child device belongs to the config entry of its parent.
+    entry_id = devices.async_get(main_device).config_entry_id
+    outlet = devices.async_get_or_create_child(
+        config_entry_id=entry_id,
+        identifiers={("test", "outlet")},
+        parent_device_id=main_device,
+        name="Outlet",
+    )
+    _meter(hass, "sensor.outlet_energy", device_id=outlet.id)
+    pair = {
+        "kind": "electricity",
+        "stat": "sensor.outlet_energy",
+        "parent": "sensor.main_energy",
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["child_pairs"] == [pair]
+
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/ignore_suggestion", **pair
+    )
+    assert response["result"] == {"ignored": [pair]}

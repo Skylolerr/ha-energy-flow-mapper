@@ -1155,6 +1155,35 @@ def test_child_pairs_other_list_parent() -> None:
     assert child_pairs(water, parents, DeviceKind.WATER) == []
 
 
+def test_child_pairs_free_child_below_saved_parent() -> None:
+    # A free meter (new in a draft) below a device: only the saved meter of the
+    # parent device counts, a second free meter there does not make it unclear.
+    stat_devices = {
+        "sensor.strip": "dev_strip",
+        "sensor.strip_return": "dev_strip",
+        "sensor.outlet_1": "dev_o1",
+    }
+    parents = {"dev_o1": "dev_strip"}
+    assert child_pairs(
+        stat_devices, parents, DeviceKind.ELECTRICITY, saved={"sensor.strip"}
+    ) == [{"kind": "electricity", "stat": "sensor.outlet_1", "parent": "sensor.strip"}]
+
+
+def test_child_pairs_free_parent_only_when_unique() -> None:
+    # Without a saved meter on the parent device, its one free meter counts.
+    parents = {"dev_o1": "dev_strip"}
+    one = {"sensor.strip": "dev_strip", "sensor.outlet_1": "dev_o1"}
+    two = {
+        "sensor.strip_a": "dev_strip",
+        "sensor.strip_b": "dev_strip",
+        "sensor.outlet_1": "dev_o1",
+    }
+    assert child_pairs(one, parents, DeviceKind.ELECTRICITY, saved=set()) == [
+        {"kind": "electricity", "stat": "sensor.outlet_1", "parent": "sensor.strip"}
+    ]
+    assert child_pairs(two, parents, DeviceKind.ELECTRICITY, saved=set()) == []
+
+
 def test_child_pairs_never_itself() -> None:
     # A child device whose parent is its own device (broken registry data).
     stat_devices = {"sensor.outlet_1": "dev_o1"}
@@ -1369,3 +1398,39 @@ def test_ha_issues_missing_entity_covered_by_own_check() -> None:
     )
     own = [Issue(IssueCode.STATISTIC_MISSING, Severity.ERROR, "sensor.fridge")]
     assert ha_issues(HA_PREFS, validation, own) == []
+
+
+def test_ha_issues_power_only_grid_goes_to_its_power_sensor() -> None:
+    """A grid connection with only power sensors shows HA's messages there."""
+    prefs = {
+        "energy_sources": [
+            {
+                "type": "grid",
+                "stat_energy_from": None,
+                "stat_energy_to": None,
+                "power_config": {
+                    "stat_rate_from": "sensor.grid_power_in",
+                    "stat_rate_to": "sensor.grid_power_out",
+                },
+            },
+            {"type": "grid", "stat_rate": "sensor.grid_2_power"},
+            {"type": "grid", "stat_energy_from": None},
+        ]
+    }
+    validation = {
+        "energy_sources": [
+            [
+                _issue("entity_unavailable", [["sensor.grid_power_out", None]]),
+                _issue("entity_not_numeric", []),
+            ],
+            [_issue("entity_unavailable", [["sensor.grid_2_power", None]])],
+            [_issue("entity_unavailable", [])],
+        ]
+    }
+    assert [
+        (i["stat"], i["kind"], i["type"]) for i in ha_issues(prefs, validation, [])
+    ] == [
+        ("sensor.grid_power_out", "electricity", "entity_unavailable"),
+        ("sensor.grid_power_in", "electricity", "entity_not_numeric"),
+        ("sensor.grid_2_power", "electricity", "entity_unavailable"),
+    ]

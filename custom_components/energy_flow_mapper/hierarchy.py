@@ -268,6 +268,15 @@ def source_kind(source: Mapping[str, Any]) -> DeviceKind:
     return DeviceKind.WATER if source.get("type") == "water" else DeviceKind.ELECTRICITY
 
 
+# The sensors of a grid connection's `power_config`, in HA's order.
+POWER_CONFIG_KEYS: Final = (
+    "stat_rate",
+    "stat_rate_inverted",
+    "stat_rate_from",
+    "stat_rate_to",
+)
+
+
 def source_roles(sources: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
     """Return (role, statistic) for every energy statistic of the sources."""
     return [
@@ -276,6 +285,15 @@ def source_roles(sources: Sequence[Mapping[str, Any]]) -> list[tuple[str, str]]:
         for key, role in SOURCE_ROLES.get(source.get("type", ""), {}).items()
         if isinstance(value := source.get(key), str)
     ]
+
+
+def power_stats(source: Mapping[str, Any]) -> list[str]:
+    """Return the power sensors of a source: `stat_rate`, then `power_config`."""
+    config = source.get("power_config")
+    values = [source.get("stat_rate")]
+    if isinstance(config, Mapping):
+        values += [config.get(key) for key in POWER_CONFIG_KEYS]
+    return [value for value in values if isinstance(value, str)]
 
 
 def used_stats(prefs: Prefs) -> set[str]:
@@ -876,7 +894,7 @@ def _ha_targets(
         if index >= len(sources):
             continue
         source = sources[index]
-        blocks = [stat for _, stat in source_roles([source])]
+        blocks = [stat for _, stat in source_roles([source])] or power_stats(source)
         if blocks:
             targets.append((source_kind(source).value, blocks[0], blocks, issues))
     for device_kind, key in DEVICE_KEYS.items():
@@ -944,19 +962,26 @@ def child_pairs(
     stat_devices: Mapping[str, str | None],
     device_parents: Mapping[str, str],
     kind: DeviceKind,
+    saved: Collection[str] | None = None,
 ) -> list[dict[str, str]]:
     """Return "included in" suggestions from Home Assistant's child devices.
 
-    `stat_devices` maps each device statistic of one list to its HA device,
-    `device_parents` a child HA device to its parent. A child statistic is
-    paired with its parent device's statistic only when that parent carries
-    exactly one statistic of the same list; otherwise it is unclear which one
-    is the total, so there is no suggestion.
+    `stat_devices` maps each statistic of one list (devices and free meters)
+    to its HA device, `device_parents` a child HA device to its parent, and
+    `saved` names the statistics that are devices already (all of them when
+    not given). A child statistic is paired with its parent device's
+    statistic only when that parent carries exactly one: one saved device
+    statistic, or with none saved, one free meter; otherwise it is unclear
+    which one is the total, so there is no suggestion.
     """
     by_device: dict[str, list[str]] = {}
+    free: dict[str, list[str]] = {}
     for stat, device_id in stat_devices.items():
         if device_id is not None:
-            by_device.setdefault(device_id, []).append(stat)
+            known = saved is None or stat in saved
+            (by_device if known else free).setdefault(device_id, []).append(stat)
+    for device_id, stats in free.items():
+        by_device.setdefault(device_id, stats)
     pairs: list[dict[str, str]] = []
     for stat, device_id in stat_devices.items():
         parent_device = device_parents.get(device_id) if device_id else None
