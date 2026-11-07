@@ -23,7 +23,7 @@ and Home Assistant show when they offer the update.
   report (sensor unavailable, entity gone, wrong unit or state class, negative state,
   excluded from the recorder) is marked at the device, source or home meter, in Home
   Assistant's own words. Also on the dashboard card, without anything about prices.
-- **Coverage at Home:** *72 % covered by devices*, switchable with *Coverage* above the
+- **Coverage at Home:** *72% covered by devices*, switchable with *Coverage* above the
   diagram; on the card with the option `show_coverage` (off by default).
 - **Suggestions from child devices:** where an integration registers a device as part of
   another one, the panel suggests including it there. *Apply* puts the move into the

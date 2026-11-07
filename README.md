@@ -72,7 +72,7 @@ solar, battery or water meter, and which meters are not used yet.
   consumption; with Home Assistant 2026.11 or newer, devices are named after their device,
   as in the energy dashboard.
 - **Coverage** – Home shows how much of the house the devices cover, for example
-  *72 % covered by devices*. Switch it off with *Coverage* above the diagram.
+  *72% covered by devices*. Switch it off with *Coverage* above the diagram.
 - **Home Assistant's own checks** – what the energy settings of Home Assistant report
   (sensor unavailable, entity gone, wrong unit, …) is marked right at the block, in Home
   Assistant's own words.
@@ -169,7 +169,7 @@ title: Kitchen         # optional; an empty title hides the header
 orientation: vertical  # horizontal (top-down, default) or vertical (left to right)
 show_sources: true     # sources before Home (not with root)
 show_untracked: true   # blocks for untracked consumption
-show_coverage: false   # "72 % covered by devices" at Home (electricity, off by default)
+show_coverage: false   # "72% covered by devices" at Home (electricity, off by default)
 ```
 
 A tree wider than the card is shown at half size at least; then the card scrolls
