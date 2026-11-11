@@ -231,6 +231,7 @@ export const en = {
   card_empty: "No devices in the energy dashboard yet.",
   card_root_missing: "This device is no longer in the energy dashboard. Pick another one in the card settings.",
   card_root_all: "Whole home",
+  card_root_group: "Group: {name}",
   card_field_title: "Title (empty: no title)",
   card_field_kind: "Show",
   card_field_root: "Start at device",

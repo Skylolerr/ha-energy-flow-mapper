@@ -32,6 +32,8 @@ function data(extra: Partial<CardData> = {}): CardData {
   };
 }
 
+const GROUPS = [{ id: "g1", name: "Racks", parent: "sensor.server", group: null, members: ["sensor.nas"] }];
+
 interface Mock {
   hass: HomeAssistant;
   calls: Record<string, unknown>[];
@@ -254,6 +256,49 @@ describe("card", () => {
     expect(block(el, "portal:tv")).toBeNull();
     const missing = await view({ root: "sensor.gone" });
     expect(text(missing)).toContain("This device is no longer in the energy dashboard.");
+  });
+
+  it("shows groups collapsed and toggles them", async () => {
+    const el = await view({ period: "week" }, mockHass((msg) => (msg.period ? data({ ...periodValues(), groups: GROUPS }) : data({ groups: GROUPS }))));
+    const group = el.shadowRoot!.querySelector<HTMLElement>('.block.group[data-group="g1"]')!;
+    expect(group.classList.contains("collapsed")).toBe(true);
+    expect(group.textContent).toContain("Racks");
+    expect(group.textContent).toContain("1 device · 14 kWh");
+    expect(block(el, "sensor.nas")).toBeNull();
+    expect(el.shadowRoot!.querySelector(".frame")).toBeNull();
+    group.click();
+    await settle(el);
+    const open = el.shadowRoot!.querySelector<HTMLElement>('.block.group[data-group="g1"]')!;
+    expect(open.classList.contains("header")).toBe(true);
+    expect(open.textContent).toContain("Racks · 14 kWh");
+    expect(block(el, "sensor.nas")).not.toBeNull();
+    expect(el.shadowRoot!.querySelector('.frame[data-group="g1"]')).not.toBeNull();
+    // A reload (every minute) keeps what was opened.
+    await el._load();
+    await settle(el);
+    expect(block(el, "sensor.nas")).not.toBeNull();
+    open.click();
+    await settle(el);
+    expect(block(el, "sensor.nas")).toBeNull();
+  });
+
+  it("starts at a group", async () => {
+    const el = await view(
+      { root: "group:g1", period: "week" },
+      mockHass((msg) => (msg.period ? data({ ...periodValues(), groups: GROUPS }) : data({ groups: GROUPS }))),
+    );
+    expect(el.shadowRoot!.querySelector(".block.home")).toBeNull();
+    expect(el.shadowRoot!.querySelector(".block.source")).toBeNull();
+    expect(block(el, "sensor.nas")).not.toBeNull();
+    expect(block(el, "portal:tv")).toBeNull();
+    expect(el.shadowRoot!.querySelector('.block.group[data-group="g1"]')!.textContent).toContain("Racks");
+  });
+
+  it("shows a message when the root group is gone", async () => {
+    const el = await view({ root: "group:gone" }, mockHass(() => data({ groups: GROUPS })));
+    expect(text(el)).toContain("This device is no longer in the energy dashboard.");
+    const none = await view({ root: "group:g1" });
+    expect(text(none)).toContain("This device is no longer in the energy dashboard.");
   });
 
   it("hides sources, untracked blocks and the title on request", async () => {
@@ -510,6 +555,15 @@ describe("card editor", () => {
     ]);
     const form = el.shadowRoot!.querySelector("ha-form") as HTMLElement & { data: Record<string, unknown> };
     expect(form.data.root).toBe("");
+  });
+
+  it("lists groups in the editor's start picker", async () => {
+    const el = await editor({ kind: "electricity" }, mockHass(() => data({ groups: GROUPS })));
+    const root = el.schema()[3].selector as { select: { options: { value: string; label: string }[] } };
+    expect(root.select.options.slice(-2)).toEqual([
+      { value: "portal:tv", label: "TV" },
+      { value: "group:g1", label: "Group: Racks" },
+    ]);
   });
 
   it("offers the coverage only for electricity", async () => {

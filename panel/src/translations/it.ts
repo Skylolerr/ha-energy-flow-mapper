@@ -233,6 +233,7 @@ export const it: Translations = {
   card_empty: "Ancora nessun dispositivo nella dashboard energia.",
   card_root_missing: "Questo dispositivo non è più nella dashboard energia. Scegline un altro nelle impostazioni della scheda.",
   card_root_all: "Tutta la casa",
+  card_root_group: "Gruppo: {name}",
   card_field_title: "Titolo (vuoto: nessun titolo)",
   card_field_kind: "Mostra",
   card_field_root: "A partire dal dispositivo",

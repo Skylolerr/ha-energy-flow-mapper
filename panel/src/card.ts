@@ -20,23 +20,26 @@ import {
   dashPattern,
   type Edge,
   edgePath,
+  type Frame,
   HOME_ID,
   layout,
   SOURCE_COLORS,
   strokeWidth,
 } from "./layout";
+import { type DisplayNode, displayTree, groupBlockId, groupDevices, groupValue, GROUP_PREFIX } from "./groups";
 import {
   coverageText,
   errorText,
   formatEnergy,
   formatFlow,
+  formatNumber,
   formatPower,
   formatVolume,
   haIssueText,
   localize,
   type StringKey,
 } from "./localize";
-import type { Device, DeviceKind, HaIssue, HomeAssistant, HomeResult, Issue } from "./types";
+import type { Device, DeviceKind, Group, HaIssue, HomeAssistant, HomeResult, Issue } from "./types";
 
 const DOMAIN = "energy_flow_mapper";
 /** How often the card reads the tree and the period values again. */
@@ -75,6 +78,8 @@ export interface CardData {
   energy?: Record<string, number | null>;
   issues?: Issue[];
   home_supported?: boolean;
+  /** Groups of the list (display only). */
+  groups?: Group[];
   /** Home consumption of the period (electricity). */
   home?: HomeResult;
   /** Home Assistant's own check, only for what the card shows. */
@@ -86,6 +91,16 @@ function isEntity(stat: string): boolean {
   return /^[a-z0-9_]+\.[a-z0-9_]+$/.test(stat);
 }
 
+/** Every node of a display tree, parents before children. */
+function walkDisplay(nodes: DisplayNode[]): DisplayNode[] {
+  return nodes.flatMap((n) => [n, ...walkDisplay(n.children)]);
+}
+
+/** The device nodes that sit directly in a display node (through its groups). */
+function topDevices(node: DisplayNode): TreeNode[] {
+  return node.type === "device" ? [node.node] : node.children.flatMap(topDevices);
+}
+
 export class EnergyFlowMapperCardView extends LitElement {
   static override properties = {
     hass: { attribute: false },
@@ -93,10 +108,15 @@ export class EnergyFlowMapperCardView extends LitElement {
     _data: { state: true },
     _error: { state: true },
     _width: { state: true },
+    _collapsed: { state: true },
   };
 
   declare hass?: HomeAssistant;
   declare config?: CardConfig;
+  /** Block ids of the collapsed groups; in memory only, never saved. */
+  declare _collapsed: Set<string>;
+  /** Groups already met, so only new ones start collapsed. */
+  private _seenGroups = new Set<string>();
   declare _data: CardData | null;
   declare _error: string | null;
   declare _width: number;
@@ -116,6 +136,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     this._data = null;
     this._error = null;
     this._width = 400;
+    this._collapsed = new Set();
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -156,6 +177,8 @@ export class EnergyFlowMapperCardView extends LitElement {
       this._loaded = key;
       this._data = null;
       this._centred = false;
+      this._collapsed = new Set();
+      this._seenGroups = new Set();
       void this._load();
     }
     if (this.config.orientation !== this._orientation) {
@@ -266,18 +289,49 @@ export class EnergyFlowMapperCardView extends LitElement {
     }
     const devices = this._devices();
     let roots = buildTree(devices);
+    const groups = this._data.groups ?? [];
+    this._startCollapsed(groups);
+    let display = displayTree(roots, groups);
     const root = this.config.root;
-    if (root) {
+    if (root?.startsWith(GROUP_PREFIX)) {
+      const node = walkDisplay(display).find((n) => n.type === "group" && groupBlockId(n.group.id) === root);
+      if (!node) {
+        return html`<p class="message">${this._t("card_root_missing")}</p>`;
+      }
+      display = [node];
+      roots = topDevices(node);
+    } else if (root) {
       const node = walk(roots).find((n) => n.stat === root);
       if (!node) {
         return html`<p class="message">${this._t("card_root_missing")}</p>`;
       }
       roots = [node];
+      display = displayTree(roots, groups);
     }
     if (roots.length === 0) {
       return html`<p class="message">${this._t("card_empty")}</p>`;
     }
-    return this._renderDiagram(roots, devices);
+    return this._renderDiagram(roots, display, devices, groups);
+  }
+
+  /** Groups start collapsed, once each; a group the card starts at starts open. */
+  private _startCollapsed(groups: Group[]): void {
+    for (const group of groups) {
+      if (!this._seenGroups.has(group.id)) {
+        this._seenGroups.add(group.id);
+        if (this.config?.root !== groupBlockId(group.id)) {
+          this._collapsed.add(groupBlockId(group.id));
+        }
+      }
+    }
+  }
+
+  private _toggle(id: string): void {
+    const next = new Set(this._collapsed);
+    if (!next.delete(id)) {
+      next.add(id);
+    }
+    this._collapsed = next;
   }
 
   /**
@@ -305,7 +359,12 @@ export class EnergyFlowMapperCardView extends LitElement {
     return { value, basis: "measured", stale: null, untracked: rest };
   }
 
-  private _renderDiagram(roots: TreeNode[], devices: Device[]): TemplateResult {
+  private _renderDiagram(
+    roots: TreeNode[],
+    display: DisplayNode[],
+    devices: Device[],
+    groups: Group[],
+  ): TemplateResult {
     const config = this.config!;
     const values = this._values(devices);
     const rest = untracked(roots, values);
@@ -318,11 +377,11 @@ export class EnergyFlowMapperCardView extends LitElement {
         ? (this._data?.sources ?? []).map((s) => ({ type: s.type, role: s.role, stat: s.stat, name: s.name }))
         : [];
     const result = layout(
-      roots,
+      display,
       sources,
       values,
       rest,
-      new Set(),
+      this._collapsed,
       [],
       config.show_untracked,
       config.orientation,
@@ -332,10 +391,16 @@ export class EnergyFlowMapperCardView extends LitElement {
     const shown = result.blocks.filter((b) => !(config.root && b.kind === "home"));
     const ids = new Set(shown.map((b) => b.id));
     const edges = result.edges.filter((e) => ids.has(e.from) && ids.has(e.to));
-    const left = Math.min(...shown.map((b) => b.x)) - PAD;
-    const top = Math.min(...shown.map((b) => b.y)) - PAD;
-    const width = Math.max(...shown.map((b) => b.x + b.w)) + PAD - left;
-    const height = Math.max(...shown.map((b) => b.y + b.h)) + PAD - top;
+    const boxes = [...shown, ...result.frames];
+    const left = Math.min(...boxes.map((b) => b.x)) - PAD;
+    const top = Math.min(...boxes.map((b) => b.y)) - PAD;
+    const width = Math.max(...boxes.map((b) => b.x + b.w)) + PAD - left;
+    const height = Math.max(...boxes.map((b) => b.y + b.h)) + PAD - top;
+    const groupNodes = new Map(
+      walkDisplay(display)
+        .filter((n) => n.type === "group")
+        .map((n) => [groupBlockId(n.group.id), n]),
+    );
     const room = Math.max(1, this._width - CARD_PADDING);
     const k = Math.max(CARD_MIN_SCALE, Math.min(1, room / width));
     const offset = Math.max(0, (room - width * k) / 2);
@@ -354,7 +419,8 @@ export class EnergyFlowMapperCardView extends LitElement {
         <svg class="edges" width=${width + left} height=${height + top} aria-hidden="true">
           ${edges.map((edge) => this._renderEdge(edge, blocks, maxValue))}
         </svg>
-        ${shown.map((block) => this._renderBlock(block, measured, rest, home))}
+        ${result.frames.map((frame) => this._renderFrame(frame))}
+        ${shown.map((block) => this._renderBlock(block, measured, rest, home, groupNodes, values, groups))}
       </div>
       </div>
     </div>`;
@@ -370,7 +436,7 @@ export class EnergyFlowMapperCardView extends LitElement {
         : edge.kind === "source"
           ? (SOURCE_COLORS[source?.role ?? ""] ?? "var(--secondary-text-color)")
           : "var(--primary-color)";
-    const dashed = edge.kind === "untracked" || (edge.kind === "device" && edge.power === null) || (edge.kind === "source" && from.role === "home");
+    const dashed = edge.kind === "untracked" || ((edge.kind === "device" || edge.kind === "group") && edge.power === null) || (edge.kind === "source" && from.role === "home");
     const width = strokeWidth(edge.power, maxValue);
     const head = arrowSize(width);
     const orientation = this.config?.orientation;
@@ -386,6 +452,9 @@ export class EnergyFlowMapperCardView extends LitElement {
     measured: number | null,
     rest: Map<string, number | null>,
     home: HomeResult | null = null,
+    groupNodes: Map<string, DisplayNode> = new Map(),
+    values: Map<string, number | null> = new Map(),
+    groups: Group[] = [],
   ): TemplateResult {
     const style = `left:${block.x}px;top:${block.y}px;width:${block.w}px;height:${block.h}px`;
     switch (block.kind) {
@@ -424,9 +493,62 @@ export class EnergyFlowMapperCardView extends LitElement {
           </div>
         </div>`;
       }
+      case "group": {
+        const node = groupNodes.get(block.id);
+        return this._renderGroup(block, style, node ? groupValue(node, values) : null, groups);
+      }
       default:
         return this._renderDevice(block, style);
     }
+  }
+
+  /** "1 device", "4 devices": all devices in a group, also in the groups inside it. */
+  private _devicesText(groups: Group[], id: string): string {
+    const count = groupDevices(groups, id).length;
+    return count === 1
+      ? this._t("group_devices_one")
+      : this._t("group_devices_other", { count: formatNumber(this.hass, count) });
+  }
+
+  /**
+   * A group: collapsed, a dashed block with its name, devices and value;
+   * expanded, the header of its frame, name and value. A tap toggles it.
+   */
+  private _renderGroup(block: Block, style: string, value: number | null, groups: Group[]): TemplateResult {
+    const group = block.group!;
+    const collapsed = this._collapsed.has(block.id);
+    const valueText = value === null ? null : this._format(value);
+    const toggle = () => this._toggle(block.id);
+    return html`<div
+      class="block group ${collapsed ? "collapsed" : "header"}"
+      style=${style}
+      data-group=${group.id}
+      role="button"
+      tabindex="0"
+      aria-expanded=${String(!collapsed)}
+      @click=${toggle}
+      @keydown=${(e: KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggle();
+        }
+      }}
+    >
+      <span class="toggle" aria-hidden="true">${collapsed ? "\u25b8" : "\u25be"}</span>
+      <div class="block-text">
+        ${collapsed
+          ? html`<span class="node-name" title=${group.name}>${group.name}</span>
+              <span class="sub">${[this._devicesText(groups, group.id), valueText].filter(Boolean).join(" \u00b7 ")}</span>`
+          : html`<span class="node-name" title=${group.name}>${[group.name, valueText].filter(Boolean).join(" \u00b7 ")}</span>
+              <span class="sub">${this._devicesText(groups, group.id)}</span>`}
+      </div>
+    </div>`;
+  }
+
+  /** The dashed frame around an expanded group. */
+  private _renderFrame(frame: Frame): TemplateResult {
+    const style = `left:${frame.x}px;top:${frame.y}px;width:${frame.w}px;height:${frame.h}px`;
+    return html`<div class="frame" style=${style} data-group=${frame.group.id}></div>`;
   }
 
   /** Subtitle of Home: the home consumption, or the sum of the top-level devices. */
@@ -549,6 +671,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     .diagram {
       overflow-x: auto;
       overflow-y: hidden;
+      --group-color: var(--accent-color, #ff9800);
       --block-bg: var(--card-background-color, var(--primary-background-color));
       --block-border: color-mix(in srgb, var(--primary-text-color) 35%, transparent);
     }
@@ -612,6 +735,27 @@ export class EnergyFlowMapperCardView extends LitElement {
       outline: 2px solid var(--primary-color);
       outline-offset: 2px;
     }
+    .block.group {
+      cursor: pointer;
+      border: 2px dashed var(--group-color);
+      background: color-mix(in srgb, var(--group-color) 10%, var(--block-bg));
+    }
+    .block.group:focus-visible {
+      outline: 2px solid var(--primary-color);
+      outline-offset: 2px;
+    }
+    .toggle {
+      flex: none;
+      width: 16px;
+      color: var(--secondary-text-color);
+    }
+    .frame {
+      position: absolute;
+      box-sizing: border-box;
+      border: 2px dashed var(--group-color);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--group-color) 5%, transparent);
+    }
     .block.home {
       border: 2px solid var(--primary-text-color);
     }
@@ -656,12 +800,15 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     hass: { attribute: false },
     _config: { state: true },
     _devices: { state: true },
+    _groups: { state: true },
   };
 
   declare hass?: HomeAssistant;
   declare _config: CardConfig | null;
   /** Devices of the chosen list, for "Start at device". */
   declare _devices: CardDevice[];
+  /** Groups of the chosen list, for "Start at device". */
+  declare _groups: Group[];
 
   private _kindLoaded: DeviceKind | null = null;
 
@@ -669,14 +816,15 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     super();
     this._config = null;
     this._devices = [];
+    this._groups = [];
   }
 
   setConfig(config: unknown): void {
     this._config = cardConfig(config);
   }
 
-  private _t(key: StringKey): string {
-    return localize(this.hass, key);
+  private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
+    return localize(this.hass, key, placeholders);
   }
 
   protected override willUpdate(): void {
@@ -692,10 +840,12 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       const data = await this.hass!.callWS<CardData>({ type: `${DOMAIN}/card`, kind });
       if (kind === this._kindLoaded) {
         this._devices = data.devices;
+        this._groups = data.groups ?? [];
       }
     } catch {
       if (kind === this._kindLoaded) {
         this._devices = [];
+        this._groups = [];
       }
     }
   }
@@ -716,6 +866,10 @@ export class EnergyFlowMapperCardEditor extends LitElement {
             options: [
               { value: "", label: this._t("card_root_all") },
               ...this._devices.map((d) => ({ value: d.stat, label: d.name })),
+              ...this._groups.map((g) => ({
+                value: groupBlockId(g.id),
+                label: this._t("card_root_group", { name: g.name }),
+              })),
             ],
           },
         },

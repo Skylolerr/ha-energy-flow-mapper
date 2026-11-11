@@ -233,6 +233,7 @@ export const fr: Translations = {
   card_empty: "Aucun appareil dans le tableau de bord énergie pour l’instant.",
   card_root_missing: "Cet appareil n’est plus dans le tableau de bord énergie. Choisis-en un autre dans les réglages de la carte.",
   card_root_all: "Toute la maison",
+  card_root_group: "Groupe : {name}",
   card_field_title: "Titre (vide : sans titre)",
   card_field_kind: "Afficher",
   card_field_root: "À partir de l’appareil",
