@@ -314,7 +314,11 @@ export class EnergyFlowMapperCardView extends LitElement {
         return html`<p class="message">${this._t("card_root_missing")}</p>`;
       }
       roots = [node];
-      display = displayTree(roots, groups);
+      // A Home-level group around the root would hide it; deeper groups key on the device.
+      display = displayTree(
+        roots,
+        groups.filter((g) => g.parent !== null),
+      );
     }
     if (roots.length === 0) {
       return html`<p class="message">${this._t("card_empty")}</p>`;

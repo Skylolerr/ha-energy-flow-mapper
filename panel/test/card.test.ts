@@ -258,6 +258,16 @@ describe("card", () => {
     expect(text(missing)).toContain("This device is no longer in the energy dashboard.");
   });
 
+  it("shows a device root itself when a Home-level group holds it", async () => {
+    const home = [{ id: "g9", name: "Office", parent: null, group: null, members: ["sensor.server"] }];
+    const el = await view(
+      { root: "sensor.server", period: "week" },
+      mockHass((msg) => (msg.period ? data({ ...periodValues(), groups: home }) : data({ groups: home }))),
+    );
+    expect(block(el, "sensor.server")).not.toBeNull();
+    expect(el.shadowRoot!.querySelector(".block.group")).toBeNull();
+  });
+
   it("shows groups collapsed and toggles them", async () => {
     const el = await view({ period: "week" }, mockHass((msg) => (msg.period ? data({ ...periodValues(), groups: GROUPS }) : data({ groups: GROUPS }))));
     const group = el.shadowRoot!.querySelector<HTMLElement>('.block.group[data-group="g1"]')!;
