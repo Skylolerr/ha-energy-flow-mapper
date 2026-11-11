@@ -474,6 +474,23 @@ describe("kept draft", () => {
     expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
   });
 
+  it("keeps the draft for the new settings after a conflict", async () => {
+    const mock = mockHass();
+    const el = await mount(mock);
+    el._change(move);
+    await settle(el);
+    mock.responses["energy_flow_mapper/save"] = { translation_key: "conflict" };
+    mock.responses["energy_flow_mapper/get"] = { ...snapshot(), hash: "hash-9" };
+    await el._save();
+    await settle(el);
+    expect(el._changes).toEqual([move]);
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toMatchObject({ hash: "hash-9", changes: [move] });
+    el.remove();
+    const again = await mount(mock);
+    expect(again._changes).toEqual([move]);
+    expect(text(again)).toContain("Your unsaved changes were restored");
+  });
+
   it("drops a draft for settings that changed meanwhile", async () => {
     localStorage.setItem(DRAFT_KEY, JSON.stringify({ hash: "hash-0", changes: [move] }));
     const el = await mount(mockHass());

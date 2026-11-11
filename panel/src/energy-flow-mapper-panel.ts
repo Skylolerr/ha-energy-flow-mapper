@@ -457,6 +457,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._ignored = this._snapshot.ignored_suggestions ?? [];
       this._collapseGroups(this._snapshot);
       this._restoreDraft(this._snapshot.hash);
+      // A draft kept over a reload (conflict) now belongs to the new settings.
+      this._keepDraft();
       this._loadHaTexts();
     } catch (err) {
       this._loadError = errorText(this.hass, err);
@@ -493,6 +495,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     } else {
       keepDraft(hash, []);
       this._showToast(this._t("draft_outdated"));
+    }
+  }
+
+  /** Keep the draft in this browser for the loaded settings, once it was checked. */
+  private _keepDraft(): void {
+    if (this._draftChecked && this._snapshot) {
+      keepDraft(this._snapshot.hash, this._changes);
     }
   }
 
@@ -1552,8 +1561,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- rendering ------------------------------------------------------------
 
   protected override updated(changed: PropertyValues<this>): void {
-    if (changed.has("_changes") && this._draftChecked && this._snapshot) {
-      keepDraft(this._snapshot.hash, this._changes);
+    if (changed.has("_changes")) {
+      this._keepDraft();
     }
     // The first fit waits for a sized viewport; a zoom or search before it wins.
     if (!this._fitted && this._autoFit && this._snapshot && this._view === "diagram") {
