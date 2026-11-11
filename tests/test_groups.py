@@ -509,23 +509,55 @@ def test_remove_parent_numbers_a_name_taken_at_the_grandparent() -> None:
     }
 
 
-def test_remove_parent_takes_the_first_free_number() -> None:
+def test_remove_parent_numbers_from_the_base_name() -> None:
+    # p with a, b, c below it; e and f at Home.
+    p = prefs(dev("p"), dev("a", "p"), dev("b", "p"), dev("c", "p"), dev("e"), dev("f"))
     stored = electricity(
         named("home1", "Kitchen", ["e"], None),
-        named("home2", "Kitchen (2)", ["d"], "p"),
+        named("home2", "Kitchen (2)", ["f"], None),
         named("g1", "Kitchen", ["a"], "p"),
         named("g2", "Kitchen (2)", ["b"], "p"),
         named("g3", "Office", ["c"], "p"),
     )
     # Same case as in the panel's groups.test.ts, so both give the same names.
-    _, result = run([{"type": "remove", "stat": "p"}], stored)
+    _, result = apply_all(p, stored, [{"type": "remove", "stat": "p"}])
     assert [g["name"] for g in result["electricity"]] == [
         "Kitchen",
         "Kitchen (2)",
         "Kitchen (3)",
-        "Kitchen (2) (2)",
+        "Kitchen (4)",
         "Office",
     ]
+
+
+def test_remove_parent_ignores_a_group_that_disappears() -> None:
+    # The Home group "Kitchen" holds only p; removing p empties it.
+    stored = electricity(
+        named("home1", "Kitchen", ["p"], None),
+        named("g1", "Kitchen", ["a", "b"], "p"),
+    )
+    _, result = run([{"type": "remove", "stat": "p"}], stored)
+    assert [(g["id"], g["name"]) for g in result["electricity"]] == [("g1", "Kitchen")]
+
+
+def test_clean_adoption_ignores_a_later_group_that_disappears() -> None:
+    # g1 comes first in the list; the Home group lost its only device.
+    stored = electricity(
+        named("g1", "Kitchen", ["a"], "p"),
+        named("home1", "Kitchen", ["gone"], None),
+    )
+    cleaned = clean_groups(stored, prefs(dev("a")))
+    assert [(g["id"], g["name"]) for g in cleaned["electricity"]] == [("g1", "Kitchen")]
+
+
+def test_clean_adoption_keeps_the_first_of_two_moved_names() -> None:
+    # p1 and p2 were removed outside the mapper; both groups move to Home.
+    stored = electricity(
+        named("g1", "Kitchen", ["a"], "p1"),
+        named("g2", "Kitchen", ["b"], "p2"),
+    )
+    cleaned = clean_groups(stored, prefs(dev("a"), dev("b")))
+    assert [g["name"] for g in cleaned["electricity"]] == ["Kitchen", "Kitchen (2)"]
 
 
 def test_clean_adoption_numbers_a_name_taken_at_the_new_parent() -> None:

@@ -228,8 +228,12 @@ Undo takes back the draft changes; the helpers stay (as today with integral help
   grandparent and keep the user's grouping. `groups.py` and `draft.ts` apply this as part
   of those changes. *(Claude's call, after the builder check.)* If a group of the same
   name exists there already, the moved group gets the first free number: "Kitchen (2)",
-  "Kitchen (3)", ... The adoption in clean-up step 2 does the same, so two groups below
-  one parent never share a name. *(Maintainer decision of 2026-11-11.)*
+  "Kitchen (3)", ..., counted from the base name without a number it has already
+  ("Kitchen (2)" next to "Kitchen" and "Kitchen (2)" becomes "Kitchen (3)"). The adoption
+  in clean-up step 2 does the same. Numbers are given after step 5, against the groups
+  that remain; groups that did not move keep their names, moved ones follow in list
+  order. So two groups below one parent never share a name. *(Maintainer decision of
+  2026-11-11.)*
 - **Entity ID renames:** listen to entity registry updates and rename statistics in the
   group store, as HA renames them in its energy preferences. *(Builder: check whether HA
   2026.10 renames energy preferences on entity ID changes; follow the same behaviour.)*

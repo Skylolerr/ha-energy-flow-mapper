@@ -84,31 +84,50 @@ function enclosingLoops(groups: Group[], group: Group): boolean {
   return false;
 }
 
+/** A number a moved group got before, as in "Kitchen (2)" (as `_NUMBER` in groups.py). */
+const NUMBER = / \([0-9]+\)$/;
+
 /**
- * Give `group` a new real parent; a name taken there gets a number: the first
- * free of "Name (2)", "Name (3)", ... among the other groups of that parent.
+ * Give a moved group whose name is taken at its parent a number (as
+ * `_number_moved`). Groups that did not move keep their names; moved groups
+ * follow in list order. A taken name becomes the first free of "Base (2)",
+ * "Base (3)", ..., where the base is the name without a number it has already.
  */
-function reparent(groups: Group[], group: Group, parent: string | null): void {
-  group.parent = parent;
-  const taken = new Set(groups.filter((g) => g.parent === parent && g.id !== group.id).map((g) => g.name));
-  let name = group.name;
-  let number = 2;
-  while (taken.has(name)) {
-    name = `${group.name} (${number})`;
-    number++;
+function numberMoved(groups: Group[], moved: ReadonlySet<string>): void {
+  const done = new Set<string>();
+  for (const group of groups) {
+    if (!moved.has(group.id)) {
+      continue;
+    }
+    const taken = new Set(
+      groups
+        .filter((g) => g.parent === group.parent && g.id !== group.id && (!moved.has(g.id) || done.has(g.id)))
+        .map((g) => g.name),
+    );
+    done.add(group.id);
+    if (!taken.has(group.name)) {
+      continue;
+    }
+    const base = group.name.replace(NUMBER, "");
+    let number = 2;
+    while (taken.has(`${base} (${number})`)) {
+      number++;
+    }
+    group.name = `${base} (${number})`;
   }
-  group.name = name;
 }
 
 /**
- * The groups fitted to the current devices (the five steps of `clean_groups`):
+ * The groups fitted to the current devices (the six steps of `clean_groups`):
  * drop vanished devices, adopt a new common parent, drop members with another
- * parent, move misfit nested groups to the top, remove empty groups. Never
+ * parent, move misfit nested groups to the top, remove empty groups, number a
+ * name a moved group (`movedBefore` or adopting here) finds taken. Never
  * mutates `groups`.
  */
-export function cleanGroups(groups: Group[], devices: Device[]): Group[] {
+export function cleanGroups(groups: Group[], devices: Device[], movedBefore: ReadonlySet<string> = new Set()): Group[] {
   const kept = structuredClone(groups);
   const parents = parentMap(devices);
+  const moved = new Set(movedBefore);
 
   // 1. Drop members whose device is gone; a device stays only in its first group.
   const seen = new Set<string>();
@@ -126,7 +145,8 @@ export function cleanGroups(groups: Group[], devices: Device[]): Group[] {
   for (const group of kept) {
     const real = new Set(groupDevices(kept, group.id).map((stat) => parents.get(stat) ?? null));
     if (!real.has(group.parent) && real.size === 1) {
-      reparent(kept, group, [...real][0]);
+      group.parent = [...real][0];
+      moved.add(group.id);
     }
   }
 
@@ -149,7 +169,11 @@ export function cleanGroups(groups: Group[], devices: Device[]): Group[] {
   }
 
   // 5. Groups without any device (recursively) disappear.
-  return kept.filter((g) => groupDevices(kept, g.id).length > 0);
+  const remaining = kept.filter((g) => groupDevices(kept, g.id).length > 0);
+
+  // 6. A moved group whose name is taken among the remaining groups gets a number.
+  numberMoved(remaining, moved);
+  return remaining;
 }
 
 // --- Applying changes -------------------------------------------------------
@@ -360,19 +384,22 @@ function applyGroupChange(devices: Device[], groups: Group[], kind: DeviceKind, 
 }
 
 /**
- * Groups below a device that is about to disappear go to its former parent; a
- * name taken there gets a number.
+ * Groups below a device that is about to disappear go to its former parent.
+ * Returns their ids for the clean-up, which numbers a name taken there.
  */
-function adoptRemovedParent(devices: Device[], groups: Group[], stat: string): void {
+function adoptRemovedParent(devices: Device[], groups: Group[], stat: string): Set<string> {
+  const moved = new Set<string>();
   const removed = devices.find((d) => d.stat_consumption === stat);
   if (removed === undefined) {
-    return;
+    return moved;
   }
   for (const group of groups) {
     if (group.parent === stat) {
-      reparent(groups, group, removed.included_in_stat ?? null);
+      group.parent = removed.included_in_stat ?? null;
+      moved.add(group.id);
     }
   }
+  return moved;
 }
 
 /** A device that moves to another parent than its group's leaves the group. */
@@ -403,6 +430,7 @@ export function applyAllChanges(
     if (changeKind(change) !== kind) {
       continue;
     }
+    let moved = new Set<string>();
     if (GROUP_CHANGE_TYPES.has(change.type)) {
       // Work on a copy so a refused change leaves nothing half done.
       const draft = structuredClone(groups);
@@ -417,7 +445,7 @@ export function applyAllChanges(
       groups = draft;
     } else {
       if (change.type === "remove" || change.type === "use_as_home_meter") {
-        adoptRemovedParent(devices, groups, change.stat);
+        moved = adoptRemovedParent(devices, groups, change.stat);
       } else if (change.type === "move") {
         if (devices.some((d) => d.stat_consumption === change.stat)) {
           leaveGroupOnMove(groups, change.stat, change.parent);
@@ -425,7 +453,7 @@ export function applyAllChanges(
       }
       devices = applyChanges(devices, [change], kind);
     }
-    groups = cleanGroups(groups, devices);
+    groups = cleanGroups(groups, devices, moved);
   }
   return { devices, groups };
 }

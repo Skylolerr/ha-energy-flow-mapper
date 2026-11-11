@@ -98,6 +98,22 @@ describe("cleanGroups", () => {
     ]);
   });
 
+  it("does not number against a later group that disappears", () => {
+    const cleaned = cleanGroups(
+      [named("g1", "Kitchen", ["a"], "p"), named("home1", "Kitchen", ["gone"], null)],
+      [dev("a")],
+    );
+    expect(cleaned.map((g) => [g.id, g.name])).toEqual([["g1", "Kitchen"]]);
+  });
+
+  it("keeps the first of two moved names", () => {
+    const cleaned = cleanGroups(
+      [named("g1", "Kitchen", ["a"], "p1"), named("g2", "Kitchen", ["b"], "p2")],
+      [dev("a"), dev("b")],
+    );
+    expect(cleaned.map((g) => g.name)).toEqual(["Kitchen", "Kitchen (2)"]);
+  });
+
   it("drops a member with another parent", () => {
     const devices = [dev("a"), dev("x"), dev("b", "a"), dev("c", "a"), dev("d", "x")];
     const cleaned = cleanGroups([grp("g", ["b", "c", "d"], "a")], devices);
@@ -408,22 +424,31 @@ describe("applyGroupChanges", () => {
     expect(group.members).toEqual(["a", "b"]);
   });
 
-  it("numbers names taken at the grandparent when a parent is removed", () => {
+  it("numbers names taken at the grandparent from the base name", () => {
+    // p with a, b, c below it; e and f at Home. Same case as in test_groups.py.
+    const devices = [dev("p"), dev("a", "p"), dev("b", "p"), dev("c", "p"), dev("e"), dev("f")];
     const stored = [
       named("home1", "Kitchen", ["e"], null),
-      named("home2", "Kitchen (2)", ["d"], "p"),
+      named("home2", "Kitchen (2)", ["f"], null),
       named("g1", "Kitchen", ["a"], "p"),
       named("g2", "Kitchen (2)", ["b"], "p"),
       named("g3", "Office", ["c"], "p"),
     ];
-    const result = run([{ type: "remove", stat: "p" }], stored);
+    const result = applyGroupChanges(devices, stored, [{ type: "remove", stat: "p" }], "electricity");
     expect(result.map((g) => [g.name, g.parent])).toEqual([
       ["Kitchen", null],
       ["Kitchen (2)", null],
       ["Kitchen (3)", null],
-      ["Kitchen (2) (2)", null],
+      ["Kitchen (4)", null],
       ["Office", null],
     ]);
+  });
+
+  it("does not number against a group that disappears", () => {
+    // The Home group "Kitchen" holds only p; removing p empties it.
+    const stored = [named("home1", "Kitchen", ["p"], null), named("g1", "Kitchen", ["a", "b"], "p")];
+    const result = run([{ type: "remove", stat: "p" }], stored);
+    expect(result.map((g) => [g.id, g.name])).toEqual([["g1", "Kitchen"]]);
   });
 
   it("trims names like groups.py", () => {

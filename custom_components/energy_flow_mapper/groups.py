@@ -7,6 +7,7 @@ this module has no Home Assistant imports, so it can be tested in isolation.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from typing import Any, TypedDict
@@ -115,26 +116,50 @@ def _enclosing_loops(groups: list[Group], group: Group) -> bool:
     return False
 
 
-def _reparent(groups: list[Group], group: Group, parent: str | None) -> None:
-    """Give `group` a new real parent; a name taken there gets a number.
+# A number a moved group got before, as in "Kitchen (2)"; ASCII digits like the panel.
+_NUMBER = re.compile(r" \([0-9]+\)\Z")
 
-    The first free of "Name (2)", "Name (3)", ... among the other groups of that
-    parent, so no two groups below one parent share a name.
+
+def _number_moved(groups: list[Group], moved: set[str]) -> None:
+    """Give a moved group whose name is taken at its parent a number.
+
+    Groups that did not move keep their names; moved groups follow in list order. A
+    taken name becomes the first free of "Base (2)", "Base (3)", ..., where the base is
+    the name without a number it has already. So no two groups below one parent share
+    a name.
     """
-    group["parent"] = parent
-    taken = {
-        g["name"] for g in groups if g["parent"] == parent and g["id"] != group["id"]
-    }
-    name = group["name"]
-    number = 2
-    while name in taken:
-        name = f"{group['name']} ({number})"
-        number += 1
-    group["name"] = name
+    done: set[str] = set()
+    for group in groups:
+        if group["id"] not in moved:
+            continue
+        taken = {
+            g["name"]
+            for g in groups
+            if g["parent"] == group["parent"]
+            and g["id"] != group["id"]
+            and (g["id"] not in moved or g["id"] in done)
+        }
+        done.add(group["id"])
+        if group["name"] not in taken:
+            continue
+        base = _NUMBER.sub("", group["name"])
+        number = 2
+        while f"{base} ({number})" in taken:
+            number += 1
+        group["name"] = f"{base} ({number})"
 
 
-def _clean_kind(groups: list[Group], parents: dict[str, str | None]) -> list[Group]:
-    """Clean the groups of one kind against its device parents."""
+def _clean_kind(
+    groups: list[Group],
+    parents: dict[str, str | None],
+    moved: set[str] | None = None,
+) -> list[Group]:
+    """Clean the groups of one kind against its device parents.
+
+    `moved` are the ids of groups that got a new parent before (a removed parent);
+    they and the groups adopting a parent here are numbered at the end if needed.
+    """
+    moved = set(moved or ())
     # 1. Drop members whose device is gone; a device stays only in its first group.
     seen: set[str] = set()
     for group in groups:
@@ -149,7 +174,8 @@ def _clean_kind(groups: list[Group], parents: dict[str, str | None]) -> list[Gro
     for group in groups:
         real = {parents[stat] for stat in all_devices(groups, group["id"])}
         if group["parent"] not in real and len(real) == 1:
-            _reparent(groups, group, next(iter(real)))
+            group["parent"] = next(iter(real))
+            moved.add(group["id"])
 
     # 3. Drop members whose real parent differs from the group's parent.
     for group in groups:
@@ -170,19 +196,28 @@ def _clean_kind(groups: list[Group], parents: dict[str, str | None]) -> list[Gro
             group["group"] = None
 
     # 5. Groups without any device (recursively) disappear.
-    return [g for g in groups if all_devices(groups, g["id"])]
+    kept_groups = [g for g in groups if all_devices(groups, g["id"])]
+
+    # 6. A moved group whose name is taken among the remaining groups gets a number.
+    _number_moved(kept_groups, moved)
+    return kept_groups
 
 
-def clean_groups(groups: Groups, prefs: Prefs) -> Groups:
+def clean_groups(
+    groups: Groups, prefs: Prefs, moved: Mapping[str, set[str]] | None = None
+) -> Groups:
     """Return the groups fitted to the current energy preferences.
 
+    `moved` holds, per kind, the ids of groups that just got a new parent.
     Never mutates `groups`; the result is a new object with a list for every kind.
     """
     cleaned = empty_groups()
     for kind in GROUP_KINDS:
         stored = deepcopy(groups.get(kind.value, []))
         parents = parent_map(prefs.get(DEVICE_KEYS[kind], []))
-        cleaned[kind.value] = _clean_kind(stored, parents)
+        cleaned[kind.value] = _clean_kind(
+            stored, parents, (moved or {}).get(kind.value)
+        )
     return cleaned
 
 
@@ -399,18 +434,21 @@ def _apply_group_change(
 
 def _adopt_removed_parent(
     prefs: Prefs, groups: Groups, kind: DeviceKind, stat: str
-) -> None:
+) -> dict[str, set[str]]:
     """Re-parent the groups below a device that is about to disappear.
 
     Its children move up to its own parent, so its groups go with them and the
-    grouping survives the clean-up. A name taken there gets a number.
+    grouping survives the clean-up. Returns the moved group ids for the clean-up,
+    which numbers a name taken there.
     """
     devices = prefs.get(DEVICE_KEYS[kind], [])
     former = next((d.get(PARENT) for d in devices if d[STAT] == stat), None)
-    kind_groups = groups.get(kind.value, [])
-    for group in kind_groups:
+    moved: set[str] = set()
+    for group in groups.get(kind.value, []):
         if group["parent"] == stat:
-            _reparent(kind_groups, group, former)
+            group["parent"] = former
+            moved.add(group["id"])
+    return {kind.value: moved}
 
 
 def _leave_group_on_move(groups: Groups, change: Mapping[str, Any]) -> None:
@@ -437,6 +475,7 @@ def apply_all(
     result = deepcopy(groups)
     for change in changes:
         change_type = change["type"]
+        moved: dict[str, set[str]] = {}
         if change_type in GROUP_CHANGE_TYPES:
             current = _apply_group_change(current, result, change)
         else:
@@ -446,11 +485,11 @@ def apply_all(
                     if change_type == ChangeType.USE_AS_HOME_METER
                     else DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
                 )
-                _adopt_removed_parent(current, result, kind, change["stat"])
+                moved = _adopt_removed_parent(current, result, kind, change["stat"])
             elif change_type == ChangeType.MOVE:
                 _leave_group_on_move(result, change)
             current = apply_changes(current, [change])
-        result = clean_groups(result, current)
+        result = clean_groups(result, current, moved)
     return current, result
 
 
