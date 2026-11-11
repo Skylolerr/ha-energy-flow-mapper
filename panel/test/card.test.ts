@@ -315,9 +315,10 @@ describe("card", () => {
 
   it("shows a message when the root group is gone", async () => {
     const el = await view({ root: "group:gone" }, mockHass(() => data({ groups: GROUPS })));
-    expect(text(el)).toContain("This device is no longer in the energy dashboard.");
+    expect(text(el)).toContain("This group no longer exists. Pick another start in the card settings.");
+    expect(text(el)).not.toContain("device");
     const none = await view({ root: "group:g1" });
-    expect(text(none)).toContain("This device is no longer in the energy dashboard.");
+    expect(text(none)).toContain("This group no longer exists.");
   });
 
   it("hides sources, untracked blocks and the title on request", async () => {

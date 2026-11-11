@@ -304,7 +304,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     if (root?.startsWith(GROUP_PREFIX)) {
       const node = walkDisplay(display).find((n) => n.type === "group" && groupBlockId(n.group.id) === root);
       if (!node) {
-        return html`<p class="message">${this._t("card_root_missing")}</p>`;
+        return html`<p class="message">${this._t("card_root_group_missing")}</p>`;
       }
       display = [node];
       roots = topDevices(node);

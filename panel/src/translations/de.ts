@@ -232,6 +232,7 @@ export const de: Translations = {
   find_next: "Weiter",
   card_empty: "Noch keine Geräte im Energie-Dashboard.",
   card_root_missing: "Dieses Gerät ist nicht mehr im Energie-Dashboard. Wähle in den Karten-Einstellungen ein anderes.",
+  card_root_group_missing: "Diese Gruppe gibt es nicht mehr. Wähle in den Karten-Einstellungen einen anderen Start.",
   card_root_all: "Ganzes Zuhause",
   card_root_group: "Gruppe: {name}",
   card_field_title: "Titel (leer: kein Titel)",
