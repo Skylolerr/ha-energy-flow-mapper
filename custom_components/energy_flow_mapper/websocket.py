@@ -400,7 +400,7 @@ async def _async_write_with_backup(
     connection: ActiveConnection,
     runtime: EnergyFlowMapperData,
     before: tuple[Prefs, Groups],
-    after: tuple[dict[str, list[Any]], Groups],
+    after: tuple[dict[str, list[Any]], Groups | None],
     summary: dict[str, int],
 ) -> dict[str, Any]:
     """Back up the old content of what changes, then write it.
@@ -414,12 +414,13 @@ async def _async_write_with_backup(
     started, the backup is kept even if it fails, because Home Assistant may
     already use the new settings. The groups are stored last, so a write that
     Home Assistant refuses leaves them as they were. The result's hash covers
-    the new preferences and groups.
+    the preferences and the stored groups as they are afterwards. `after`'s groups
+    are None when the stored groups stay as they are.
     """
-    old, old_groups = before
+    old, _ = before
     update, new_groups = after
     energy_access.validate(update)
-    groups_changed = new_groups != old_groups
+    groups_changed = new_groups is not None
     backup_id = await runtime.backups.async_add(
         {key: old[key] for key in update},
         connection.user.id,
@@ -435,11 +436,11 @@ async def _async_write_with_backup(
         except energy_access.PrefsChangedError as err:
             await runtime.backups.async_discard(backup_id)
             raise _error("conflict") from err
-    if groups_changed:
+    if new_groups is not None:
         await runtime.groups.async_save(new_groups)
     prefs = await energy_access.async_get_prefs(connection.hass)
     return {
-        "hash": state_hash(prefs, clean_groups(new_groups, prefs)),
+        "hash": state_hash(prefs, clean_groups(runtime.groups.groups(), prefs)),
         ATTR_BACKUP_ID: backup_id,
     }
 
@@ -481,7 +482,10 @@ async def websocket_save(
             connection,
             runtime,
             (prefs, groups),
-            ({key: new[key] for key in keys}, new_groups),
+            (
+                {key: new[key] for key in keys},
+                new_groups if new_groups != groups else None,
+            ),
             summarize([*diff(prefs, new), *diff_groups(groups, new_groups)]),
         )
     connection.send_result(msg["id"], result)
@@ -527,9 +531,12 @@ async def websocket_restore(
         # (or one that did not touch them) leaves the groups alone.
         restored = backup.get("groups")
         new_groups = groups
-        if restored is not None and restored != runtime.groups.groups():
+        groups_changed = restored is not None and restored != runtime.groups.groups()
+        if restored is not None and groups_changed:
             new_groups = restored
-        if not update and clean_groups(new_groups, prefs) == groups:
+        if not update and (
+            not groups_changed or clean_groups(new_groups, prefs) == groups
+        ):
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
             )
@@ -538,7 +545,7 @@ async def websocket_restore(
             connection,
             runtime,
             (prefs, groups),
-            (update, new_groups),
+            (update, new_groups if groups_changed else None),
             {"restored": 1},
         )
     connection.send_result(msg["id"], result)
@@ -877,17 +884,19 @@ def _imported(
     return dict(prefs) | update, update, imported_groups
 
 
-def _groups_to_store(
-    new: Mapping[str, Any], current: Groups, imported: Groups | None
-) -> Groups:
-    """Return the groups after an import: `current` unless the file changes them.
+def _imported_groups_change(
+    runtime: EnergyFlowMapperData, new: Mapping[str, Any], imported: Groups | None
+) -> bool:
+    """Return whether an import changes the groups as they will look afterwards.
 
-    Only call this once the imported lists have passed Home Assistant's schemas;
-    cleaning needs well-formed devices.
+    Both sides are cleaned against the imported preferences `new`, so a device
+    that comes back with the import counts as it will be seen. Only call this
+    once the imported lists have passed Home Assistant's schemas; cleaning
+    needs well-formed devices.
     """
-    if imported is not None and clean_groups(imported, new) != current:
-        return imported
-    return current
+    return imported is not None and clean_groups(imported, new) != clean_groups(
+        runtime.groups.groups(), new
+    )
 
 
 _IMPORT_SCHEMA: dict[vol.Marker | str, Any] = {
@@ -914,14 +923,21 @@ async def websocket_import_check(
     # Home Assistant's schemas come first and the hierarchy only after them.
     rejected = energy_access.schema_error(update)
     issues = _issues(hass, new) if rejected is None else []
+    groups_changed = False
     new_groups = groups
     if rejected is None:
-        new_groups = clean_groups(_groups_to_store(new, groups, imported_groups), new)
+        groups_changed = _imported_groups_change(runtime, new, imported_groups)
+        new_groups = clean_groups(
+            imported_groups
+            if groups_changed and imported_groups
+            else runtime.groups.groups(),
+            new,
+        )
     connection.send_result(
         msg["id"],
         {
             "valid": not has_errors(issues) and rejected is None,
-            "changed": bool(update) or new_groups != groups,
+            "changed": bool(update) or groups_changed,
             "issues": [issue.as_dict() for issue in issues],
             "rejected": rejected,
             "diff": (
@@ -945,7 +961,7 @@ async def websocket_import(
         prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
         new, update, imported_groups = _imported(prefs, msg[ATTR_DOCUMENT])
         energy_access.validate(update)
-        new_groups = _groups_to_store(new, groups, imported_groups)
+        groups_changed = _imported_groups_change(runtime, new, imported_groups)
         issues = _issues(hass, new)
         if has_errors(issues):
             raise _error(
@@ -956,7 +972,7 @@ async def websocket_import(
                     if issue.severity is Severity.ERROR
                 ),
             )
-        if not update and new_groups is groups:
+        if not update and not groups_changed:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
             )
@@ -965,7 +981,7 @@ async def websocket_import(
             connection,
             runtime,
             (prefs, groups),
-            (update, new_groups),
+            (update, imported_groups if groups_changed else None),
             {"imported": 1},
         )
     connection.send_result(msg["id"], result)

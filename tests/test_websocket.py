@@ -2479,3 +2479,114 @@ async def test_card_returns_groups_of_its_list(
     assert response["result"]["groups"] == [
         {**water_group, "members": ["portal:garden"]}
     ]
+
+
+async def _group_with_removed_device(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> tuple[list[dict[str, Any]], str]:
+    """Store group g1 [main, garage], then drop the garage outside the mapper.
+
+    Returns the original device list and a backup id holding it.
+    """
+    devices = list(ENERGY_PREFS["device_consumption"])
+    group = {
+        "id": "g1",
+        "name": "Rooms",
+        "parent": None,
+        "group": None,
+        "members": ["sensor.main_energy", "sensor.garage_energy"],
+    }
+    await loaded_entry.runtime_data.groups.async_save(
+        {"electricity": [group], "water": []}
+    )
+    saved = await save_changes(
+        hass_ws_client,
+        hass,
+        [{"type": "rename", "stat": "sensor.kitchen_energy", "name": "K"}],
+    )
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption": [
+                d for d in devices if d["stat_consumption"] != "sensor.garage_energy"
+            ]
+        },
+    )
+    return devices, saved["backup_id"]
+
+
+async def test_v1_import_hash_matches_stored_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A device coming back by import is back in its group; the hash says so."""
+    devices, _ = await _group_with_removed_device(hass, hass_ws_client, loaded_entry)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=await current_hash(hass_ws_client, hass),
+        document=_document(1, device_consumption=devices),
+    )
+    assert response["success"], response
+    assert response["result"]["hash"] == await current_hash(hass_ws_client, hass)
+
+
+async def test_prefs_only_restore_hash_matches_stored_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Restoring the device list brings the device back; the hash says so."""
+    _, backup_id = await _group_with_removed_device(hass, hass_ws_client, loaded_entry)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=backup_id,
+        base_hash=await current_hash(hass_ws_client, hass),
+    )
+    assert response["success"], response
+    assert response["result"]["hash"] == await current_hash(hass_ws_client, hass)
+
+
+async def test_v2_import_stores_groups_the_view_hides(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A file's groups are stored even if they equal the cleaned current view."""
+    devices, _ = await _group_with_removed_device(hass, hass_ws_client, loaded_entry)
+    group = {
+        "id": "g1",
+        "name": "Rooms",
+        "parent": None,
+        "group": None,
+        "members": ["sensor.main_energy"],
+    }
+    document = _document(
+        2, device_consumption=devices, groups={"electricity": [group], "water": []}
+    )
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["result"]["changed"] is True
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["success"], response
+    stored = loaded_entry.runtime_data.groups.groups()["electricity"]
+    assert stored == [group]
+    assert response["result"]["hash"] == await current_hash(hass_ws_client, hass)
