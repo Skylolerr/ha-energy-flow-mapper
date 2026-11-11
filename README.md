@@ -48,10 +48,10 @@ solar, battery or water meter, and which meters are not used yet.
     <td><b>Drag and drop.</b> Drop a device onto another one to include it there; valid targets light up.</td>
   </tr>
   <tr>
-    <td colspan="2"><img alt="Switching from the electricity tab to the water tab and back" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/tabs.gif"></td>
+    <td colspan="2"><img alt="Switching from the electricity tab to the water tab, the gas tab and back" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/tabs.gif"></td>
   </tr>
   <tr>
-    <td colspan="2"><b>Electricity and water.</b> Each has its own tab with its own devices, meters and free sensors.</td>
+    <td colspan="2"><b>Electricity, water and gas.</b> Each has its own tab with its own meters and free sensors.</td>
   </tr>
   <tr>
     <td colspan="2"><img alt="Grouping two devices: Ctrl+click Heat pump and Backup heater, click Group, name it Basement, then collapse the new group to one block with its sum" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/groups.gif"></td>
