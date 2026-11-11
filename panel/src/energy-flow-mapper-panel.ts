@@ -613,6 +613,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._tab = tab;
     this._selected = null;
     this._multi = new Set();
+    this._selectMode = false;
     this._find = "";
     this._findIndex = 0;
     this._autoFit = true;

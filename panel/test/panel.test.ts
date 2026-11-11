@@ -2811,6 +2811,15 @@ describe("groups", () => {
     expect(el._multi.size).toBe(0);
   });
 
+  it("leaves the select mode when switching tabs", async () => {
+    const el = await mount(groupMock());
+    el.setSelectMode(true);
+    el.setTab("water");
+    await settle(el);
+    expect(el._selectMode).toBe(false);
+    expect(buttonWith(el, "Select").getAttribute("aria-pressed")).toBe("false");
+  });
+
   it("drags a device into a group and out again", async () => {
     const el = await mount(groupMock());
     drag(node(el, "sensor.nas"), group(el, "g1"));
