@@ -43,3 +43,13 @@ def test_translation_matches_strings(language: str) -> None:
 
 def test_english_translation_is_strings() -> None:
     assert load(BASE / "translations" / "en.json") == STRINGS
+
+
+@pytest.mark.parametrize(
+    ("language", "word"),
+    [("en", "groups"), ("de", "Gruppen"), ("fr", "groupes"), ("it", "gruppi")],
+)
+def test_conflict_mentions_groups(language: str, word: str) -> None:
+    # A concurrent save of groups alone is a conflict too.
+    translation = load(BASE / "translations" / f"{language}.json")
+    assert word in translation["exceptions.conflict.message"]

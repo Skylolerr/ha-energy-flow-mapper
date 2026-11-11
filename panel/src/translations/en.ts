@@ -138,7 +138,7 @@ export const en = {
   summary_rate: "{count} with new power sensor",
   summary_restored: "Restored a backup",
   error_conflict:
-    "The energy settings were changed elsewhere in the meantime. They were reloaded; check your changes and save again.",
+    "The energy settings or groups were changed elsewhere in the meantime. They were reloaded; check your changes and save again.",
   error_not_loaded: "Energy Flow Mapper is not loaded.",
   error_unsupported_energy_api:
     "The energy settings of this Home Assistant release are not supported. The editor is disabled to protect your settings.",

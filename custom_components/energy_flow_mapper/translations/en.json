@@ -32,7 +32,7 @@
       "message": "The energy settings of this Home Assistant release are not supported by Energy Flow Mapper."
     },
     "conflict": {
-      "message": "The energy settings were changed elsewhere in the meantime. Reload and try again."
+      "message": "The energy settings or groups were changed elsewhere in the meantime. Reload and try again."
     },
     "invalid_changes": {
       "message": "The changes cannot be saved: {issues}."

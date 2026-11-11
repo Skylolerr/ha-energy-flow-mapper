@@ -32,7 +32,7 @@
       "message": "Die Energie-Einstellungen dieser Home-Assistant-Version werden von Energy Flow Mapper nicht unterstützt."
     },
     "conflict": {
-      "message": "Die Energie-Einstellungen wurden in der Zwischenzeit an anderer Stelle geändert. Lade neu und versuche es noch einmal."
+      "message": "Die Energie-Einstellungen oder Gruppen wurden in der Zwischenzeit an anderer Stelle geändert. Lade neu und versuche es noch einmal."
     },
     "invalid_changes": {
       "message": "Die Änderungen können nicht gespeichert werden: {issues}."

@@ -140,7 +140,7 @@ export const fr: Translations = {
   summary_rate: "{count} avec nouveau capteur de puissance",
   summary_restored: "Sauvegarde restaurée",
   error_conflict:
-    "Les réglages d’énergie ont été modifiés ailleurs entre-temps. Ils ont été rechargés ; vérifie tes modifications et enregistre à nouveau.",
+    "Les réglages d’énergie ou les groupes ont été modifiés ailleurs entre-temps. Ils ont été rechargés ; vérifie tes modifications et enregistre à nouveau.",
   error_not_loaded: "Energy Flow Mapper n’est pas chargé.",
   error_unsupported_energy_api:
     "Les réglages d’énergie de cette version de Home Assistant ne sont pas pris en charge. L’éditeur est désactivé pour protéger tes réglages.",

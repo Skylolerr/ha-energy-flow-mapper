@@ -140,7 +140,7 @@ export const it: Translations = {
   summary_rate: "{count} con nuovo sensore di potenza",
   summary_restored: "Backup ripristinato",
   error_conflict:
-    "Le impostazioni energetiche sono state modificate altrove nel frattempo. Sono state ricaricate; controlla le modifiche e salva di nuovo.",
+    "Le impostazioni energetiche o i gruppi sono stati modificati altrove nel frattempo. Sono stati ricaricati; controlla le modifiche e salva di nuovo.",
   error_not_loaded: "Energy Flow Mapper non è caricato.",
   error_unsupported_energy_api:
     "Le impostazioni energetiche di questa versione di Home Assistant non sono supportate. L’editor è disattivato per proteggere le tue impostazioni.",

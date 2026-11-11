@@ -140,7 +140,7 @@ export const de: Translations = {
   summary_rate: "{count} mit neuem Leistungssensor",
   summary_restored: "Sicherung wiederhergestellt",
   error_conflict:
-    "Die Energie-Einstellungen wurden in der Zwischenzeit an anderer Stelle geändert. Sie wurden neu geladen; prüfe deine Änderungen und speichere noch einmal.",
+    "Die Energie-Einstellungen oder Gruppen wurden in der Zwischenzeit an anderer Stelle geändert. Sie wurden neu geladen; prüfe deine Änderungen und speichere noch einmal.",
   error_not_loaded: "Energy Flow Mapper ist nicht geladen.",
   error_unsupported_energy_api:
     "Die Energie-Einstellungen dieser Home-Assistant-Version werden nicht unterstützt. Zum Schutz deiner Einstellungen ist der Editor deaktiviert.",

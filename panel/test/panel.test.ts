@@ -890,6 +890,10 @@ describe("texts", () => {
   it("translates errors", () => {
     const hass = mockHass("de").hass;
     expect(errorText(hass, { translation_key: "conflict" })).toContain("an anderer Stelle");
+    // Groups alone can cause a conflict too.
+    for (const [language, word] of [["en", "groups"], ["de", "Gruppen"], ["fr", "groupes"], ["it", "gruppi"]]) {
+      expect(errorText(mockHass(language).hass, { translation_key: "conflict" })).toContain(word);
+    }
     expect(errorText(hass, { translation_key: "nope", message: "Boom" })).toBe("Fehler: Boom");
     expect(errorText(hass, new Error("x"))).toBe("Fehler: x");
     expect(
