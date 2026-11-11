@@ -102,7 +102,9 @@ and no plausibility warning of its own; the real tree's warnings stay as they ar
   the line from the real parent ends at the frame header; inside, the members hang from
   the header as from a parent.
 - Groups **start collapsed** when the panel loads; a group just created by the user
-  starts expanded. *(Claude's call.)* Collapse state lives in the panel's existing
+  starts expanded. Only groups the panel has not shown yet start collapsed: a group the
+  user expanded or created keeps its state across reloads (save, restore, import,
+  conflict) and period switches. *(Claude's call.)* Collapse state lives in the panel's existing
   `_collapsed` set, keyed by group ID, not saved.
 - **Search** and "Show" (`_reveal`) open collapsed groups above the match, as they already
   open collapsed devices.

@@ -2599,6 +2599,40 @@ describe("groups", () => {
     expect(root(el).querySelector("dialog[open]")).toBeNull();
   });
 
+  it("keeps an expanded group open across reloads and period switches", async () => {
+    const mock = groupMock();
+    const el = await mount(mock);
+    await expand(el, "g1");
+    el.setPeriod("week");
+    await settle(el);
+    el._change({ type: "rename", stat: "sensor.tv", name: "TV" });
+    await el._save();
+    await settle(el);
+    expect(el._collapsed.has("group:g1")).toBe(false);
+    // A group new to this panel (saved elsewhere) still starts collapsed.
+    const snap = groupSnapshot();
+    snap.groups!.electricity!.push({ id: "g9", name: "Rack", parent: null, group: null, members: ["sensor.tv"] });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    await el._load();
+    await settle(el);
+    expect(el._collapsed.has("group:g1")).toBe(false);
+    expect(el._collapsed.has("group:g9")).toBe(true);
+  });
+
+  it("keeps a group created in this panel expanded after saving", async () => {
+    const mock = groupMock();
+    const el = await mount(mock);
+    el._change({ type: "create_group", id: "g2", name: "Living", parent: null, members: ["sensor.tv"], groups: [] });
+    await settle(el);
+    const snap = groupSnapshot();
+    snap.groups!.electricity!.push({ id: "g2", name: "Living", parent: null, group: null, members: ["sensor.tv"] });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    await el._save();
+    await settle(el);
+    expect(el._collapsed.has("group:g2")).toBe(false);
+    expect(el._collapsed.has("group:g1")).toBe(true);
+  });
+
   it("opens a collapsed group when search finds a device inside", async () => {
     const el = await mount(groupMock());
     el._collapsed = new Set([...el._collapsed, "sensor.server"]);

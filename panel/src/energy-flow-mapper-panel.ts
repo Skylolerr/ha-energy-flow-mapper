@@ -325,6 +325,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _draftMemo = new Map<DeviceKind, { key: unknown[]; value: { devices: Device[]; groups: Group[] } }>();
   /** Changes made by one user action share a step; undo takes the step back as a whole. */
   private _steps = new WeakMap<Change, object>();
+  /** Group ids this panel has shown or made; only unseen saved groups start collapsed. */
+  private _seenGroups = new Set<string>();
   /** Turns the picture of the diagram into a PNG; replaced in tests. */
   _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
@@ -431,6 +433,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (changed.has("hass") && this.hass && !this._snapshot && !this._loading && !this._loadError) {
       void this._load();
     }
+    // Groups made in the draft stay expanded once saved.
+    if (changed.has("_changes")) {
+      for (const change of this._changes) {
+        if (change.type === "create_group") {
+          this._seenGroups.add(change.id);
+        }
+      }
+    }
     // Selected blocks the draft no longer has (undo, removed) leave the selection.
     if ((changed.has("_changes") || changed.has("_snapshot")) && this._multi.size) {
       const devices = this.draft;
@@ -468,11 +478,19 @@ export class EnergyFlowMapperPanel extends LitElement {
     await Promise.all([this._validate(), this._loadEnergy()]);
   }
 
-  /** Saved groups start collapsed, once per load; groups made later start expanded. */
+  /**
+   * Saved groups this panel has not seen yet start collapsed. Groups the user
+   * expanded or made in this panel stay as they are across reloads.
+   */
   private _collapseGroups(snapshot: Snapshot): void {
-    const ids = Object.values(snapshot.groups ?? {}).flatMap((groups) => (groups ?? []).map((g) => groupBlockId(g.id)));
+    const ids = Object.values(snapshot.groups ?? {})
+      .flatMap((groups) => (groups ?? []).map((g) => g.id))
+      .filter((id) => !this._seenGroups.has(id));
+    for (const id of ids) {
+      this._seenGroups.add(id);
+    }
     if (ids.length) {
-      this._collapsed = new Set([...this._collapsed, ...ids]);
+      this._collapsed = new Set([...this._collapsed, ...ids.map(groupBlockId)]);
     }
   }
 
