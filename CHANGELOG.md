@@ -18,14 +18,16 @@ and Home Assistant show when they offer the update.
   shows its flow now and its use in a period, in m³ (ft³ with US units) or kWh. Home
   Assistant has no gas devices, so there is nothing to arrange below them.
 - **Your draft survives leaving the panel:** unsaved changes are kept in the browser and
-  come back when you open the panel again. If the energy settings were changed in the
-  meantime, the draft is dropped with a message.
+  come back when you open the panel again, with the same undo steps, also after a save
+  that ran into a conflict. If the energy settings were changed in the meantime, the
+  draft is dropped with a message.
 - **Groups:** bundle devices of the same parent into named groups in the Electricity and
   Water tabs, and nest groups at any depth. Select blocks (Ctrl/Cmd+click, or *Select* on
   a phone), then *Group*. A collapsed group is one block with the sum of its members; an
-  expanded group is a labelled frame. Drag devices and groups in and out, rename or
-  dissolve a group, or let *Suggest groups from areas* make a start (one group per
-  parent and area with at least two ungrouped children). Groups are part of the draft:
+  expanded group is a labelled frame. Saved groups start collapsed; a group you expanded
+  or created stays open when the panel reloads. Drag devices and groups in and out,
+  rename or dissolve a group, or let *Suggest groups from areas* make a start (one group
+  per parent and area with at least two ungrouped children). Groups are part of the draft:
   undo, check, one save, backup, restore, export and import (export format version 2;
   version 1 files are still accepted). They are display only and change nothing in the
   energy settings. When a removed device brings two groups of the same name below one
