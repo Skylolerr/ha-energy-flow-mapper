@@ -53,3 +53,13 @@ def test_conflict_mentions_groups(language: str, word: str) -> None:
     # A concurrent save of groups alone is a conflict too.
     translation = load(BASE / "translations" / f"{language}.json")
     assert word in translation["exceptions.conflict.message"]
+
+
+@pytest.mark.parametrize(
+    ("language", "word"),
+    [("en", "devices"), ("de", "Geräte"), ("fr", "appareils"), ("it", "dispositivi")],
+)
+def test_group_loop_mentions_devices(language: str, word: str) -> None:
+    # move_group below one of the group's own devices is a loop too.
+    translation = load(BASE / "translations" / f"{language}.json")
+    assert word in translation["exceptions.group_loop.message"]

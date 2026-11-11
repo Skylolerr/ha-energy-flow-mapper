@@ -894,6 +894,10 @@ describe("texts", () => {
     for (const [language, word] of [["en", "groups"], ["de", "Gruppen"], ["fr", "groupes"], ["it", "gruppi"]]) {
       expect(errorText(mockHass(language).hass, { translation_key: "conflict" })).toContain(word);
     }
+    // A loop also covers moving a group below one of its own devices.
+    for (const [language, word] of [["en", "devices"], ["de", "Geräte"], ["fr", "appareils"], ["it", "dispositivi"]]) {
+      expect(errorText(mockHass(language).hass, { translation_key: "group_loop" })).toContain(word);
+    }
     expect(errorText(hass, { translation_key: "nope", message: "Boom" })).toBe("Fehler: Boom");
     expect(errorText(hass, new Error("x"))).toBe("Fehler: x");
     expect(
@@ -2686,7 +2690,7 @@ describe("groups", () => {
     };
     el._change({ type: "rename_group", id: "g2", name: "Living" });
     await settle(el);
-    expect(text(el)).toContain("A group cannot be placed inside itself (Living).");
+    expect(text(el)).toContain("A group cannot be moved into itself or below one of its own devices (Living).");
   });
 
   it("keeps a group created in this panel expanded after saving", async () => {

@@ -86,7 +86,7 @@
       "message": "{stat} does not belong below the same device as this group."
     },
     "group_loop": {
-      "message": "A group cannot be placed inside itself ({stat})."
+      "message": "A group cannot be moved into itself or below one of its own devices ({stat})."
     },
     "group_name_empty": {
       "message": "A group needs a name."

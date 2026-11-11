@@ -260,7 +260,7 @@ export const en = {
   export_group: "Group {n}",
   error_unknown_group: "{stat} is not a group.",
   error_group_parents_differ: "{stat} does not belong below the same device as this group.",
-  error_group_loop: "A group cannot be placed inside itself ({stat}).",
+  error_group_loop: "A group cannot be moved into itself or below one of its own devices ({stat}).",
   error_group_name_empty: "A group needs a name.",
   error_group_name_taken: "There is already a group called {stat} here.",
   error_group_exists: "The group {stat} already exists.",

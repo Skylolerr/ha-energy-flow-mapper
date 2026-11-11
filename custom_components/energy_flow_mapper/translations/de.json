@@ -86,7 +86,7 @@
       "message": "{stat} gehört nicht unter dasselbe Gerät wie diese Gruppe."
     },
     "group_loop": {
-      "message": "Eine Gruppe kann nicht in sich selbst liegen ({stat})."
+      "message": "Eine Gruppe kann nicht in sich selbst oder unter eines ihrer eigenen Geräte verschoben werden ({stat})."
     },
     "group_name_empty": {
       "message": "Eine Gruppe braucht einen Namen."

@@ -86,7 +86,7 @@
       "message": "{stat} n’est pas placé sous le même appareil que ce groupe."
     },
     "group_loop": {
-      "message": "Un groupe ne peut pas être placé dans lui-même ({stat})."
+      "message": "Un groupe ne peut pas être déplacé dans lui-même ni sous l’un de ses propres appareils ({stat})."
     },
     "group_name_empty": {
       "message": "Un groupe doit avoir un nom."

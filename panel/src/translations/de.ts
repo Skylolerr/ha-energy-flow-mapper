@@ -262,7 +262,7 @@ export const de: Translations = {
   export_group: "Gruppe {n}",
   error_unknown_group: "{stat} ist keine Gruppe.",
   error_group_parents_differ: "{stat} gehört nicht unter dasselbe Gerät wie diese Gruppe.",
-  error_group_loop: "Eine Gruppe kann nicht in sich selbst liegen ({stat}).",
+  error_group_loop: "Eine Gruppe kann nicht in sich selbst oder unter eines ihrer eigenen Geräte verschoben werden ({stat}).",
   error_group_name_empty: "Eine Gruppe braucht einen Namen.",
   error_group_name_taken: "Hier gibt es schon eine Gruppe mit dem Namen {stat}.",
   error_group_exists: "Die Gruppe {stat} gibt es schon.",
