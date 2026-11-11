@@ -114,6 +114,8 @@ function capture(el: EnergyFlowMapperPanel) {
 }
 
 beforeEach(() => {
+  // A kept draft of one test must not reach the next.
+  localStorage.clear();
   HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
     this.open = true;
   };

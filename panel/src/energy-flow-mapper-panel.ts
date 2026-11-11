@@ -90,6 +90,13 @@ export const TOUCH_DRAG_LIFT = 48;
 const ORIENTATION_KEY = "energy_flow_mapper.orientation";
 /** Where this browser remembers that the coverage at Home is switched off. */
 const COVERAGE_KEY = "energy_flow_mapper.coverage";
+/** The unsaved draft of this browser, so leaving the panel does not lose it. */
+const DRAFT_KEY = "energy_flow_mapper.draft";
+
+interface KeptDraft {
+  hash: string;
+  changes: Change[];
+}
 
 interface Zoom {
   x: number;
@@ -187,6 +194,29 @@ function savedCoverage(): boolean {
   }
 }
 
+/** The draft this browser kept; storage may be blocked or hold something broken. */
+function keptDraft(): KeptDraft | null {
+  try {
+    const value = JSON.parse(localStorage.getItem(DRAFT_KEY) ?? "null") as KeptDraft | null;
+    return value && typeof value.hash === "string" && Array.isArray(value.changes) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep the draft for these settings in this browser, or forget it when empty. */
+function keepDraft(hash: string, changes: Change[]): void {
+  try {
+    if (changes.length) {
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ hash, changes }));
+    } else {
+      localStorage.removeItem(DRAFT_KEY);
+    }
+  } catch {
+    // Without storage the draft lives as long as the panel.
+  }
+}
+
 /** Navigate inside the Home Assistant frontend without reloading the page. */
 function navigate(path: string): void {
   history.pushState(null, "", path);
@@ -265,6 +295,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _findIndex: number;
 
   private _loading = false;
+  /** Whether the kept draft was looked at; until then nothing is stored. */
+  private _draftChecked = false;
   private _validateRequest = 0;
   private _energyRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -347,6 +379,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._snapshot = await this.hass.callWS<Snapshot>({ type: `${DOMAIN}/get` });
       this._loadError = null;
       this._ignored = this._snapshot.ignored_suggestions ?? [];
+      this._restoreDraft(this._snapshot.hash);
       this._loadHaTexts();
     } catch (err) {
       this._loadError = errorText(this.hass, err);
@@ -354,6 +387,28 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._loading = false;
     }
     await Promise.all([this._validate(), this._loadEnergy()]);
+  }
+
+  /**
+   * Bring back the draft kept when the panel was left, once per panel. A
+   * draft for settings that changed meanwhile cannot be applied and is dropped.
+   */
+  private _restoreDraft(hash: string): void {
+    if (this._draftChecked) {
+      return;
+    }
+    this._draftChecked = true;
+    const kept = keptDraft();
+    if (!kept || this._changes.length) {
+      return;
+    }
+    if (kept.hash === hash) {
+      this._changes = kept.changes;
+      this._showToast(this._t("draft_restored"));
+    } else {
+      keepDraft(hash, []);
+      this._showToast(this._t("draft_outdated"));
+    }
   }
 
   /** Load Home Assistant's texts for its energy check, once. */
@@ -1099,6 +1154,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   // --- rendering ------------------------------------------------------------
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (changed.has("_changes") && this._draftChecked && this._snapshot) {
+      keepDraft(this._snapshot.hash, this._changes);
+    }
     // The first fit waits for a sized viewport; a zoom or search before it wins.
     if (!this._fitted && this._autoFit && this._snapshot && this._view === "diagram") {
       this._fitted = this.fit();
@@ -1417,9 +1475,13 @@ export class EnergyFlowMapperPanel extends LitElement {
    */
   private _showMatch(): void {
     const stat = this.findMatches()[this._findIndex];
-    if (stat === undefined) {
-      return;
+    if (stat !== undefined) {
+      this._reveal(stat);
     }
+  }
+
+  /** Open the collapsed devices above a block, select it and move it to the middle. */
+  private _reveal(stat: string): void {
     const devices = this.draft;
     const collapsed = new Set(this._collapsed);
     let parent = devices.find((d) => d.stat_consumption === stat)?.included_in_stat;
@@ -1431,7 +1493,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     this._collapsed = collapsed;
     this._selected = stat;
-    const block = this.diagramLayout().blocks.find((b) => b.kind === "device" && b.stat === stat);
+    const blocks = this.diagramLayout().blocks;
+    const block =
+      blocks.find((b) => b.kind === "device" && b.stat === stat) ??
+      blocks.find((b) => b.kind === "source" && b.stat === stat);
     const viewport = this._viewport();
     if (!block || !viewport?.clientWidth) {
       return;
@@ -2253,12 +2318,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       return nothing;
     }
     const count = this._validation?.diff.length ?? this._changes.length;
+    const errors = this._validation?.issues.filter((i) => i.severity === "error").length ?? 0;
     return html`<div class="footer">
       <span
         >${count === 1
           ? this._t("change_one")
           : this._t("change_other", { count: formatNumber(this.hass, count) })}</span
       >
+      ${errors
+        ? html`<span class="blocked" title=${this._t("blocked_hint")}
+            >${icon("alert")}
+            ${errors === 1
+              ? this._t("blocked_one")
+              : this._t("blocked_other", { count: formatNumber(this.hass, errors) })}</span
+          >`
+        : nothing}
       <button class="undo-change" title=${this._t("undo_change_hint")} @click=${() => this._undoChange()}>
         ${icon("undo")} ${this._t("undo_change")}
       </button>
@@ -2368,9 +2442,22 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _renderCheck(result: ValidateResult): TemplateResult {
     const errors = result.issues.filter((i) => i.severity === "error");
     const warnings = result.issues.filter((i) => i.severity === "warning");
+    const saved = this._snapshot?.issues ?? [];
+    const kindOf = (i: Issue) => i.kind ?? "electricity";
+    const wasSaved = (i: Issue) =>
+      saved.some((s) => s.code === i.code && s.stat === i.stat && kindOf(s) === kindOf(i));
     const issueList = (issues: Issue[]) =>
       html`<ul class="issues">
-        ${issues.map((i) => html`<li class=${i.severity}>${this._name(i.stat)}: ${this._issueText(i)}</li>`)}
+        ${issues.map(
+          (i) =>
+            html`<li class=${i.severity}>
+              ${this._name(i.stat)}: ${this._issueText(i)}
+              ${i.severity === "error" && wasSaved(i)
+                ? html`<span class="saved-issue">(${this._t("issue_saved")})</span>`
+                : nothing}
+              <button class="link" @click=${() => this._showIssue(i)}>${this._t("show_block")}</button>
+            </li>`,
+        )}
       </ul>`;
     return html`<ul class="diff">
         ${result.diff.map((entry) => html`<li>${this._diffText(entry)}</li>`)}
@@ -2381,6 +2468,13 @@ export class EnergyFlowMapperPanel extends LitElement {
         ? html`<p>${this._t("confirm_rejected")}</p>
             <p class="rejected">${result.rejected}</p>`
         : nothing}`;
+  }
+
+  /** Close the dialog and show the block of a problem in its tab. */
+  private _showIssue(issue: Issue): void {
+    this._close();
+    this.setTab(issue.kind ?? "electricity");
+    this._reveal(issue.stat);
   }
 
   _summaryText(summary: Record<string, number>): string {
@@ -3378,8 +3472,20 @@ export class EnergyFlowMapperPanel extends LitElement {
       border-top: 1px solid var(--divider-color);
       z-index: 2;
     }
-    .footer span {
+    .footer > span:first-child {
       flex: 1;
+    }
+    .footer .blocked {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      color: var(--error-color);
+    }
+    .saved-issue {
+      color: var(--secondary-text-color);
+    }
+    ul.issues button.link {
+      margin-left: 4px;
     }
     dialog label {
       display: block;

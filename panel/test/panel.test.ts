@@ -182,6 +182,8 @@ beforeEach(() => {
   HTMLDialogElement.prototype.showModal ??= function (this: HTMLDialogElement) {
     this.open = true;
   };
+  // A kept draft of one test must not reach the next.
+  localStorage.clear();
 });
 
 afterEach(() => {
@@ -436,6 +438,114 @@ describe("saving", () => {
     await el._save();
     await settle(el);
     expect(text(el)).toContain("Nothing changed");
+  });
+});
+
+describe("kept draft", () => {
+  const DRAFT_KEY = "energy_flow_mapper.draft";
+  const move: Change = { type: "move", stat: "sensor.tv", parent: "sensor.server" };
+
+  it("keeps unsaved changes when the panel is left and opened again", async () => {
+    const first = await mount(mockHass());
+    first._change(move);
+    await settle(first);
+    first.remove();
+    const again = await mount(mockHass());
+    expect(again._changes).toEqual([move]);
+    expect(text(again)).toContain("Your unsaved changes were restored");
+    expect(root(again).querySelector(".footer")).not.toBeNull();
+  });
+
+  it("forgets the draft after saving, discarding and undoing everything", async () => {
+    const el = await mount(mockHass());
+    el._change(move);
+    await settle(el);
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toEqual({ hash: "hash-1", changes: [move] });
+    el._undoChange();
+    await settle(el);
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    el._change(move);
+    el._discard();
+    await settle(el);
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+    el._change(move);
+    await el._save();
+    await settle(el);
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+  });
+
+  it("drops a draft for settings that changed meanwhile", async () => {
+    localStorage.setItem(DRAFT_KEY, JSON.stringify({ hash: "hash-0", changes: [move] }));
+    const el = await mount(mockHass());
+    expect(el._changes).toEqual([]);
+    expect(text(el)).toContain("could not be restored");
+    expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
+  });
+
+  it("ignores a broken draft", async () => {
+    localStorage.setItem(DRAFT_KEY, "{not json");
+    const el = await mount(mockHass());
+    expect(el._changes).toEqual([]);
+    expect(root(el).querySelector(".toast")).toBeNull();
+  });
+
+  it("works when the browser cannot store it", async () => {
+    const blocked = () => {
+      throw new Error("blocked");
+    };
+    vi.stubGlobal("localStorage", { getItem: blocked, setItem: blocked, removeItem: blocked });
+    try {
+      const el = await mount(mockHass());
+      el._change(move);
+      await settle(el);
+      expect(el._changes).toEqual([move]);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("blocked saving", () => {
+  function blocking(mock: Mock): void {
+    mock.responses["energy_flow_mapper/get"] = {
+      ...snapshot(),
+      issues: [{ code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {} }],
+    };
+    mock.responses["energy_flow_mapper/validate"] = {
+      valid: false,
+      issues: [
+        { code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {} },
+        { code: "cycle", severity: "error", stat: "sensor.tv", details: {}, kind: "electricity" },
+      ],
+      diff: [{ type: "moved", stat: "sensor.tv", from: null, to: "sensor.server" }],
+    };
+  }
+
+  it("says in the footer that problems block saving", async () => {
+    const mock = mockHass();
+    blocking(mock);
+    const el = await mount(mock);
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    await settle(el);
+    expect(root(el).querySelector(".footer .blocked")!.textContent).toContain("2 problems prevent saving");
+  });
+
+  it("marks problems of the saved settings and shows the block of a problem", async () => {
+    const mock = mockHass();
+    blocking(mock);
+    const el = await mount(mock);
+    el.setTab("water");
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    await el._openConfirm();
+    await settle(el);
+    const items = [...root(el).querySelectorAll("dialog ul.issues li")];
+    expect(items[0].textContent).toContain("already in the saved settings");
+    expect(items[1].textContent).not.toContain("already in the saved settings");
+    items[1].querySelector<HTMLButtonElement>("button")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    expect(el._tab).toBe("electricity");
+    expect(el._selected).toBe("sensor.tv");
   });
 });
 
