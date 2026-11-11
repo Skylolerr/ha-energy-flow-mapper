@@ -64,6 +64,15 @@
     "integral_failed": {
       "message": "The helper for the meter could not be created."
     },
+    "sum_not_possible": {
+      "message": "{entity} cannot be summed: it needs to be a sensor with the right device class and a total or total-increasing state class."
+    },
+    "sum_state_classes_differ": {
+      "message": "The sensors do not all have the same state class (total or total increasing), so their sum would not be accepted as a meter."
+    },
+    "sum_failed": {
+      "message": "The sum meter could not be created."
+    },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },

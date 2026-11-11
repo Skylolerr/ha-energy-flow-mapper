@@ -93,6 +93,7 @@ from .hierarchy import (
 )
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
+from .sum_meter import async_create_sum, check_sum_members
 from .transfer import InvalidImportError, build_export, parse_import
 
 ATTR_BASE_HASH = "base_hash"
@@ -231,6 +232,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_backups)
     async_register_command(hass, websocket_restore)
     async_register_command(hass, websocket_create_integral)
+    async_register_command(hass, websocket_create_sum_meter)
     async_register_command(hass, websocket_energy)
     async_register_command(hass, websocket_export)
     async_register_command(hass, websocket_import_check)
@@ -588,6 +590,43 @@ async def websocket_create_integral(
     connection.send_result(
         msg["id"], {"entity_id": entity_id, "stat_rate": power, "kind": kind}
     )
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/create_sum_meter",
+        vol.Required(ATTR_KIND): _KINDS,
+        vol.Required(ATTR_NAME): str,
+        vol.Required("entity_ids"): vol.All([str], vol.Length(min=1)),
+        vol.Optional("rate_entity_ids"): [str],
+        vol.Optional("rate_name"): str,
+    }
+)
+@require_admin
+@async_response
+async def websocket_create_sum_meter(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Create a sum helper of meters, and one of their rate sensors if given.
+
+    The helpers are created at once, not on save; the panel then adds the
+    meter to the draft. `name` is passed ready (translated) by the panel; the
+    rate sum is named `rate_name`, or `name` plus " power" / " flow".
+    """
+    runtime = _runtime(hass)
+    kind = DeviceKind(msg[ATTR_KIND])
+    name = msg[ATTR_NAME].strip()
+    check_sum_members(hass, msg["entity_ids"], kind)
+    entry_id, entity_id = await async_create_sum(hass, name, msg["entity_ids"])
+    await runtime.helpers.async_add(entry_id)
+    stat_rate = None
+    if msg.get("rate_entity_ids"):
+        suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
+        rate_entry_id, stat_rate = await async_create_sum(
+            hass, msg.get("rate_name", name + suffix), msg["rate_entity_ids"]
+        )
+        await runtime.helpers.async_add(rate_entry_id)
+    connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 
 @websocket_command(

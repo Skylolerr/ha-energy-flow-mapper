@@ -64,6 +64,15 @@
     "integral_failed": {
       "message": "Der Helfer für den Zähler konnte nicht angelegt werden."
     },
+    "sum_not_possible": {
+      "message": "{entity} kann nicht summiert werden: Es muss ein Sensor mit der passenden Geräteklasse und der Zustandsklasse total oder total_increasing sein."
+    },
+    "sum_state_classes_differ": {
+      "message": "Die Sensoren haben nicht alle dieselbe Zustandsklasse (total oder total_increasing), darum würde ihre Summe nicht als Zähler akzeptiert."
+    },
+    "sum_failed": {
+      "message": "Der Summen-Zähler konnte nicht erstellt werden."
+    },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },

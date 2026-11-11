@@ -594,6 +594,12 @@ async def test_schema_rejects_unknown_change_type(
         {"type": f"{DOMAIN}/energy", "period": "today"},
         {"type": f"{DOMAIN}/create_integral", "power_entity_id": "x", "name": "x"},
         {
+            "type": f"{DOMAIN}/create_sum_meter",
+            "kind": "electricity",
+            "name": "x",
+            "entity_ids": ["sensor.x"],
+        },
+        {
             "type": f"{DOMAIN}/ignore_suggestion",
             "kind": "electricity",
             "stat": "x",

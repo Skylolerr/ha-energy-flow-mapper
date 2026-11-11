@@ -64,6 +64,15 @@
     "integral_failed": {
       "message": "L’assistant du compteur n’a pas pu être créé."
     },
+    "sum_not_possible": {
+      "message": "{entity} ne peut pas être additionné : il doit s’agir d’un capteur avec la bonne classe d’appareil et la classe d’état total ou total_increasing."
+    },
+    "sum_state_classes_differ": {
+      "message": "Les capteurs n’ont pas tous la même classe d’état (total ou total_increasing) ; leur somme ne serait donc pas acceptée comme compteur."
+    },
+    "sum_failed": {
+      "message": "Le compteur de somme n’a pas pu être créé."
+    },
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
     },
