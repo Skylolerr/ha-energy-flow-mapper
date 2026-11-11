@@ -48,8 +48,6 @@ and Home Assistant show when they offer the update.
 
 - **Gas is no longer shown in the electricity tab** or on the electricity card. It looked
   as if gas flowed into Home there, but it was never counted in the home consumption.
-- **Once after updating,** an unsaved draft that the browser kept from before the update
-  is dropped: the settings fingerprint now includes the groups.
 
 ## [0.8.0] - 2026-11-07
 
