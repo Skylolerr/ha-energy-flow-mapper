@@ -3,7 +3,8 @@
 // grows tall). Pure geometry, no DOM; positions are never stored.
 
 import type { SourceRole, SourceRow, TreeNode } from "./draft";
-import type { Orientation } from "./types";
+import { groupBlockId, groupValue, type DisplayNode } from "./groups";
+import type { Group, Orientation } from "./types";
 
 export const BOX_W = 220;
 export const BOX_H = 72;
@@ -15,6 +16,8 @@ export const COLUMN_GAP = 80;
 /** Space between stacked blocks of a vertical diagram, which keeps it short. */
 export const ROW_GAP = 12;
 export const MARGIN = 24;
+/** Space between the frame of an expanded group and the blocks inside it. */
+export const FRAME_PAD = 12;
 
 export const HOME_ID = "home";
 
@@ -32,7 +35,7 @@ export const SOURCE_COLORS: Record<string, string> = {
   home: "var(--secondary-text-color)",
 };
 
-export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked";
+export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked" | "group";
 
 export interface Block {
   id: string;
@@ -46,9 +49,11 @@ export interface Block {
   role?: SourceRole | "battery";
   source?: SourceRow;
   node?: TreeNode;
+  /** Set on group blocks, collapsed or the header of an expanded group. */
+  group?: Group;
 }
 
-export type EdgeKind = "source" | "device" | "untracked";
+export type EdgeKind = "source" | "device" | "untracked" | "group";
 
 export interface Edge {
   from: string;
@@ -58,9 +63,21 @@ export interface Edge {
   power: number | null;
 }
 
+/** The frame around an expanded group: its header and everything below it. */
+export interface Frame {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  group: Group;
+}
+
 export interface Layout {
   blocks: Block[];
   edges: Edge[];
+  /** Frames of expanded groups, outer ones before the groups inside them. */
+  frames: Frame[];
   width: number;
   height: number;
 }
@@ -84,25 +101,43 @@ export function untrackedId(stat: string): string {
 
 interface Item {
   id: string;
-  kind: "device" | "untracked";
-  stat: string;
+  kind: "device" | "untracked" | "group";
+  /** Statistic of a device, or of the parent of an untracked block. */
+  stat?: string;
   node?: TreeNode;
+  group?: Group;
+  /** Where the value of a group comes from. */
+  display?: DisplayNode;
   children: Item[];
 }
 
-function items(nodes: TreeNode[], collapsed: Set<string>, showUntracked: boolean): Item[] {
-  return nodes.map((node) => {
+function items(nodes: DisplayNode[], collapsed: Set<string>, showUntracked: boolean): Item[] {
+  return nodes.map((node): Item => {
+    if (node.type === "group") {
+      const id = groupBlockId(node.group.id);
+      const children = collapsed.has(id) ? [] : items(node.children, collapsed, showUntracked);
+      return { id, kind: "group", group: node.group, display: node, children };
+    }
+    const stat = node.node.stat;
     const children =
-      node.children.length === 0 || collapsed.has(node.stat)
+      node.children.length === 0 || collapsed.has(stat)
         ? []
         : [
             ...items(node.children, collapsed, showUntracked),
-            ...(showUntracked
-              ? [{ id: untrackedId(node.stat), kind: "untracked" as const, stat: node.stat, children: [] }]
-              : []),
+            ...(showUntracked ? [{ id: untrackedId(stat), kind: "untracked" as const, stat, children: [] }] : []),
           ];
-    return { id: node.stat, kind: "device" as const, stat: node.stat, node, children };
+    return { id: stat, kind: "device", stat, node: node.node, display: node, children };
   });
+}
+
+/** Wrap a plain tree as device nodes, for callers that have no groups. */
+function wrap(nodes: TreeNode[]): DisplayNode[] {
+  return nodes.map((node) => ({ type: "device", node, children: wrap(node.children) }));
+}
+
+/** An expanded group: its children sit in a frame. */
+function framed(item: Item): boolean {
+  return item.kind === "group" && item.children.length > 0;
 }
 
 /** Room of an item and its children across the flow, for blocks of size `box`. */
@@ -111,7 +146,7 @@ function span(item: Item, box: number, space: number): number {
     return box;
   }
   const children = item.children.reduce((sum, child) => sum + span(child, box, space), 0);
-  return Math.max(box, children + space * (item.children.length - 1));
+  return Math.max(box, children + space * (item.children.length - 1)) + (framed(item) ? 2 * FRAME_PAD : 0);
 }
 
 /**
@@ -123,7 +158,7 @@ function span(item: Item, box: number, space: number): number {
  * adds what no top-level device covers below Home (`untracked` of HOME_ID).
  */
 export function layout(
-  roots: TreeNode[],
+  roots: DisplayNode[] | TreeNode[],
   sources: SourceRow[],
   power: Map<string, number | null>,
   untracked: Map<string, number | null>,
@@ -135,6 +170,7 @@ export function layout(
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
+  const frames: Frame[] = [];
 
   // Sizes along the flow and across it, and a position from those two.
   const vertical = orientation === "vertical";
@@ -175,7 +211,11 @@ export function layout(
   const sourcesAcross = sourceBlocks.length * sourceAcross + (sourceBlocks.length - 1) * space;
 
   // Device tree after Home.
-  const tree = items(roots, collapsed, showUntracked);
+  const tree = items(
+    roots.length > 0 && "type" in roots[0] ? (roots as DisplayNode[]) : wrap(roots as TreeNode[]),
+    collapsed,
+    showUntracked,
+  );
   if (showUntracked && homeUntracked) {
     tree.push({ id: untrackedId(HOME_ID), kind: "untracked", stat: HOME_ID, children: [] });
   }
@@ -208,10 +248,22 @@ export function layout(
   }
 
   let end = homeAlong + boxAlong;
-  const place = (item: Item, start: number, depth: number, parent: string): void => {
+  // Places an item and its children; returns the end along the flow of the
+  // item and everything below it, including the frames of groups.
+  const place = (item: Item, start: number, depth: number, parent: string): number => {
     const size = span(item, boxAcross, space);
     const along = homeAlong + (depth + 1) * (boxAlong + gap);
-    end = Math.max(end, along + boxAlong);
+    const own = along + boxAlong;
+    end = Math.max(end, own);
+    const stat = item.stat ?? "";
+    let flow: number | null;
+    if (item.kind === "untracked") {
+      flow = untracked.get(stat) ?? null;
+    } else if (item.kind === "group") {
+      flow = groupValue(item.display!, power);
+    } else {
+      flow = power.get(stat) ?? null;
+    }
     blocks.push({
       id: item.id,
       kind: item.kind,
@@ -220,19 +272,33 @@ export function layout(
       h: BOX_H,
       stat: item.stat,
       node: item.node,
+      group: item.group,
     });
-    edges.push({
-      from: parent,
-      to: item.id,
-      kind: item.kind,
-      power: item.kind === "untracked" ? (untracked.get(item.stat) ?? null) : (power.get(item.stat) ?? null),
-    });
+    edges.push({ from: parent, to: item.id, kind: item.kind, power: flow });
+    const frame: Frame | null = framed(item)
+      ? { id: item.id, ...at(along - FRAME_PAD, start), ...(vertical ? { w: 0, h: size } : { w: size, h: 0 }), group: item.group! }
+      : null;
+    if (frame) {
+      frames.push(frame);
+    }
     const children = item.children.reduce((sum, child) => sum + span(child, boxAcross, space), 0);
     let childStart = start + (size - (children + space * (item.children.length - 1))) / 2;
+    let below = own;
     for (const child of item.children) {
-      place(child, childStart, depth + 1, item.id);
+      below = Math.max(below, place(child, childStart, depth + 1, item.id));
       childStart += span(child, boxAcross, space) + space;
     }
+    if (frame) {
+      below += FRAME_PAD;
+      end = Math.max(end, below);
+      const length = below - (along - FRAME_PAD);
+      if (vertical) {
+        frame.w = length;
+      } else {
+        frame.h = length;
+      }
+    }
+    return below;
   };
   let start = center - treeAcross / 2;
   for (const item of tree) {
@@ -242,7 +308,7 @@ export function layout(
 
   const breadth = content + 2 * MARGIN;
   const length = end + MARGIN;
-  return { blocks, edges, width: vertical ? length : breadth, height: vertical ? breadth : length };
+  return { blocks, edges, frames, width: vertical ? length : breadth, height: vertical ? breadth : length };
 }
 
 /** Stroke width for an edge: 2 to 8 px relative to the largest power. */

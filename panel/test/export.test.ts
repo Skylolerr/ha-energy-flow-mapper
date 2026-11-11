@@ -16,6 +16,7 @@ function block(id: string, kind: Block["kind"], x: number, y: number, stat?: str
 }
 
 const LAYOUT: Layout = {
+  frames: [],
   blocks: [
     block("src:import", "source", 24, 24, "sensor.grid_import"),
     block("home", "home", 300, 24),

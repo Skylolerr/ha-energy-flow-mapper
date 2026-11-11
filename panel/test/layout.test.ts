@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { buildTree, sourceRows } from "../src/draft";
+import { displayTree, groupBlockId } from "../src/groups";
 import {
   arrowHead,
   arrowSize,
@@ -9,6 +10,8 @@ import {
   BOX_W,
   COLUMN_GAP,
   edgePath,
+  FRAME_PAD,
+  type Frame,
   H_GAP,
   HOME_ID,
   HOME_PLACEHOLDER_ROLES,
@@ -293,4 +296,83 @@ describe("home meter and Home", () => {
       expect(hidden.blocks.some((b) => b.kind === "untracked")).toBe(false);
     });
   }
+});
+
+describe("group layout", () => {
+  const GDEVICES = [device("a"), device("b"), device("c"), device("d"), device("e")];
+  const group = (id: string, members: string[], enclosing: string | null = null) => ({
+    id,
+    name: id,
+    parent: null,
+    group: enclosing,
+    members,
+  });
+  const empty = new Map<string, number | null>();
+  const values = new Map<string, number | null>([
+    ["a", 10],
+    ["b", 5],
+  ]);
+
+  it("draws a collapsed group as one block with one edge to its parent", () => {
+    const tree = displayTree(buildTree(GDEVICES), [group("g1", ["a", "b"])]);
+    const result = layout(tree, [], values, empty, new Set([groupBlockId("g1")]));
+    const blocks = byId(result);
+    expect(blocks["group:g1"].kind).toBe("group");
+    expect(blocks["group:g1"].group?.id).toBe("g1");
+    expect(blocks.a).toBeUndefined();
+    expect(result.frames).toEqual([]);
+    expect(result.edges.filter((e) => e.to === "group:g1")).toEqual([
+      { from: HOME_ID, to: "group:g1", kind: "group", power: 15 },
+    ]);
+  });
+
+  it("draws an expanded group as a frame around its sub-tree", () => {
+    const tree = displayTree(buildTree(GDEVICES), [group("g1", ["a", "b"])]);
+    const result = layout(tree, [], values, empty);
+    const blocks = byId(result);
+    expect(result.frames).toHaveLength(1);
+    const frame = result.frames[0];
+    expect(frame.id).toBe("group:g1");
+    for (const id of ["group:g1", "a", "b"]) {
+      const b = blocks[id];
+      expect(b.x).toBeGreaterThanOrEqual(frame.x + FRAME_PAD);
+      expect(b.y).toBeGreaterThanOrEqual(frame.y + FRAME_PAD);
+      expect(b.x + b.w).toBeLessThanOrEqual(frame.x + frame.w - FRAME_PAD);
+      expect(b.y + b.h).toBeLessThanOrEqual(frame.y + frame.h - FRAME_PAD);
+    }
+    expect(result.edges.some((e) => e.from === "group:g1" && e.to === "a")).toBe(true);
+    // c, d and e are outside the frame.
+    expect(blocks.c.x >= frame.x + frame.w || blocks.c.x + blocks.c.w <= frame.x).toBe(true);
+  });
+
+  for (const orientation of ["horizontal", "vertical"] as const) {
+    it(`keeps sibling frames apart and nested frames inside (${orientation})`, () => {
+      const groups = [group("g1", ["a"]), group("g2", ["b"]), group("g3", ["c"], "g1"), group("g4", ["d"], "g1")];
+      const tree = displayTree(buildTree(GDEVICES), groups);
+      const result = layout(tree, [], empty, empty, new Set(), undefined, false, orientation);
+      const frames = Object.fromEntries(result.frames.map((f) => [f.id, f]));
+      const disjoint = (p: Frame, q: Frame) =>
+        p.x + p.w <= q.x || q.x + q.w <= p.x || p.y + p.h <= q.y || q.y + q.h <= p.y;
+      const inside = (inner: Frame, outer: Frame) =>
+        inner.x > outer.x &&
+        inner.y > outer.y &&
+        inner.x + inner.w < outer.x + outer.w &&
+        inner.y + inner.h < outer.y + outer.h;
+      expect(Object.keys(frames).sort()).toEqual(["group:g1", "group:g2", "group:g3", "group:g4"]);
+      expect(disjoint(frames["group:g1"], frames["group:g2"])).toBe(true);
+      expect(disjoint(frames["group:g3"], frames["group:g4"])).toBe(true);
+      expect(inside(frames["group:g3"], frames["group:g1"])).toBe(true);
+      expect(inside(frames["group:g4"], frames["group:g1"])).toBe(true);
+      expect(result.width).toBeGreaterThanOrEqual(frames["group:g2"].x + frames["group:g2"].w);
+      expect(result.height).toBeGreaterThanOrEqual(frames["group:g1"].y + frames["group:g1"].h);
+    });
+  }
+
+  it("keeps the old output for trees without groups", () => {
+    const tree = buildTree(DEVICES);
+    const plain = layout(tree, [], new Map(), new Map());
+    const wrapped = layout(displayTree(tree, []), [], new Map(), new Map());
+    expect(plain.frames).toEqual([]);
+    expect(wrapped).toEqual(plain);
+  });
 });
