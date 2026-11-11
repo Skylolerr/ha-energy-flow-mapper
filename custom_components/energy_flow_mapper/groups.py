@@ -46,6 +46,23 @@ class Group(TypedDict):
 type Groups = dict[str, list[Group]]
 
 
+def is_group(raw: object) -> bool:
+    """Return whether `raw` has the fields of a group with the right types."""
+    if not isinstance(raw, dict):
+        return False
+    if "parent" not in raw or "group" not in raw:
+        return False
+    members = raw.get("members")
+    return (
+        isinstance(raw.get("id"), str)
+        and isinstance(raw.get("name"), str)
+        and (raw.get("parent") is None or isinstance(raw.get("parent"), str))
+        and (raw.get("group") is None or isinstance(raw.get("group"), str))
+        and isinstance(members, list)
+        and all(isinstance(member, str) for member in members)
+    )
+
+
 def empty_groups() -> Groups:
     """Return groups with an empty list for every kind."""
     return {kind.value: [] for kind in GROUP_KINDS}

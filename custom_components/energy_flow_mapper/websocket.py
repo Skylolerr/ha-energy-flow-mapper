@@ -54,6 +54,7 @@ from .groups import (
     apply_all,
     clean_groups,
     diff_groups,
+    groups_of,
     state_hash,
 )
 from .hierarchy import (
@@ -522,13 +523,23 @@ async def websocket_restore(
             if prefs.get(key) != value
         }
         _refuse_home_without_support(update)
-        if not update:
+        # Groups are restored as stored; a backup from before groups existed
+        # (or one that did not touch them) leaves the groups alone.
+        restored = backup.get("groups")
+        new_groups = groups
+        if restored is not None and restored != runtime.groups.groups():
+            new_groups = restored
+        if not update and clean_groups(new_groups, prefs) == groups:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
             )
             return
         result = await _async_write_with_backup(
-            connection, runtime, (prefs, groups), (update, groups), {"restored": 1}
+            connection,
+            runtime,
+            (prefs, groups),
+            (update, new_groups),
+            {"restored": 1},
         )
     connection.send_result(msg["id"], result)
 
@@ -745,12 +756,13 @@ async def websocket_card(
     """Return one device tree for the dashboard card; every user may read it.
 
     Only what the card shows: the devices of the list with name, parent, rate
-    sensor and area, the sources of the list, and with `period` the energy,
+    sensor and area, the groups and sources of the list, and with `period` the energy,
     untracked values and warnings. No prices or costs, and nothing to change.
     """
     runtime = _runtime(hass)
     kind = DeviceKind(msg[ATTR_KIND])
     prefs = await energy_access.async_get_prefs(hass)
+    groups = clean_groups(runtime.groups.groups(), prefs)
     devices: list[Any] = prefs.get(DEVICE_KEYS[kind], [])
     sources = [s for s in prefs.get(KEY_SOURCES, []) if source_kind(s) == kind]
     rows = [
@@ -796,6 +808,7 @@ async def websocket_card(
             }
             for source, role, stat in rows
         ],
+        "groups": groups_of(groups, kind),
         "water_unit": water_unit(hass),
         "home_supported": energy_access.home_supported(),
     }
@@ -828,10 +841,10 @@ async def websocket_card(
 async def websocket_export(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Return the sources and devices as an export document.
+    """Return the sources, devices and groups as an export document.
 
-    With `backup_id`, the content of that backup; otherwise the current
-    settings.
+    With `backup_id`, the content of that backup (its groups when it has
+    them); otherwise the current settings and groups.
     """
     runtime = _runtime(hass)
     exported = dt_util.utcnow().isoformat()
@@ -839,21 +852,42 @@ async def websocket_export(
         backup = runtime.backups.get(msg[ATTR_BACKUP_ID])
         if backup is None:
             raise _error("backup_not_found", backup_id=msg[ATTR_BACKUP_ID])
-        document = build_export(backup["data"], exported, backup)
+        document = build_export(backup["data"], exported, backup, backup.get("groups"))
     else:
-        document = build_export(await energy_access.async_get_prefs(hass), exported)
+        prefs = await energy_access.async_get_prefs(hass)
+        document = build_export(
+            prefs, exported, None, clean_groups(runtime.groups.groups(), prefs)
+        )
     connection.send_result(msg["id"], document)
 
 
-def _imported(prefs: Prefs, document: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return the preferences with an import applied, and the changed lists."""
+def _imported(
+    prefs: Prefs, document: Any
+) -> tuple[dict[str, Any], dict[str, Any], Groups | None]:
+    """Return the preferences with an import applied, the changed lists and groups.
+
+    The groups are the imported ones as given, or None for a file without any.
+    """
     try:
-        data = parse_import(document)
+        data, imported_groups = parse_import(document)
     except InvalidImportError as err:
         raise _error("invalid_import", error=str(err)) from err
     update = {key: value for key, value in data.items() if prefs.get(key) != value}
     _refuse_home_without_support(update)
-    return dict(prefs) | update, update
+    return dict(prefs) | update, update, imported_groups
+
+
+def _groups_to_store(
+    new: Mapping[str, Any], current: Groups, imported: Groups | None
+) -> Groups:
+    """Return the groups after an import: `current` unless the file changes them.
+
+    Only call this once the imported lists have passed Home Assistant's schemas;
+    cleaning needs well-formed devices.
+    """
+    if imported is not None and clean_groups(imported, new) != current:
+        return imported
+    return current
 
 
 _IMPORT_SCHEMA: dict[vol.Marker | str, Any] = {
@@ -874,20 +908,27 @@ async def websocket_import_check(
     current settings already.
     """
     runtime = _runtime(hass)
-    prefs, _ = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
-    new, update = _imported(prefs, msg[ATTR_DOCUMENT])
+    prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
+    new, update, imported_groups = _imported(prefs, msg[ATTR_DOCUMENT])
     # A file is not checked like a draft: its lists may be malformed, so
     # Home Assistant's schemas come first and the hierarchy only after them.
     rejected = energy_access.schema_error(update)
     issues = _issues(hass, new) if rejected is None else []
+    new_groups = groups
+    if rejected is None:
+        new_groups = clean_groups(_groups_to_store(new, groups, imported_groups), new)
     connection.send_result(
         msg["id"],
         {
             "valid": not has_errors(issues) and rejected is None,
-            "changed": bool(update),
+            "changed": bool(update) or new_groups != groups,
             "issues": [issue.as_dict() for issue in issues],
             "rejected": rejected,
-            "diff": diff(prefs, new) if rejected is None else [],
+            "diff": (
+                [*diff(prefs, new), *diff_groups(groups, new_groups)]
+                if rejected is None
+                else []
+            ),
         },
     )
 
@@ -902,8 +943,9 @@ async def websocket_import(
     runtime = _runtime(hass)
     async with runtime.lock:
         prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
-        new, update = _imported(prefs, msg[ATTR_DOCUMENT])
+        new, update, imported_groups = _imported(prefs, msg[ATTR_DOCUMENT])
         energy_access.validate(update)
+        new_groups = _groups_to_store(new, groups, imported_groups)
         issues = _issues(hass, new)
         if has_errors(issues):
             raise _error(
@@ -914,13 +956,17 @@ async def websocket_import(
                     if issue.severity is Severity.ERROR
                 ),
             )
-        if not update:
+        if not update and new_groups is groups:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
             )
             return
         result = await _async_write_with_backup(
-            connection, runtime, (prefs, groups), (update, groups), {"imported": 1}
+            connection,
+            runtime,
+            (prefs, groups),
+            (update, new_groups),
+            {"imported": 1},
         )
     connection.send_result(msg["id"], result)
 

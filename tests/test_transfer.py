@@ -71,10 +71,10 @@ def test_round_trip() -> None:
         "device_consumption": DEVICES,
         "device_consumption_water": [{"stat_consumption": "sensor.w"}],
     }
-    assert parse_import(build_export(data, "now")) == data
+    assert parse_import(build_export(data, "now")) == (data, None)
     # A file from 0.2.0 has no water devices; it imports as it is.
     old = {"energy_sources": SOURCES, "device_consumption": DEVICES}
-    assert parse_import(build_export(old, "now")) == old
+    assert parse_import(build_export(old, "now")) == (old, None)
 
 
 @pytest.mark.parametrize(
@@ -84,7 +84,7 @@ def test_round_trip() -> None:
         [],
         {},
         {"format": "other", "version": 1, "data": {"device_consumption": []}},
-        {"format": EXPORT_FORMAT, "version": 2, "data": {"device_consumption": []}},
+        {"format": EXPORT_FORMAT, "version": 3, "data": {"device_consumption": []}},
         {"format": EXPORT_FORMAT, "version": 1},
         {"format": EXPORT_FORMAT, "version": 1, "data": {}},
         {"format": EXPORT_FORMAT, "version": 1, "data": {"device_consumption": {}}},
@@ -110,4 +110,80 @@ def test_extra_metadata_is_ignored() -> None:
         "note": "before the new heat pump",
         "data": {"device_consumption": DEVICES},
     }
-    assert parse_import(document) == {"device_consumption": DEVICES}
+    assert parse_import(document) == ({"device_consumption": DEVICES}, None)
+
+
+GROUPS = {
+    "electricity": [
+        {
+            "id": "g1",
+            "name": "Kitchen",
+            "parent": None,
+            "group": None,
+            "members": ["sensor.a"],
+        }
+    ],
+    "water": [],
+}
+
+
+def test_export_carries_groups() -> None:
+    """Groups are written beside the lists, and read back."""
+    document = build_export({"device_consumption": DEVICES}, "now", None, GROUPS)
+    assert EXPORT_VERSION == 2
+    assert document["data"]["groups"] == GROUPS
+    assert parse_import(document) == ({"device_consumption": DEVICES}, GROUPS)
+    # Groups alone are a valid file; a missing kind means no groups of it.
+    only = {
+        "format": EXPORT_FORMAT,
+        "version": 2,
+        "data": {"groups": {"electricity": GROUPS["electricity"]}},
+    }
+    assert parse_import(only) == ({}, GROUPS)
+
+
+def test_version_1_files_still_import() -> None:
+    """Files of version 1 have no groups and leave them alone."""
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 1,
+        "data": {"device_consumption": DEVICES},
+    }
+    assert parse_import(document) == ({"device_consumption": DEVICES}, None)
+
+
+@pytest.mark.parametrize(
+    "groups",
+    [
+        [],
+        {"gas": []},
+        {"electricity": {}},
+        {"electricity": [1]},
+        {"electricity": [{"id": "g1", "name": "x"}]},
+        {
+            "electricity": [
+                {"id": 1, "name": "x", "parent": None, "group": None, "members": []}
+            ]
+        },
+    ],
+)
+def test_invalid_groups(groups: Any) -> None:
+    """Malformed groups are refused, and version 1 may not carry any."""
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 2,
+        "data": {"device_consumption": DEVICES, "groups": groups},
+    }
+    with pytest.raises(InvalidImportError):
+        parse_import(document)
+
+
+def test_version_1_with_groups_is_refused() -> None:
+    """Groups only exist from version 2."""
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 1,
+        "data": {"device_consumption": DEVICES, "groups": GROUPS},
+    }
+    with pytest.raises(InvalidImportError):
+        parse_import(document)

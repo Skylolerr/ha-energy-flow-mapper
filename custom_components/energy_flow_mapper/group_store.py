@@ -12,7 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import GROUPS_STORAGE_KEY, GROUPS_STORAGE_VERSION
-from .groups import GROUP_KINDS, Group, Groups, empty_groups
+from .groups import GROUP_KINDS, Group, Groups, empty_groups, is_group
 
 GROUPS_STORAGE_MINOR_VERSION = 1
 
@@ -34,23 +34,6 @@ class _GroupsStore(Store[GroupsData]):
     ) -> dict[str, Any]:
         """Return the data unchanged; there is only one format so far."""
         return old_data
-
-
-def _is_group(raw: object) -> bool:
-    """Return whether `raw` has the fields of a group with the right types."""
-    if not isinstance(raw, dict):
-        return False
-    if "parent" not in raw or "group" not in raw:
-        return False
-    members = raw.get("members")
-    return (
-        isinstance(raw.get("id"), str)
-        and isinstance(raw.get("name"), str)
-        and (raw.get("parent") is None or isinstance(raw.get("parent"), str))
-        and (raw.get("group") is None or isinstance(raw.get("group"), str))
-        and isinstance(members, list)
-        and all(isinstance(member, str) for member in members)
-    )
 
 
 class GroupStore:
@@ -85,7 +68,7 @@ class GroupStore:
                         members=list(entry["members"]),
                     )
                     for entry in entries
-                    if _is_group(entry)
+                    if is_group(entry)
                 ]
         self._groups = groups
 

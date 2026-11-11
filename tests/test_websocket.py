@@ -1255,6 +1255,7 @@ async def test_export_current_and_backup(
         "energy_sources": ENERGY_PREFS["energy_sources"],
         "device_consumption": ENERGY_PREFS["device_consumption"],
         "device_consumption_water": [],
+        "groups": {"electricity": [], "water": []},
     }
 
     base_hash = await current_hash(hass_ws_client, hass)
@@ -2209,3 +2210,272 @@ async def test_backup_holds_stored_groups_not_cleaned(
     assert backup["groups"] == stored
     groups = loaded_entry.runtime_data.groups.groups()
     assert groups["electricity"][0]["members"] == ["sensor.kitchen_energy"]
+
+
+async def save_changes(
+    hass_ws_client: WebSocketGenerator,
+    hass: HomeAssistant,
+    changes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Save a draft against the current hash and return the result."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=changes,
+    )
+    assert response["success"], response
+    return dict(response["result"])
+
+
+async def test_restore_brings_back_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Undoing a group-only save restores the groups, with a backup of the new ones."""
+    saved = await save_changes(hass_ws_client, hass, [KITCHEN_GROUP])
+    assert len(loaded_entry.runtime_data.groups.groups()["electricity"]) == 1
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=saved["backup_id"],
+        base_hash=saved["hash"],
+    )
+    assert response["success"], response
+    result = response["result"]
+    assert result["backup_id"] not in (None, saved["backup_id"])
+    assert loaded_entry.runtime_data.groups.groups() == {
+        "electricity": [],
+        "water": [],
+    }
+    assert result["hash"] == await current_hash(hass_ws_client, hass)
+    # The undone state is kept as a backup too, so the undo can be undone.
+    stored = {b["id"]: b for b in hass_storage[STORAGE_KEY]["data"]["backups"]}
+    undone = stored[result["backup_id"]]
+    assert undone["data"] == {}
+    assert [g["id"] for g in undone["groups"]["electricity"]] == ["g1"]
+    # Nothing left to restore: the same backup again changes nothing.
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=saved["backup_id"],
+        base_hash=result["hash"],
+    )
+    assert response["result"] == {"hash": result["hash"], "backup_id": None}
+
+
+async def test_restore_old_backup_leaves_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A backup without groups restores the energy settings only."""
+    renamed = await save_changes(
+        hass_ws_client,
+        hass,
+        [{"type": "rename", "stat": "sensor.garage_energy", "name": "Garage"}],
+    )
+    saved = await save_changes(hass_ws_client, hass, [KITCHEN_GROUP])
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=renamed["backup_id"],
+        base_hash=saved["hash"],
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert device_list(prefs)["sensor.garage_energy"].get("name") != "Garage"
+    groups = loaded_entry.runtime_data.groups.groups()
+    assert [g["id"] for g in groups["electricity"]] == ["g1"]
+    assert response["result"]["hash"] == await current_hash(hass_ws_client, hass)
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_export_contains_groups(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The current export has the cleaned groups, a backup export its own."""
+    saved = await save_changes(hass_ws_client, hass, [KITCHEN_GROUP])
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/export")
+    groups = response["result"]["data"]["groups"]
+    assert [g["id"] for g in groups["electricity"]] == ["g1"]
+    assert groups["water"] == []
+
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/export", backup_id=saved["backup_id"]
+    )
+    data = response["result"]["data"]
+    assert data == {"groups": {"electricity": [], "water": []}}
+
+
+def _document(version: int, **data: Any) -> dict[str, Any]:
+    return {"format": "energy_flow_mapper", "version": version, "data": data}
+
+
+async def test_import_version_1_leaves_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A file without groups changes the energy settings and keeps the groups."""
+    await save_changes(hass_ws_client, hass, [KITCHEN_GROUP])
+    devices = [
+        d
+        for d in ENERGY_PREFS["device_consumption"]
+        if d["stat_consumption"] != "sensor.garage_energy"
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=await current_hash(hass_ws_client, hass),
+        document=_document(1, device_consumption=devices),
+    )
+    assert response["success"], response
+    groups = loaded_entry.runtime_data.groups.groups()
+    assert [g["id"] for g in groups["electricity"]] == ["g1"]
+    prefs = await energy_access.async_get_prefs(hass)
+    assert "sensor.garage_energy" not in device_list(prefs)
+
+
+async def test_import_version_2_sets_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A file with groups sets them; the check lists them, the import backs up."""
+    group = {
+        "id": "g9",
+        "name": "Imported",
+        "parent": "sensor.main_energy",
+        "group": None,
+        "members": ["sensor.kitchen_energy"],
+    }
+    document = _document(2, groups={"electricity": [group], "water": []})
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=document,
+    )
+    result = response["result"]
+    assert result["valid"] is True
+    assert result["changed"] is True
+    assert [(e["type"], e["stat"]) for e in result["diff"]] == [
+        ("group_created", "group:g9")
+    ]
+    assert loaded_entry.runtime_data.groups.groups()["electricity"] == []
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["success"], response
+    assert loaded_entry.runtime_data.groups.groups()["electricity"] == [group]
+    new_hash = response["result"]["hash"]
+    assert new_hash == await current_hash(hass_ws_client, hass)
+    (backup,) = hass_storage[STORAGE_KEY]["data"]["backups"]
+    assert backup["groups"] == {"electricity": [], "water": []}
+    assert backup["summary"] == {"imported": 1}
+
+    # The same file again is no change.
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=new_hash,
+        document=document,
+    )
+    assert response["result"]["changed"] is False
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=new_hash,
+        document=document,
+    )
+    assert response["result"] == {"hash": new_hash, "backup_id": None}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_import_rejects_bad_groups(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Groups of the wrong shape are an invalid file, and nothing is written."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    document = _document(2, groups={"electricity": [{"id": "g1"}]})
+    for command in ("import_check", "import"):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/{command}",
+            base_hash=base_hash,
+            document=document,
+        )
+        assert response["error"]["translation_key"] == "invalid_import"
+    assert await current_hash(hass_ws_client, hass) == base_hash
+
+
+async def test_card_returns_groups_of_its_list(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """The card gets the groups of its own list, cleaned; also for non-admins."""
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption_water": [
+                {"stat_consumption": "sensor.house_water"},
+                {
+                    "stat_consumption": "portal:garden",
+                    "included_in_stat": "sensor.house_water",
+                },
+            ]
+        },
+    )
+    water_group = {
+        "id": "w1",
+        "name": "Garden",
+        "parent": "sensor.house_water",
+        "group": None,
+        "members": ["portal:garden", "portal:gone"],
+    }
+    electricity_group = {
+        "id": "g1",
+        "name": "Kitchen stuff",
+        "parent": "sensor.main_energy",
+        "group": None,
+        "members": ["sensor.kitchen_energy"],
+    }
+    await loaded_entry.runtime_data.groups.async_save(
+        {"electricity": [electricity_group], "water": [water_group]}
+    )
+    response = await send(
+        hass_ws_client, hass, hass_read_only_access_token, type=f"{DOMAIN}/card"
+    )
+    assert response["result"]["groups"] == [electricity_group]
+    response = await send(
+        hass_ws_client,
+        hass,
+        hass_read_only_access_token,
+        type=f"{DOMAIN}/card",
+        kind="water",
+    )
+    assert response["result"]["groups"] == [
+        {**water_group, "members": ["portal:garden"]}
+    ]
