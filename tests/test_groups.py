@@ -5,15 +5,21 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+import pytest
+
 from custom_components.energy_flow_mapper.groups import (
+    GROUP_CHANGE_TYPES,
     Group,
     Groups,
     all_devices,
+    apply_all,
     clean_groups,
+    diff_groups,
     empty_groups,
     groups_of,
+    state_hash,
 )
-from custom_components.energy_flow_mapper.hierarchy import DeviceKind
+from custom_components.energy_flow_mapper.hierarchy import ChangeError, DeviceKind
 
 
 def dev(stat: str, parent: str | None = None) -> dict[str, Any]:
@@ -185,3 +191,444 @@ def test_all_devices_includes_nested_groups() -> None:
 def test_all_devices_survives_a_loop() -> None:
     items = [grp("a", ["x"], group="b"), grp("b", ["y"], group="a")]
     assert all_devices(items, "a") == ["x", "y"]
+
+
+# --- applying changes -------------------------------------------------------
+
+
+def create(gid: str, members: list[str], parent: str | None = None, **extra: Any):
+    """Return a create_group change."""
+    return {
+        "type": "create_group",
+        "id": gid,
+        "name": extra.pop("name", gid),
+        "parent": parent,
+        "members": members,
+        "groups": extra.pop("groups", []),
+        **extra,
+    }
+
+
+def base() -> dict:
+    """Return prefs: p under Home; a, b, c, d under p; e under Home."""
+    return prefs(
+        dev("p"),
+        dev("a", "p"),
+        dev("b", "p"),
+        dev("c", "p"),
+        dev("d", "p"),
+        dev("e"),
+    )
+
+
+def run(changes: list[dict], stored: Groups | None = None):
+    """Apply changes to the base prefs."""
+    return apply_all(base(), stored or empty_groups(), changes)
+
+
+def code_of(changes: list[dict], stored: Groups | None = None) -> str:
+    """Return the code of the ChangeError the changes raise."""
+    with pytest.raises(ChangeError) as err:
+        run(changes, stored)
+    return err.value.code
+
+
+def test_create_group() -> None:
+    _, result = run([create("g", ["a", "b"], "p", name=" Kitchen ")])
+    assert result["electricity"] == [
+        {
+            "id": "g",
+            "name": "Kitchen",
+            "parent": "p",
+            "group": None,
+            "members": ["a", "b"],
+        }
+    ]
+    assert result["water"] == []
+
+
+def test_create_group_members_leave_previous_group() -> None:
+    stored = electricity(grp("old", ["a", "b"], "p"))
+    _, result = run([create("g", ["a"], "p")], stored)
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["old"]["members"] == ["b"]
+    assert by_id["g"]["members"] == ["a"]
+
+
+def test_create_group_refuses_members_of_other_parents() -> None:
+    assert code_of([create("g", ["a", "e"], "p")]) == "group_parents_differ"
+
+
+def test_create_group_refuses_unknown_member() -> None:
+    assert code_of([create("g", ["zzz"], "p")]) == "unknown_device"
+
+
+def test_create_group_nests_groups() -> None:
+    stored = electricity(grp("in", ["a"], "p"))
+    _, result = run([create("g", ["b"], "p", groups=["in"])], stored)
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["in"]["group"] == "g"
+    assert by_id["g"]["group"] is None
+
+
+def test_create_group_inside_enclosing_group() -> None:
+    stored = electricity(grp("out", ["a"], "p"))
+    _, result = run([create("g", ["b"], "p", group="out")], stored)
+    assert {g["id"]: g["group"] for g in result["electricity"]} == {
+        "out": None,
+        "g": "out",
+    }
+
+
+def test_create_group_refuses_other_parent_groups_and_enclosing() -> None:
+    stored = electricity(grp("top", ["e"], None))
+    for extra in ({"groups": ["top"]}, {"group": "top"}):
+        assert code_of([create("g", ["a"], "p", **extra)], stored) == (
+            "group_parents_differ"
+        )
+
+
+def test_create_group_refuses_a_loop_through_enclosing() -> None:
+    stored = electricity(grp("in", ["a"], "p"), grp("deep", ["b"], "p", "in"))
+    for enclosing in ("in", "deep"):
+        change = create("g", ["c"], "p", groups=["in"], group=enclosing)
+        assert code_of([change], stored) == "group_loop"
+
+
+def test_create_group_refuses_existing_id() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    assert code_of([create("g", ["b"], "p")], stored) == "group_exists"
+
+
+def test_group_name_rules() -> None:
+    assert code_of([create("g", ["a"], "p", name="  ")]) == "group_name_empty"
+    stored = electricity(grp("one", ["a"], "p"))
+    assert code_of([create("g", ["b"], "p", name="one")], stored) == (
+        "group_name_taken"
+    )
+    # The same name below another parent is fine.
+    _, result = run([create("g", ["e"], None, name="one")], stored)
+    assert len(result["electricity"]) == 2
+
+
+def test_rename_group() -> None:
+    stored = electricity(grp("one", ["a"], "p"), grp("two", ["b"], "p"))
+    _, result = run([{"type": "rename_group", "id": "one", "name": " Neu "}], stored)
+    assert result["electricity"][0]["name"] == "Neu"
+    for name, code in (("", "group_name_empty"), ("two", "group_name_taken")):
+        change = {"type": "rename_group", "id": "one", "name": name}
+        assert code_of([change], stored) == code
+    # Keeping its own name is not a clash.
+    run([{"type": "rename_group", "id": "one", "name": "one"}], stored)
+
+
+def test_set_group_in_and_out() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("h", ["b"], "p"))
+    _, result = run(
+        [
+            {"type": "set_group", "stat": "c", "group": "g"},
+            {"type": "set_group", "stat": "a", "group": None},
+        ],
+        stored,
+    )
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["g"]["members"] == ["c"]
+    assert by_id["h"]["members"] == ["b"]
+    # Moving between groups takes the device out of the old one.
+    _, result = run([{"type": "set_group", "stat": "b", "group": "g"}], stored)
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["g"]["members"] == ["a", "b"]
+    assert "h" not in by_id  # empty groups disappear
+
+
+def test_set_group_nests_and_unnests_a_group() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("h", ["b"], "p"))
+    _, nested = run([{"type": "set_group", "group_id": "h", "group": "g"}], stored)
+    assert {g["id"]: g["group"] for g in nested["electricity"]} == {
+        "g": None,
+        "h": "g",
+    }
+    _, out = apply_all(
+        base(), nested, [{"type": "set_group", "group_id": "h", "group": None}]
+    )
+    assert {g["id"]: g["group"] for g in out["electricity"]} == {"g": None, "h": None}
+
+
+def test_set_group_refuses_other_parents() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("top", ["e"], None))
+    for change in (
+        {"type": "set_group", "stat": "e", "group": "g"},
+        {"type": "set_group", "group_id": "top", "group": "g"},
+    ):
+        assert code_of([change], stored) == "group_parents_differ"
+
+
+def test_set_group_refuses_loop() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("h", ["b"], "p", "g"))
+    for target in ("g", "h"):
+        change = {"type": "set_group", "group_id": "g", "group": target}
+        assert code_of([change], stored) == "group_loop"
+
+
+def test_set_group_needs_exactly_one_subject() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    for change in (
+        {"type": "set_group", "group": "g"},
+        {"type": "set_group", "stat": "b", "group_id": "g", "group": "g"},
+    ):
+        assert code_of([change], stored) == "unknown_change"
+
+
+def test_set_group_unknown_device() -> None:
+    change = {"type": "set_group", "stat": "zzz", "group": None}
+    assert code_of([change]) == "unknown_device"
+
+
+def test_dissolve_group_moves_members_up_one_level() -> None:
+    stored = electricity(
+        grp("out", ["a"], "p"),
+        grp("mid", ["b"], "p", "out"),
+        grp("in", ["c"], "p", "mid"),
+    )
+    _, result = run([{"type": "dissolve_group", "id": "mid"}], stored)
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert set(by_id) == {"out", "in"}
+    assert by_id["out"]["members"] == ["a", "b"]
+    assert by_id["in"]["group"] == "out"
+    # A top-level group has no enclosing group: everything goes to the top.
+    _, result = apply_all(base(), result, [{"type": "dissolve_group", "id": "out"}])
+    assert [g["id"] for g in result["electricity"]] == ["in"]
+    assert result["electricity"][0]["group"] is None
+
+
+def test_dissolve_top_level_group_frees_members() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    _, result = run([{"type": "dissolve_group", "id": "g"}], stored)
+    assert result["electricity"] == []
+
+
+def test_move_group_moves_all_devices_and_nested_groups() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("h", ["b"], "p", "g"))
+    new_prefs, result = run([{"type": "move_group", "id": "g", "parent": "e"}], stored)
+    parents = {
+        d["stat_consumption"]: d.get("included_in_stat")
+        for d in new_prefs["device_consumption"]
+    }
+    assert parents["a"] == parents["b"] == "e"
+    assert parents["c"] == "p"
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["g"]["parent"] == by_id["h"]["parent"] == "e"
+    assert by_id["g"]["group"] is None
+    assert by_id["h"]["group"] == "g"
+
+
+def test_move_group_to_home_and_into_group() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("t", ["e"], None))
+    new_prefs, result = run(
+        [{"type": "move_group", "id": "g", "parent": None, "group": "t"}], stored
+    )
+    moved = next(
+        d for d in new_prefs["device_consumption"] if d["stat_consumption"] == "a"
+    )
+    assert moved.get("included_in_stat") is None
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert by_id["g"]["parent"] is None
+    assert by_id["g"]["group"] == "t"
+
+
+def test_move_group_without_group_goes_to_top_level() -> None:
+    stored = electricity(grp("o", ["b"], "p"), grp("g", ["a"], "p", "o"))
+    _, result = run([{"type": "move_group", "id": "g", "parent": "e"}], stored)
+    assert {g["id"]: g["group"] for g in result["electricity"]}["g"] is None
+
+
+def test_move_group_refusals() -> None:
+    stored = electricity(
+        grp("g", ["a"], "p"), grp("h", ["b"], "p", "g"), grp("x", ["c"], "p")
+    )
+    cases = (
+        ({"id": "g", "parent": "a"}, "group_loop"),
+        ({"id": "g", "parent": "b"}, "group_loop"),
+        ({"id": "g", "parent": "p", "group": "g"}, "group_loop"),
+        ({"id": "g", "parent": "p", "group": "h"}, "group_loop"),
+        ({"id": "g", "parent": "e", "group": "x"}, "group_parents_differ"),
+        ({"id": "g", "parent": "zzz"}, "unknown_device"),
+    )
+    for fields, code in cases:
+        assert code_of([{"type": "move_group", **fields}], stored) == code
+
+
+def test_move_out_of_parent_leaves_group() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    _, result = run([{"type": "move", "stat": "a", "parent": "e"}], stored)
+    assert result["electricity"][0]["members"] == ["b"]
+
+
+def test_remove_parent_keeps_groups_below_it() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    _, result = run([{"type": "remove", "stat": "p"}], stored)
+    group = result["electricity"][0]
+    assert group["parent"] is None
+    assert group["members"] == ["a", "b"]
+
+
+def test_remove_member_keeps_the_rest() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    _, result = run([{"type": "remove", "stat": "a"}], stored)
+    assert result["electricity"][0]["members"] == ["b"]
+
+
+def test_remove_in_other_kind_leaves_electricity_groups() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    mixed = base()
+    mixed["device_consumption_water"] = [dev("p")]
+    change = {"type": "remove", "stat": "p", "kind": "water"}
+    _, result = apply_all(mixed, stored, [change])
+    assert result["electricity"][0]["parent"] == "p"
+
+
+def test_use_as_home_meter_keeps_groups_below_it() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    new_prefs, result = run([{"type": "use_as_home_meter", "stat": "p"}], stored)
+    group = result["electricity"][0]
+    assert group["parent"] is None
+    assert group["members"] == ["a", "b"]
+    assert new_prefs["energy_sources"][0]["type"] == "home"
+
+
+def test_remove_unknown_device_still_raises() -> None:
+    assert code_of([{"type": "remove", "stat": "zzz"}]) == "unknown_device"
+
+
+def test_water_group() -> None:
+    water = prefs(water=[dev("w1"), dev("w2")])
+    change = {
+        "type": "create_group",
+        "kind": "water",
+        "id": "g",
+        "name": "G",
+        "parent": None,
+        "members": ["w1", "w2"],
+        "groups": [],
+    }
+    _, result = apply_all(water, empty_groups(), [change])
+    assert result["water"][0]["members"] == ["w1", "w2"]
+    assert result["electricity"] == []
+
+
+def test_unknown_group_id() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    for change in (
+        create("n", ["b"], "p", groups=["zzz"]),
+        create("n", ["b"], "p", group="zzz"),
+        {"type": "rename_group", "id": "zzz", "name": "x"},
+        {"type": "set_group", "group_id": "zzz", "group": None},
+        {"type": "set_group", "group_id": "g", "group": "zzz"},
+        {"type": "set_group", "stat": "b", "group": "zzz"},
+        {"type": "dissolve_group", "id": "zzz"},
+        {"type": "move_group", "id": "zzz", "parent": None},
+    ):
+        assert code_of([change], stored) == "unknown_group"
+
+
+def test_apply_all_leaves_inputs_unchanged() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    source = base()
+    apply_all(
+        source,
+        stored,
+        [
+            {"type": "set_group", "stat": "a", "group": None},
+            {"type": "remove", "stat": "p"},
+        ],
+    )
+    assert source == base()
+    assert stored == electricity(grp("g", ["a", "b"], "p"))
+
+
+def test_apply_all_without_changes_copies() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    new_prefs, result = apply_all(base(), stored, [])
+    assert new_prefs == base()
+    assert result == stored
+    assert result is not stored
+
+
+def test_group_change_types() -> None:
+    assert {
+        "create_group",
+        "rename_group",
+        "set_group",
+        "dissolve_group",
+        "move_group",
+    } == GROUP_CHANGE_TYPES
+
+
+def test_diff_groups() -> None:
+    old = electricity(
+        grp("keep", ["a"], "p"),
+        grp("ren", ["b"], "p"),
+        grp("gone", ["c"], "p"),
+        grp("chg", ["d"], "p"),
+    )
+    new = electricity(
+        grp("keep", ["a"], "p"),
+        grp("ren", ["b"], "p"),
+        grp("chg", ["d", "c"], "p"),
+        grp("new", ["e"]),
+    )
+    new["electricity"][1]["name"] = "Renamed"
+    new["water"] = [grp("w", ["w1"])]
+    ele, wat = DeviceKind.ELECTRICITY, DeviceKind.WATER
+    assert diff_groups(old, new) == [
+        {
+            "type": "group_created",
+            "id": "new",
+            "name": "new",
+            "count": 1,
+            "kind": ele,
+            "stat": "group:new",
+        },
+        {
+            "type": "group_created",
+            "id": "w",
+            "name": "w",
+            "count": 1,
+            "kind": wat,
+            "stat": "group:w",
+        },
+        {
+            "type": "group_renamed",
+            "id": "ren",
+            "from": "ren",
+            "to": "Renamed",
+            "kind": ele,
+            "stat": "group:ren",
+        },
+        {
+            "type": "group_dissolved",
+            "id": "gone",
+            "name": "gone",
+            "kind": ele,
+            "stat": "group:gone",
+        },
+        {
+            "type": "group_changed",
+            "id": "chg",
+            "name": "chg",
+            "count": 2,
+            "kind": ele,
+            "stat": "group:chg",
+        },
+    ]
+    assert diff_groups(old, old) == []
+
+
+def test_state_hash_changes_with_groups() -> None:
+    one = electricity(grp("g", ["a"], "p"))
+    two = electricity(grp("g", ["a", "b"], "p"))
+    assert state_hash(base(), one) == state_hash(base(), deepcopy(one))
+    assert state_hash(base(), one) != state_hash(base(), two)
+    assert state_hash(base(), one) != state_hash(prefs(), one)
+    reordered = {"water": [], "electricity": one["electricity"]}
+    assert state_hash(base(), one) == state_hash(base(), reordered)

@@ -7,10 +7,22 @@ this module has no Home Assistant imports, so it can be tested in isolation.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
-from typing import TypedDict
+from typing import Any, TypedDict
 
-from .hierarchy import DEVICE_KEYS, DeviceKind, Prefs, parent_map
+from .hierarchy import (
+    DEVICE_KEYS,
+    PARENT,
+    STAT,
+    ChangeError,
+    ChangeType,
+    DeviceKind,
+    Prefs,
+    apply_changes,
+    parent_map,
+    prefs_hash,
+)
 
 # The kinds that can have groups (gas has no devices).
 GROUP_KINDS = (DeviceKind.ELECTRICITY, DeviceKind.WATER)
@@ -128,3 +140,305 @@ def clean_groups(groups: Groups, prefs: Prefs) -> Groups:
         parents = parent_map(prefs.get(DEVICE_KEYS[kind], []))
         cleaned[kind.value] = _clean_kind(stored, parents)
     return cleaned
+
+
+# --- Applying changes -------------------------------------------------------
+
+GROUP_CHANGE_TYPES: frozenset[str] = frozenset(
+    {
+        "create_group",
+        "rename_group",
+        "set_group",
+        "dissolve_group",
+        "move_group",
+    }
+)
+
+
+def _find(groups: list[Group], group_id: str | None) -> Group:
+    """Return the group with this id or raise `unknown_group`."""
+    for group in groups:
+        if group["id"] == group_id:
+            return group
+    raise ChangeError("unknown_group", str(group_id))
+
+
+def _nested_ids(groups: list[Group], group_id: str) -> set[str]:
+    """Return the id of a group and the ids of all groups nested in it."""
+    found = {group_id}
+    grew = True
+    while grew:
+        grew = False
+        for group in groups:
+            if group["group"] in found and group["id"] not in found:
+                found.add(group["id"])
+                grew = True
+    return found
+
+
+def _check_name(
+    groups: list[Group], name: str, parent: str | None, own_id: str | None
+) -> str:
+    """Return the stripped name; it must be set and unique below its parent."""
+    name = name.strip()
+    if not name:
+        raise ChangeError("group_name_empty", own_id or "")
+    if any(
+        g["name"] == name and g["parent"] == parent and g["id"] != own_id
+        for g in groups
+    ):
+        raise ChangeError("group_name_taken", name)
+    return name
+
+
+def _take_out(groups: list[Group], stat: str) -> None:
+    """Remove a device from whatever group holds it."""
+    for group in groups:
+        group["members"] = [m for m in group["members"] if m != stat]
+
+
+def _create_group(
+    groups: list[Group], parents: dict[str, str | None], change: Mapping[str, Any]
+) -> None:
+    group_id: str = change["id"]
+    parent: str | None = change.get("parent")
+    if any(g["id"] == group_id for g in groups):
+        raise ChangeError("group_exists", group_id)
+    name = _check_name(groups, change.get("name") or "", parent, None)
+    members: list[str] = list(change.get("members", []))
+    for stat in members:
+        if stat not in parents:
+            raise ChangeError("unknown_device", stat)
+        if parents[stat] != parent:
+            raise ChangeError("group_parents_differ", stat)
+    nested = [_find(groups, nested_id) for nested_id in change.get("groups", [])]
+    for child in nested:
+        if child["parent"] != parent:
+            raise ChangeError("group_parents_differ", child["id"])
+    enclosing_id: str | None = change.get("group")
+    if enclosing_id is not None:
+        enclosing = _find(groups, enclosing_id)
+        if enclosing["parent"] != parent:
+            raise ChangeError("group_parents_differ", enclosing_id)
+        below = set().union(*(_nested_ids(groups, c["id"]) for c in nested))
+        if enclosing_id in below:
+            raise ChangeError("group_loop", enclosing_id)
+    for stat in members:
+        _take_out(groups, stat)
+    for child in nested:
+        child["group"] = group_id
+    groups.append(
+        {
+            "id": group_id,
+            "name": name,
+            "parent": parent,
+            "group": enclosing_id,
+            "members": members,
+        }
+    )
+
+
+def _set_group(
+    groups: list[Group], parents: dict[str, str | None], change: Mapping[str, Any]
+) -> None:
+    stat: str | None = change.get("stat")
+    group_id: str | None = change.get("group_id")
+    if (stat is None) == (group_id is None):
+        raise ChangeError("unknown_change", stat or group_id or "")
+    target_id: str | None = change.get("group")
+    target = _find(groups, target_id) if target_id is not None else None
+    if stat is not None:
+        if stat not in parents:
+            raise ChangeError("unknown_device", stat)
+        if target is not None and target["parent"] != parents[stat]:
+            raise ChangeError("group_parents_differ", stat)
+        _take_out(groups, stat)
+        if target is not None:
+            target["members"].append(stat)
+        return
+    group = _find(groups, group_id)
+    if target is not None:
+        if target["parent"] != group["parent"]:
+            raise ChangeError("group_parents_differ", group["id"])
+        if target["id"] in _nested_ids(groups, group["id"]):
+            raise ChangeError("group_loop", group["id"])
+    group["group"] = target_id
+
+
+def _dissolve_group(groups: list[Group], group_id: str) -> None:
+    group = _find(groups, group_id)
+    enclosing = group["group"]
+    if enclosing is not None:
+        _find(groups, enclosing)["members"].extend(group["members"])
+    for other in groups:
+        if other["group"] == group_id:
+            other["group"] = enclosing
+    groups.remove(group)
+
+
+def _move_group(
+    prefs: dict[str, Any],
+    groups: list[Group],
+    kind: DeviceKind,
+    change: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Move a group; return the preferences with its devices moved."""
+    group = _find(groups, change["id"])
+    parent: str | None = change.get("parent")
+    devices = all_devices(groups, group["id"])
+    if parent is not None:
+        if parent in devices:
+            raise ChangeError("group_loop", parent)
+        known = {d[STAT] for d in prefs.get(DEVICE_KEYS[kind], [])}
+        if parent not in known:
+            raise ChangeError("unknown_device", parent)
+    enclosing_id: str | None = change.get("group")
+    nested = _nested_ids(groups, group["id"])
+    if enclosing_id is not None:
+        enclosing = _find(groups, enclosing_id)
+        if enclosing_id in nested:
+            raise ChangeError("group_loop", enclosing_id)
+        if enclosing["parent"] != parent:
+            raise ChangeError("group_parents_differ", enclosing_id)
+    moves = [
+        {"type": ChangeType.MOVE, "stat": stat, "parent": parent, "kind": kind}
+        for stat in devices
+    ]
+    result = apply_changes(prefs, moves)
+    for other in groups:
+        if other["id"] in nested:
+            other["parent"] = parent
+    group["group"] = enclosing_id
+    return result
+
+
+def _apply_group_change(
+    prefs: dict[str, Any], groups: Groups, change: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Apply one group change to `groups` (in place); return the preferences."""
+    kind = DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
+    kind_groups = groups.setdefault(kind.value, [])
+    parents = parent_map(prefs.get(DEVICE_KEYS[kind], []))
+    change_type = change["type"]
+    if change_type == "create_group":
+        _create_group(kind_groups, parents, change)
+    elif change_type == "rename_group":
+        group = _find(kind_groups, change["id"])
+        group["name"] = _check_name(
+            kind_groups, change.get("name") or "", group["parent"], group["id"]
+        )
+    elif change_type == "set_group":
+        _set_group(kind_groups, parents, change)
+    elif change_type == "dissolve_group":
+        _dissolve_group(kind_groups, change["id"])
+    else:
+        return _move_group(prefs, kind_groups, kind, change)
+    return prefs
+
+
+def _adopt_removed_parent(
+    prefs: Prefs, groups: Groups, kind: DeviceKind, stat: str
+) -> None:
+    """Re-parent the groups below a device that is about to disappear.
+
+    Its children move up to its own parent, so its groups go with them and the
+    grouping survives the clean-up.
+    """
+    devices = prefs.get(DEVICE_KEYS[kind], [])
+    former = next((d.get(PARENT) for d in devices if d[STAT] == stat), None)
+    for group in groups.get(kind.value, []):
+        if group["parent"] == stat:
+            group["parent"] = former
+
+
+def apply_all(
+    prefs: Prefs, groups: Groups, changes: Sequence[Mapping[str, Any]]
+) -> tuple[dict[str, Any], Groups]:
+    """Apply device, source and group changes strictly in order.
+
+    Returns the new preferences and groups; the inputs stay untouched. After every
+    change the groups are cleaned against the new preferences.
+    """
+    current: dict[str, Any] = apply_changes(prefs, [])
+    result = deepcopy(groups)
+    for change in changes:
+        change_type = change["type"]
+        if change_type in GROUP_CHANGE_TYPES:
+            current = _apply_group_change(current, result, change)
+        else:
+            if change_type in (ChangeType.REMOVE, ChangeType.USE_AS_HOME_METER):
+                kind = (
+                    DeviceKind.ELECTRICITY
+                    if change_type == ChangeType.USE_AS_HOME_METER
+                    else DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
+                )
+                _adopt_removed_parent(current, result, kind, change["stat"])
+            current = apply_changes(current, [change])
+        result = clean_groups(result, current)
+    return current, result
+
+
+# --- Diff and hash ----------------------------------------------------------
+
+
+def _entry(kind: DeviceKind, change: str, group: Group, **extra: Any) -> dict[str, Any]:
+    """Return a diff entry of a group; the panel keys entries by `stat`."""
+    return {
+        "type": change,
+        "id": group["id"],
+        "name": group["name"],
+        **extra,
+        "kind": kind,
+        "stat": f"group:{group['id']}",
+    }
+
+
+def diff_groups(old: Groups, new: Groups) -> list[dict[str, Any]]:
+    """Describe how the groups changed, for confirmations and backups."""
+    created: list[dict[str, Any]] = []
+    later: list[dict[str, Any]] = []
+    for kind in GROUP_KINDS:
+        before = groups_of(old, kind)
+        after = groups_of(new, kind)
+        old_ids = {g["id"] for g in before}
+        new_by_id = {g["id"]: g for g in after}
+        created.extend(
+            _entry(kind, "group_created", g, count=len(all_devices(after, g["id"])))
+            for g in after
+            if g["id"] not in old_ids
+        )
+        for group in before:
+            current = new_by_id.get(group["id"])
+            if current is None:
+                later.append(_entry(kind, "group_dissolved", group))
+                continue
+            if current["name"] != group["name"]:
+                later.append(
+                    {
+                        "type": "group_renamed",
+                        "id": group["id"],
+                        "from": group["name"],
+                        "to": current["name"],
+                        "kind": kind,
+                        "stat": f"group:{group['id']}",
+                    }
+                )
+            if (
+                current["parent"] != group["parent"]
+                or current["group"] != group["group"]
+                or current["members"] != group["members"]
+            ):
+                later.append(
+                    _entry(
+                        kind,
+                        "group_changed",
+                        current,
+                        count=len(all_devices(after, current["id"])),
+                    )
+                )
+    return created + later
+
+
+def state_hash(prefs: Prefs, groups: Groups) -> str:
+    """Return a stable fingerprint of the preferences and the groups together."""
+    return prefs_hash({"prefs": prefs, "groups": groups})
