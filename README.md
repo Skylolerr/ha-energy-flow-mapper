@@ -248,7 +248,9 @@ the sensors live.
   only when every device in the sum has a power or flow sensor.
 - **Your draft survives leaving the panel:** the browser keeps it until you save or
   discard it. If the energy settings were changed in the meantime, it cannot be applied
-  any more and is dropped with a message.
+  any more and is dropped with a message. After a save conflict the panel reloads, keeps
+  the draft and stores it for the new settings. A kept draft brings back its undo steps;
+  older drafts without them come back one change per step.
 - **When saving is not possible,** the bar at the bottom says how many problems prevent
   it. The check before saving lists them, marks problems that are already in the saved
   settings, and *Show* takes you to the block.
