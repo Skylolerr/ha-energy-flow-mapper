@@ -2,7 +2,7 @@
 // HTML-in-SVG, so every browser can turn it into a PNG), and the PNG itself.
 // Everything happens in the browser; nothing is sent anywhere.
 
-import type { Block, Layout } from "./layout";
+import type { Block, Frame, Layout } from "./layout";
 
 /** One block as the picture shows it. */
 export interface ExportBlock {
@@ -30,7 +30,8 @@ export interface ExportEdge {
 }
 
 export interface ExportOptions {
-  theme: { background: string; text: string; secondary: string; card: string; divider: string };
+  /** `group` colours the dashed frames of expanded groups (default: secondary). */
+  theme: { background: string; text: string; secondary: string; card: string; divider: string; group?: string };
   footer: string;
 }
 
@@ -65,7 +66,7 @@ function blockSvg(item: ExportBlock, index: number, options: ExportOptions): str
     lines[0] = lines.length ? `${lines[0]} · ${item.area}` : item.area;
   }
   const titleY = y + h / 2 + 5 - 10 * lines.length;
-  const dashed = item.block.kind === "untracked" || item.block.kind === "placeholder";
+  const dashed = item.block.kind === "untracked" || item.block.kind === "placeholder" || item.block.kind === "group";
   return [
     `<clipPath id="c${index}"><rect x="${x + 10}" y="${y}" width="${w - 20}" height="${h}"/></clipPath>`,
     `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="10" fill="${theme.card}" stroke="${
@@ -96,6 +97,12 @@ function blockSvg(item: ExportBlock, index: number, options: ExportOptions): str
   ].join("");
 }
 
+/** The dashed frame around an expanded group; drawn first, below everything else. */
+function frameSvg(frame: Frame, options: ExportOptions): string {
+  const color = options.theme.group ?? options.theme.secondary;
+  return `<rect class="frame" x="${frame.x}" y="${frame.y}" width="${frame.w}" height="${frame.h}" rx="14" fill="${color}" fill-opacity="0.05" stroke="${color}" stroke-width="1.5" stroke-dasharray="6 4"/>`;
+}
+
 function edgeSvg(edge: ExportEdge): string {
   const dash = edge.dashed ? ` stroke-dasharray="${edge.width * 2} ${edge.width * 1.5}"` : "";
   return (
@@ -113,6 +120,7 @@ export function diagramSvg(layout: Layout, blocks: ExportBlock[], edges: ExportE
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
     `<rect width="100%" height="100%" fill="${options.theme.background}"/>`,
+    ...layout.frames.map((frame) => frameSvg(frame, options)),
     ...edges.map(edgeSvg),
     ...blocks.map((block, index) => blockSvg(block, index, options)),
     `<text x="24" y="${layout.height + FOOTER_H / 2 + 4}" font-family="${FONT}" font-size="12" fill="${
@@ -122,20 +130,34 @@ export function diagramSvg(layout: Layout, blocks: ExportBlock[], edges: ExportE
   ].join("");
 }
 
-/**
- * Hide everything private: devices become "Device 1, 2, …" in diagram order
- * (top to bottom, then left to right) without their area, and sources keep
- * only their role, not the sensor's name.
- */
-export function anonymize(blocks: ExportBlock[], deviceLabel: (n: number) => string): ExportBlock[] {
-  const devices = blocks
-    .filter((b) => b.block.kind === "device")
+/** The blocks of one kind numbered in diagram order: top to bottom, then left to right. */
+function numbered(blocks: ExportBlock[], kind: Block["kind"]): Map<ExportBlock, number> {
+  const found = blocks
+    .filter((b) => b.block.kind === kind)
     .sort((a, b) => a.block.y - b.block.y || a.block.x - b.block.x);
-  const numbers = new Map(devices.map((b, index) => [b, index + 1]));
+  return new Map(found.map((b, index) => [b, index + 1]));
+}
+
+/**
+ * Hide everything private: devices become "Device 1, 2, …" and groups
+ * "Group 1, 2, …" in diagram order without their area, and sources keep only
+ * their role, not the sensor's name.
+ */
+export function anonymize(
+  blocks: ExportBlock[],
+  deviceLabel: (n: number) => string,
+  groupLabel: (n: number) => string = deviceLabel,
+): ExportBlock[] {
+  const devices = numbered(blocks, "device");
+  const groups = numbered(blocks, "group");
   return blocks.map((b) => {
-    const n = numbers.get(b);
+    const n = devices.get(b);
     if (n !== undefined) {
       return { ...b, title: deviceLabel(n), area: null };
+    }
+    const g = groups.get(b);
+    if (g !== undefined) {
+      return { ...b, title: groupLabel(g), area: null };
     }
     if (b.block.kind === "source" || b.named) {
       return { ...b, sub: null, area: null };

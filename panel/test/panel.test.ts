@@ -2485,3 +2485,343 @@ describe("save as image", () => {
     expect(toPng.mock.calls[0][0]).toContain("Draft, not saved");
   });
 });
+
+describe("groups", () => {
+  // The server gets a second child; the Sonos amp sits in the group "Media".
+  function groupSnapshot(): Snapshot {
+    const snap = snapshot();
+    snap.prefs.device_consumption.push({
+      stat_consumption: "sensor.nas",
+      stat_rate: "sensor.nas_power",
+      included_in_stat: "sensor.server",
+    });
+    snap.stats["sensor.nas"] = info("sensor.nas", "NAS");
+    snap.groups = {
+      electricity: [{ id: "g1", name: "Media", parent: "sensor.server", group: null, members: ["sensor.sonos"] }],
+    };
+    return snap;
+  }
+
+  function groupMock(language = "en"): Mock {
+    const mock = mockHass(language);
+    mock.responses["energy_flow_mapper/get"] = groupSnapshot();
+    mock.hass.states["sensor.nas_power"] = entity("sensor.nas_power", "20");
+    return mock;
+  }
+
+  function group(el: EnergyFlowMapperPanel, id: string): HTMLElement {
+    return root(el).querySelector<HTMLElement>(`.block.group[data-group="${id}"]`)!;
+  }
+
+  function frame(el: EnergyFlowMapperPanel, id: string): HTMLElement | null {
+    return root(el).querySelector<HTMLElement>(`.frame[data-group="${id}"]`);
+  }
+
+  function ctrlClick(target: HTMLElement): void {
+    target.dispatchEvent(new MouseEvent("click", { bubbles: true, ctrlKey: true }));
+  }
+
+  function edgeList(el: EnergyFlowMapperPanel): string[] {
+    return [...root(el).querySelectorAll<SVGGElement>(".edge")].map((e) => `${e.dataset.from}>${e.dataset.to}`);
+  }
+
+  async function expand(el: EnergyFlowMapperPanel, id: string): Promise<void> {
+    group(el, id).querySelector<HTMLButtonElement>("button.toggle")!.click();
+    await settle(el);
+  }
+
+  it("shows a saved group collapsed with its device count and value", async () => {
+    const mock = groupMock();
+    mock.responses["energy_flow_mapper/energy"] = (msg: { period: string }) => ({
+      period: msg.period,
+      start: "2026-11-04T00:00:00+01:00",
+      end: "2026-11-11T12:00:00+01:00",
+      energy: { "sensor.server": 9, "sensor.sonos": 1.5, "sensor.nas": 2, "sensor.tv": 1 },
+      water_unit: "L",
+      untracked: {},
+      issues: [],
+    });
+    const el = await mount(mock);
+    expect(el._collapsed.has("group:g1")).toBe(true);
+    const block = group(el, "g1");
+    expect(block.classList.contains("node")).toBe(false);
+    expect(block.textContent).toContain("Media");
+    expect(block.textContent).toContain("1 device");
+    expect(block.textContent).toContain("10 W");
+    expect(block.querySelector("button.toggle")!.textContent).toContain("▸");
+    // The amp is hidden in the group; the group hangs from the server.
+    expect(root(el).querySelector('.node[data-stat="sensor.sonos"]')).toBeNull();
+    expect(edgeList(el)).toContain("sensor.server>group:g1");
+    expect(edgeList(el)).toContain("sensor.server>sensor.nas");
+    // A period shows the energy of the members.
+    el.setPeriod("week");
+    await settle(el);
+    expect(group(el, "g1").textContent).toContain("1.5 kWh");
+    // Tapping the block opens the actions of the group.
+    group(el, "g1").click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Media");
+  });
+
+  it("expands a group into a frame and collapses it again", async () => {
+    const el = await mount(groupMock());
+    expect(frame(el, "g1")).toBeNull();
+    await expand(el, "g1");
+    expect(el._collapsed.has("group:g1")).toBe(false);
+    expect(frame(el, "g1")).not.toBeNull();
+    expect(node(el, "sensor.sonos")).not.toBeNull();
+    const header = group(el, "g1");
+    expect(header.textContent).toContain("▾");
+    expect(header.textContent).toContain("Media · 10 W");
+    expect(edgeList(el)).toContain("group:g1>sensor.sonos");
+    // The header toggles.
+    header.click();
+    await settle(el);
+    expect(el._collapsed.has("group:g1")).toBe(true);
+    expect(frame(el, "g1")).toBeNull();
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("opens a collapsed group when search finds a device inside", async () => {
+    const el = await mount(groupMock());
+    el._collapsed = new Set([...el._collapsed, "sensor.server"]);
+    await settle(el);
+    el.setFind("amp");
+    await settle(el);
+    expect(el._collapsed.has("group:g1")).toBe(false);
+    expect(el._collapsed.has("sensor.server")).toBe(false);
+    expect(node(el, "sensor.sonos").classList.contains("match")).toBe(true);
+  });
+
+  it("selects several devices with Ctrl+click and groups them", async () => {
+    const mock = groupMock();
+    const el = await mount(mock);
+    ctrlClick(node(el, "sensor.nas"));
+    ctrlClick(group(el, "g1"));
+    ctrlClick(node(el, "sensor.tv"));
+    ctrlClick(node(el, "sensor.tv"));
+    await settle(el);
+    expect([...el._multi]).toEqual(["sensor.nas", "group:g1"]);
+    expect(node(el, "sensor.nas").classList.contains("multi")).toBe(true);
+    // Ctrl+click neither selects for the details nor opens the group's dialog.
+    expect(el._selected).toBeNull();
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+    const footer = root(el).querySelector(".footer")!;
+    expect(footer.textContent).toContain("2 selected");
+    const groupButton = buttonWith(el, "Group");
+    expect(groupButton.disabled).toBe(false);
+    groupButton.click();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    const ok = () => [...dialog.querySelectorAll("button")].find((b) => b.textContent!.includes("OK"))!;
+    // A name is needed, and one the server's groups do not use yet.
+    expect(ok().disabled).toBe(true);
+    const input = dialog.querySelector<HTMLInputElement>('input[type="text"]')!;
+    input.value = "Media";
+    input.dispatchEvent(new Event("input"));
+    await settle(el);
+    expect(ok().disabled).toBe(true);
+    expect(dialog.textContent).toContain("There is already a group called Media here");
+    input.value = " Rack ";
+    input.dispatchEvent(new Event("input"));
+    await settle(el);
+    ok().click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      {
+        type: "create_group",
+        id: expect.stringMatching(/^[0-9a-f]{32}$/),
+        name: "Rack",
+        parent: "sensor.server",
+        group: null,
+        members: ["sensor.nas"],
+        groups: ["g1"],
+      },
+    ]);
+    expect(el._multi.size).toBe(0);
+    // A group created now starts expanded, around the NAS and the group Media.
+    const id = (el._changes[0] as { id: string }).id;
+    expect(el._collapsed.has(`group:${id}`)).toBe(false);
+    expect(group(el, id).textContent).toContain("Rack");
+    expect(frame(el, id)).not.toBeNull();
+    expect(lastCall(mock, "energy_flow_mapper/validate")).toMatchObject({ changes: el._changes });
+  });
+
+  it("selects with the touch mode", async () => {
+    const el = await mount(groupMock());
+    const select = buttonWith(el, "Select");
+    expect(select.getAttribute("aria-pressed")).toBe("false");
+    select.click();
+    await settle(el);
+    expect(buttonWith(el, "Select").getAttribute("aria-pressed")).toBe("true");
+    node(el, "sensor.nas").click();
+    group(el, "g1").click();
+    await settle(el);
+    expect([...el._multi]).toEqual(["sensor.nas", "group:g1"]);
+    expect(el._selected).toBeNull();
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+    expect(root(el).querySelector(".footer")!.textContent).toContain("2 selected");
+    buttonWith(el, "Clear selection").click();
+    await settle(el);
+    expect(el._multi.size).toBe(0);
+    expect(root(el).querySelector(".footer")).toBeNull();
+    // Leaving the mode drops the selection, and taps select for the details again.
+    node(el, "sensor.nas").click();
+    buttonWith(el, "Select").click();
+    await settle(el);
+    expect(el._multi.size).toBe(0);
+    node(el, "sensor.nas").click();
+    await settle(el);
+    expect(el._selected).toBe("sensor.nas");
+  });
+
+  it("does not group devices of different parents", async () => {
+    const el = await mount(groupMock());
+    ctrlClick(node(el, "sensor.nas"));
+    ctrlClick(node(el, "sensor.tv"));
+    await settle(el);
+    const groupButton = buttonWith(el, "Group");
+    expect(groupButton.disabled).toBe(true);
+    expect(groupButton.title).toBe("Only devices with the same parent");
+    // A device the draft removes leaves the selection.
+    el._change({ type: "remove", stat: "sensor.tv" });
+    await settle(el);
+    expect([...el._multi]).toEqual(["sensor.nas"]);
+    expect(buttonWith(el, "Group").disabled).toBe(false);
+    // Switching tabs drops the selection.
+    el.setTab("water");
+    await settle(el);
+    expect(el._multi.size).toBe(0);
+  });
+
+  it("drags a device into a group and out again", async () => {
+    const el = await mount(groupMock());
+    drag(node(el, "sensor.nas"), group(el, "g1"));
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "set_group", stat: "sensor.nas", group: "g1" }]);
+    expect(group(el, "g1").textContent).toContain("2 devices");
+    await expand(el, "g1");
+    // Onto its real parent: it leaves the group.
+    drag(node(el, "sensor.nas"), node(el, "sensor.server"));
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "set_group", stat: "sensor.nas", group: null });
+    // Onto the frame: it joins the group again.
+    drag(node(el, "sensor.nas"), frame(el, "g1")!);
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "set_group", stat: "sensor.nas", group: "g1" });
+    // Not into the group it is in already.
+    drag(node(el, "sensor.nas"), frame(el, "g1")!);
+    await settle(el);
+    expect(el._changes).toHaveLength(3);
+  });
+
+  it("drags a device of another parent into a group: move and set_group", async () => {
+    const mock = groupMock();
+    const el = await mount(mock);
+    const before = mock.calls.filter((c) => c.type === "energy_flow_mapper/validate").length;
+    drag(node(el, "sensor.tv"), group(el, "g1"));
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "move", stat: "sensor.tv", parent: "sensor.server" },
+      { type: "set_group", stat: "sensor.tv", group: "g1" },
+    ]);
+    expect(group(el, "g1").textContent).toContain("2 devices");
+    // Checked once for both.
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/validate")).toHaveLength(before + 1);
+    // The server cannot go into a group below itself.
+    drag(node(el, "sensor.server"), group(el, "g1"));
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+  });
+
+  it("drags a group onto a device: move_group", async () => {
+    const el = await mount(groupMock());
+    // Not onto its own parent, where it is already.
+    drag(group(el, "g1"), node(el, "sensor.server"));
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    drag(group(el, "g1"), node(el, "sensor.tv"));
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "move_group", id: "g1", parent: "sensor.tv" }]);
+    expect(el.draft.find((d) => d.stat_consumption === "sensor.sonos")?.included_in_stat).toBe("sensor.tv");
+    expect(edgeList(el)).toContain("sensor.tv>group:g1");
+    el._undoChange();
+    // Onto a group of another parent: it moves there and into that group.
+    el._change({ type: "create_group", id: "g2", name: "Living", parent: null, members: ["sensor.tv"], groups: [] });
+    await settle(el);
+    drag(group(el, "g1"), frame(el, "g2")!);
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "move_group", id: "g1", parent: null, group: "g2" });
+    // Out of the frame onto Home, its real parent now: it leaves the group.
+    drag(group(el, "g1"), root(el).querySelector<HTMLElement>(".block.home")!);
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "set_group", group_id: "g1", group: null });
+  });
+
+  it("lists group changes in the confirm dialog", async () => {
+    const mock = groupMock("de");
+    mock.responses["energy_flow_mapper/validate"] = {
+      valid: true,
+      issues: [],
+      diff: [
+        { type: "group_created", stat: "group:g2", id: "g2", name: "Küche", count: 4, kind: "electricity" },
+        { type: "group_renamed", stat: "group:g1", id: "g1", from: "Media", to: "TV & Audio", kind: "electricity" },
+        { type: "group_changed", stat: "group:g1", id: "g1", name: "Media", count: 1, kind: "electricity" },
+        { type: "group_dissolved", stat: "group:g3", id: "g3", name: "Bad", kind: "water" },
+      ],
+    } satisfies ValidateResult;
+    const el = await mount(mock);
+    el._change({ type: "rename_group", id: "g1", name: "TV & Audio" });
+    await el._openConfirm();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!.textContent!;
+    expect(dialog).toContain("Gruppe «Küche» erstellt (4 Geräte)");
+    expect(dialog).toContain("Gruppe «Media» umbenannt in «TV & Audio»");
+    expect(dialog).toContain("Gruppe «Media» geändert (1 Gerät)");
+    expect(dialog).toContain("Wasser: Gruppe «Bad» aufgelöst");
+    // Backups count them too.
+    expect(el._summaryText({ group_created: 2 })).toBe("2 Gruppe(n) erstellt");
+  });
+
+  it("keeps group changes in the kept draft", async () => {
+    const changes: Change[] = [
+      { type: "create_group", id: "g2", name: "Rack", parent: "sensor.server", members: ["sensor.nas"], groups: [] },
+      { type: "set_group", group_id: "g1", group: "g2" },
+    ];
+    const first = await mount(groupMock());
+    for (const change of changes) {
+      first._change(change);
+    }
+    await settle(first);
+    first.remove();
+    const again = await mount(groupMock());
+    expect(again._changes).toEqual(changes);
+    expect(text(again)).toContain("Your unsaved changes were restored");
+    expect(group(again, "g2").textContent).toContain("Rack");
+    // Media sits in Rack and is still collapsed.
+    expect(group(again, "g1")).not.toBeNull();
+    expect(again._collapsed.has("group:g1")).toBe(true);
+  });
+
+  it("draws groups as shown in the saved image", async () => {
+    const el = await mount(groupMock());
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:image");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const toPng = vi.fn(async (_svg: string, _w: number, _h: number) => new Blob(["png"]));
+    el._toPng = toPng;
+    try {
+      await el._saveImage(false);
+      expect(toPng.mock.calls[0][0]).toContain("Media");
+      expect(toPng.mock.calls[0][0]).toContain("1 device");
+      await expand(el, "g1");
+      await el._saveImage(true);
+      const hidden = toPng.mock.calls[1][0];
+      expect(hidden).not.toContain("Media");
+      expect(hidden).toContain("Group 1");
+      expect(hidden).toContain('class="frame"');
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+});

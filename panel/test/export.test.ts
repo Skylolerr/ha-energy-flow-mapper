@@ -139,3 +139,49 @@ describe("lines and markers in the picture", () => {
     expect(escapeXml("TV\u000bcorner\u0000")).toBe("TVcorner");
   });
 });
+
+describe("groups in the picture", () => {
+  const media = { id: "g1", name: "Anna's media", parent: null, group: null, members: ["sensor.lamp"] };
+  const kitchen = { id: "g2", name: "Kitchen", parent: null, group: null, members: ["sensor.kids_room"] };
+  // Kitchen is expanded (a frame around its header and member), Media collapsed.
+  const GROUPS: Layout = {
+    ...LAYOUT,
+    frames: [{ id: "group:g2", x: 588, y: 12, w: 244, h: 192, group: kitchen }],
+    blocks: [
+      ...LAYOUT.blocks,
+      { ...block("group:g1", "group", 24, 120), group: media },
+      { ...block("group:g2", "group", 600, 24), group: kitchen },
+    ],
+  };
+
+  function groupBlocks(): ExportBlock[] {
+    return [
+      ...blocks(),
+      { block: GROUPS.blocks[4], title: "Anna's media", sub: "2 devices · 30 W", area: null, color: "#ff9800", warn: false },
+      { block: GROUPS.blocks[5], title: "Kitchen", sub: "2 kWh", area: null, color: "#ff9800", warn: false },
+    ];
+  }
+
+  it("draws groups in the image", () => {
+    const svg = diagramSvg(GROUPS, groupBlocks(), [], options);
+    // The frame of the expanded group, dashed, below the blocks.
+    expect(svg).toContain('<rect class="frame" x="588" y="12" width="244" height="192"');
+    expect(svg.indexOf('class="frame"')).toBeLessThan(svg.indexOf("Grid import"));
+    // A collapsed group is a dashed block with its name, devices and value.
+    expect(svg).toContain("Anna&apos;s media");
+    expect(svg).toContain("2 devices · 30 W");
+    expect(svg).toMatch(/<rect x="24" y="120" width="220" height="72" rx="10"[^>]*stroke-dasharray/);
+    // Hidden names hide group names too.
+    const hidden = diagramSvg(
+      GROUPS,
+      anonymize(groupBlocks(), (n) => `Device ${n}`, (n) => `Group ${n}`),
+      [],
+      options,
+    );
+    expect(hidden).not.toContain("Anna");
+    expect(hidden).not.toContain("Kitchen");
+    expect(hidden).toContain("Group 1");
+    expect(hidden).toContain("Group 2");
+    expect(hidden).toContain("2 devices · 30 W");
+  });
+});

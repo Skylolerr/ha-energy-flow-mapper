@@ -1,7 +1,6 @@
 import { css, html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
 
 import {
-  applyChanges,
   applySourceChanges,
   buildTree,
   coverage,
@@ -17,6 +16,15 @@ import {
   untracked,
 } from "./draft";
 import { anonymize, diagramSvg, type ExportBlock, type ExportEdge, FOOTER_H, svgToPng } from "./export";
+import {
+  applyAllChanges,
+  canGroup,
+  displayTree,
+  GROUP_PREFIX,
+  groupBlockId,
+  groupDevices,
+  newGroupId,
+} from "./groups";
 import { icon } from "./icons";
 import {
   arrowHead,
@@ -25,6 +33,7 @@ import {
   dashPattern,
   type Edge,
   edgePath,
+  type Frame,
   HOME_ID,
   HOME_PLACEHOLDER_ROLES,
   layout,
@@ -60,6 +69,7 @@ import type {
   DeviceKind,
   DiffEntry,
   EnergyResult,
+  Group,
   HaIssue,
   HomeAssistant,
   HomeResult,
@@ -108,7 +118,8 @@ interface Zoom {
 
 export const TABS: Tab[] = ["electricity", "water", "gas"];
 
-type Dragged = { kind: "device" | "candidate"; stat: string };
+/** A dragged device, free sensor or group (`stat` is then the block id `group:<id>`). */
+type Dragged = { kind: "device" | "candidate" | "group"; stat: string };
 
 type Dialog =
   | { kind: "actions"; stat: string }
@@ -126,10 +137,16 @@ type Dialog =
   | { kind: "assign"; role: AssignRole; replace?: string | null }
   | { kind: "battery"; discharge: string }
   | { kind: "integral"; stat: string }
-  | { kind: "export"; hideNames: boolean };
+  | { kind: "export"; hideNames: boolean }
+  /** The actions of a group (filled in by the group actions). */
+  | { kind: "group"; id: string }
+  /** The name of a new group made from the selected blocks. */
+  | { kind: "group_name" };
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
 const SOURCE_TARGET = "src:";
+/** Colour of groups: their dashed blocks and frames. */
+const GROUP_COLOR = "var(--accent-color, #ff9800)";
 /** Energy units of a gas meter measured by energy; its period value comes in kWh. */
 const ENERGY_UNITS = ["mWh", "Wh", "kWh", "MWh", "GWh", "TWh", "J", "kJ", "MJ", "GJ", "cal", "kcal", "Mcal", "Gcal"];
 
@@ -222,6 +239,21 @@ function keepDraft(hash: string, changes: Change[]): void {
   }
 }
 
+/** Whether `group` is the group `id` or lies inside it (through its enclosing groups). */
+function within(groups: Group[], group: Group, id: string): boolean {
+  const seen = new Set<string>();
+  let current: Group | undefined = group;
+  while (current !== undefined && !seen.has(current.id)) {
+    if (current.id === id) {
+      return true;
+    }
+    seen.add(current.id);
+    const enclosing: string | null = current.group;
+    current = groups.find((g) => g.id === enclosing);
+  }
+  return false;
+}
+
 /** Navigate inside the Home Assistant frontend without reloading the page. */
 function navigate(path: string): void {
   history.pushState(null, "", path);
@@ -255,6 +287,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _tab: { state: true },
     _find: { state: true },
     _findIndex: { state: true },
+    _multi: { state: true },
+    _selectMode: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -273,6 +307,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _exporting = false;
   /** The suggestions of the last draft, so blocks do not compute them again. */
   private _suggestionMemo: { key: unknown[]; value: ChildPair[] } | null = null;
+  /** The devices and groups of each list with the draft applied, per snapshot and draft. */
+  private _draftMemo = new Map<DeviceKind, { key: unknown[]; value: { devices: Device[]; groups: Group[] } }>();
   /** Turns the picture of the diagram into a PNG; replaced in tests. */
   _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
@@ -298,6 +334,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Text searched in the diagram, and which match is shown. */
   declare _find: string;
   declare _findIndex: number;
+  /** Blocks selected for grouping: device statistics and group block ids. */
+  declare _multi: Set<string>;
+  /** Touch mode in which a tap selects a block for grouping (like Ctrl+click). */
+  declare _selectMode: boolean;
 
   private _loading = false;
   /** Whether the kept draft was looked at; until then nothing is stored. */
@@ -340,6 +380,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._tab = "electricity";
     this._find = "";
     this._findIndex = 0;
+    this._multi = new Set();
+    this._selectMode = false;
   }
 
   /** Ctrl+Z (Cmd+Z) takes back the last change of the draft, outside text fields. */
@@ -373,6 +415,19 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (changed.has("hass") && this.hass && !this._snapshot && !this._loading && !this._loadError) {
       void this._load();
     }
+    // Selected blocks the draft no longer has (undo, removed) leave the selection.
+    if ((changed.has("_changes") || changed.has("_snapshot")) && this._multi.size) {
+      const devices = this.draft;
+      const groups = this._groups;
+      const kept = [...this._multi].filter((id) =>
+        id.startsWith(GROUP_PREFIX)
+          ? groups.some((g) => groupBlockId(g.id) === id)
+          : devices.some((d) => d.stat_consumption === id),
+      );
+      if (kept.length !== this._multi.size) {
+        this._multi = new Set(kept);
+      }
+    }
   }
 
   async _load(): Promise<void> {
@@ -384,6 +439,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._snapshot = await this.hass.callWS<Snapshot>({ type: `${DOMAIN}/get` });
       this._loadError = null;
       this._ignored = this._snapshot.ignored_suggestions ?? [];
+      this._collapseGroups(this._snapshot);
       this._restoreDraft(this._snapshot.hash);
       this._loadHaTexts();
     } catch (err) {
@@ -392,6 +448,14 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._loading = false;
     }
     await Promise.all([this._validate(), this._loadEnergy()]);
+  }
+
+  /** Saved groups start collapsed, once per load; groups made later start expanded. */
+  private _collapseGroups(snapshot: Snapshot): void {
+    const ids = Object.values(snapshot.groups ?? {}).flatMap((groups) => (groups ?? []).map((g) => groupBlockId(g.id)));
+    if (ids.length) {
+      this._collapsed = new Set([...this._collapsed, ...ids]);
+    }
   }
 
   /**
@@ -470,6 +534,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     this._tab = tab;
     this._selected = null;
+    this._multi = new Set();
     this._find = "";
     this._findIndex = 0;
     this._autoFit = true;
@@ -503,11 +568,36 @@ export class EnergyFlowMapperPanel extends LitElement {
     return this._period === "now" ? formatPower(this.hass, value) : formatEnergy(this.hass, value);
   }
 
-  /** The device list of a tab with the draft applied. */
-  draftOf(kind: DeviceKind): Device[] {
+  /**
+   * The devices and groups of a list with the draft applied, in order: a
+   * `move_group` moves devices, so the devices come from here too.
+   */
+  private _draftState(kind: DeviceKind): { devices: Device[]; groups: Group[] } {
+    const key = [this._snapshot, this._changes];
+    const memo = this._draftMemo.get(kind);
+    if (memo && memo.key.every((part, i) => part === key[i])) {
+      return memo.value;
+    }
     const prefs = this._snapshot?.prefs;
     const devices = kind === "water" ? prefs?.device_consumption_water : prefs?.device_consumption;
-    return applyChanges(devices ?? [], this._changes, kind);
+    const value = applyAllChanges(devices ?? [], this._snapshot?.groups?.[kind] ?? [], this._changes, kind);
+    this._draftMemo.set(kind, { key, value });
+    return value;
+  }
+
+  /** The device list of a tab with the draft applied. */
+  draftOf(kind: DeviceKind): Device[] {
+    return this._draftState(kind).devices;
+  }
+
+  /** The groups of a list with the draft applied. */
+  groupsOf(kind: DeviceKind): Group[] {
+    return this._draftState(kind).groups;
+  }
+
+  /** The groups of the current tab with the draft applied; gas has none. */
+  get _groups(): Group[] {
+    return this._tab === "gas" ? [] : this.groupsOf(this._tab);
   }
 
   /** The device list of the current tab with the draft applied; gas has none. */
@@ -712,7 +802,12 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   _change(change: Change): void {
-    this._changes = [...this._changes, change];
+    this._changeAll([change]);
+  }
+
+  /** Add several changes to the draft, checked once. */
+  _changeAll(changes: Change[]): void {
+    this._changes = [...this._changes, ...changes];
     void this._validate();
     void this._loadEnergy();
   }
@@ -966,14 +1061,82 @@ export class EnergyFlowMapperPanel extends LitElement {
       if (dragged.kind === "device") {
         return target.startsWith(`${SOURCE_TARGET}home:`) && this._canUseHomeMeter(dragged.stat);
       }
-      return true;
+      return dragged.kind === "candidate";
+    }
+    if (dragged.kind === "candidate") {
+      // Gas has no devices: a free gas meter only goes onto a gas source. A
+      // group is no parent: free sensors go onto devices or Home.
+      return this._tab !== "gas" && !target.startsWith(GROUP_PREFIX);
+    }
+    return this._dropPlan(dragged, target) !== null;
+  }
+
+  /**
+   * The draft changes of dropping a device or group on `target` (a device,
+   * HOME, or a group's block or frame), or null when it cannot go there:
+   * - onto a group: it joins the group; with another real parent it also
+   *   moves there (`move` + `set_group` for a device, `move_group` for a group);
+   * - onto its own real parent: it leaves its group (`set_group` with null);
+   * - onto another device or Home: a device moves, a group moves with all its
+   *   devices (`move_group`).
+   */
+  private _dropPlan(dragged: Dragged, target: string): Change[] | null {
+    const devices = this.draft;
+    const groups = this._groups;
+    const kind = this._kind();
+    const into = target.startsWith(GROUP_PREFIX) ? groups.find((g) => groupBlockId(g.id) === target) : undefined;
+    if (target.startsWith(GROUP_PREFIX) && into === undefined) {
+      return null;
     }
     const parent = target === HOME ? null : target;
-    if (dragged.kind === "candidate") {
-      // Gas has no devices: a free gas meter only goes onto a gas source.
-      return this._tab !== "gas";
+    if (dragged.kind === "device") {
+      const stat = dragged.stat;
+      const device = devices.find((d) => d.stat_consumption === stat);
+      if (device === undefined) {
+        return null;
+      }
+      const own = device.included_in_stat ?? null;
+      const current = groups.find((g) => g.members.includes(stat));
+      if (into !== undefined) {
+        if (current?.id === into.id) {
+          return null;
+        }
+        const join: Change = { type: "set_group", stat, group: into.id, ...kind };
+        if (into.parent === own) {
+          return [join];
+        }
+        return canMove(devices, stat, into.parent) ? [{ type: "move", stat, parent: into.parent, ...kind }, join] : null;
+      }
+      if (parent === own) {
+        return current ? [{ type: "set_group", stat, group: null, ...kind }] : null;
+      }
+      return canMove(devices, stat, parent) ? [{ type: "move", stat, parent, ...kind }] : null;
     }
-    return canMove(this.draft, dragged.stat, parent);
+    const group = groups.find((g) => groupBlockId(g.id) === dragged.stat);
+    if (group === undefined) {
+      return null;
+    }
+    // The group and the groups inside it move together.
+    const moving = new Set(groups.filter((g) => within(groups, g, group.id)).map((g) => g.id));
+    const members = groupDevices(groups, group.id);
+    const movable = (to: string | null) =>
+      members.every((stat) => canMove(devices, stat, to)) &&
+      !groups.some((g) => !moving.has(g.id) && g.parent === to && groups.some((m) => moving.has(m.id) && m.name === g.name));
+    if (into !== undefined) {
+      if (moving.has(into.id) || group.group === into.id) {
+        return null;
+      }
+      if (into.parent === group.parent) {
+        return [{ type: "set_group", group_id: group.id, group: into.id, ...kind }];
+      }
+      return movable(into.parent)
+        ? [{ type: "move_group", id: group.id, parent: into.parent, group: into.id, ...kind }]
+        : null;
+    }
+    if (parent === group.parent) {
+      return group.group !== null ? [{ type: "set_group", group_id: group.id, group: null, ...kind }] : null;
+    }
+    return movable(parent) ? [{ type: "move_group", id: group.id, parent, ...kind }] : null;
   }
 
   _drop(target: string): void {
@@ -997,11 +1160,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._assign(rest.slice(0, separator) as AssignRole, dragged.stat, block?.stat ?? null);
       return;
     }
-    const parent = target === HOME ? null : target;
     if (dragged.kind === "candidate") {
-      this._addCandidate(dragged.stat, parent);
+      this._addCandidate(dragged.stat, target === HOME ? null : target);
     } else {
-      this._change({ type: "move", stat: dragged.stat, parent, ...this._kind() });
+      this._changeAll(this._dropPlan(dragged, target) ?? []);
     }
   }
 
@@ -1030,7 +1192,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
     }
-    if (dragged.kind === "device" && this._view === "diagram") {
+    if (dragged.kind !== "candidate" && this._view === "diagram") {
       this._setDragImage(event);
     }
     this._dragged = dragged;
@@ -1308,7 +1470,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       rest.set(HOME_ID, home.untracked);
     }
     return layout(
-      roots,
+      displayTree(roots, this._groups),
       sourceRows(this.draftSources, this._tab),
       values,
       rest,
@@ -1336,8 +1498,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     return resolved || match[2]?.trim() || fallback;
   }
 
-  /** One block of the picture, with the texts the diagram shows. */
-  private _exportBlock(block: Block, element: Element | undefined, devices: Device[]): ExportBlock {
+  /** One block of the picture, with the texts the diagram shows; `flows` maps block ids to their value. */
+  private _exportBlock(
+    block: Block,
+    element: Element | undefined,
+    devices: Device[],
+    flows: Map<string, number | null>,
+  ): ExportBlock {
     const title = element?.querySelector(".node-name")?.textContent?.trim() ?? "";
     const subs = [...(element?.querySelectorAll(".sub") ?? [])]
       .map((e) => e.textContent?.trim() ?? "")
@@ -1355,6 +1522,20 @@ export class EnergyFlowMapperPanel extends LitElement {
         color: this._cssColor("var(--primary-color, #03a9f4)"),
         warn,
         hidden: this._collapsed.has(stat) ? (block.node?.children.length ?? 0) : 0,
+      };
+    }
+    if (block.kind === "group") {
+      // A collapsed group: its devices and value; the header of a frame: its value.
+      const value = flows.get(block.id) ?? null;
+      const valueText = value === null ? null : this._formatValue(value);
+      const lines = this._collapsed.has(block.id) ? [this._devicesText(block.group!.id), valueText] : [valueText];
+      return {
+        block,
+        title: block.group!.name,
+        sub: lines.filter(Boolean).join(" · ") || null,
+        area: null,
+        color: this._cssColor(GROUP_COLOR),
+        warn: false,
       };
     }
     const color =
@@ -1384,9 +1565,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     const byId = new Map(result.blocks.map((b) => [b.id, b]));
     const devices = this.draft;
     const elements = [...(this.shadowRoot?.querySelectorAll(".canvas > .block") ?? [])];
-    let items = result.blocks.map((block, index) => this._exportBlock(block, elements[index], devices));
+    const flows = new Map(result.edges.map((e) => [e.to, e.power]));
+    let items = result.blocks.map((block, index) => this._exportBlock(block, elements[index], devices, flows));
     if (hideNames) {
-      items = anonymize(items, (n) => this._t("export_device", { n: String(n) }));
+      items = anonymize(
+        items,
+        (n) => this._t("export_device", { n: String(n) }),
+        (n) => this._t("export_group", { n: String(n) }),
+      );
     }
     const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
     const edges: ExportEdge[] = result.edges.flatMap((edge) => {
@@ -1402,10 +1588,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           d: edgePath(from, to, head.length - 1, this._orientation),
           color: this._cssColor(this._edgeColor(edge, byId), "#727272"),
           width,
-          dashed:
-            edge.kind === "untracked" ||
-            (edge.kind === "device" && edge.power === null) ||
-            (edge.kind === "source" && from.role === "home"),
+          dashed: this._dashed(edge, from),
           head: arrowHead(from, to, head.half, head.length, this._orientation),
         },
       ];
@@ -1425,6 +1608,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       secondary: this._cssColor("var(--secondary-text-color, #727272)"),
       card: this._cssColor("var(--card-background-color, #ffffff)"),
       divider: this._cssColor("var(--divider-color, #e0e0e0)"),
+      group: this._cssColor(GROUP_COLOR),
     };
     const svg = diagramSvg(result, items, edges, { theme, footer });
     try {
@@ -1511,15 +1695,32 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Open the collapsed devices above a block, select it and move it to the middle. */
+  /**
+   * Open the collapsed devices and groups above a block, select it and move
+   * it to the middle.
+   */
   private _reveal(stat: string): void {
     const devices = this.draft;
+    const groups = this._groups;
     const collapsed = new Set(this._collapsed);
+    // The group of a device and the groups around it.
+    const openGroups = (member: string) => {
+      let group = groups.find((g) => g.members.includes(member));
+      const opened = new Set<string>();
+      while (group !== undefined && !opened.has(group.id)) {
+        opened.add(group.id);
+        collapsed.delete(groupBlockId(group.id));
+        const enclosing = group.group;
+        group = groups.find((g) => g.id === enclosing);
+      }
+    };
+    openGroups(stat);
     let parent = devices.find((d) => d.stat_consumption === stat)?.included_in_stat;
     const seen = new Set<string>();
     while (parent && !seen.has(parent)) {
       seen.add(parent);
       collapsed.delete(parent);
+      openGroups(parent);
       parent = devices.find((d) => d.stat_consumption === parent)?.included_in_stat;
     }
     this._collapsed = collapsed;
@@ -1643,6 +1844,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     const result = this.diagramLayout();
     const blocks = new Map(result.blocks.map((b) => [b.id, b]));
     const maxPower = Math.max(0, ...result.edges.map((e) => e.power ?? 0));
+    // The edge into a block carries its value; for groups the layout sums it.
+    const flows = new Map(result.edges.map((e) => [e.to, e.power]));
     const power = this._values(devices);
     const rest = untracked(buildTree(devices), power);
     const home = this._home();
@@ -1676,6 +1879,16 @@ export class EnergyFlowMapperPanel extends LitElement {
             ${this._suggestions().length >= 2
               ? html`<button class="apply-all" @click=${() => this._applyAllSuggestions()}>
                   ${icon("lightbulb")} ${this._t("suggestion_apply_all")}
+                </button>`
+              : nothing}
+            ${this._tab !== "gas"
+              ? html`<button
+                  class="select-mode ${this._selectMode ? "active" : ""}"
+                  aria-pressed=${String(this._selectMode)}
+                  title=${this._t("select_mode_hint")}
+                  @click=${() => this.setSelectMode(!this._selectMode)}
+                >
+                  ${this._t("select_mode")}
                 </button>`
               : nothing}
             ${this._tab === "electricity" && (this._coverageRatio() !== null || this._energyLoading())
@@ -1754,7 +1967,8 @@ export class EnergyFlowMapperPanel extends LitElement {
             <svg class="edges" width=${result.width} height=${result.height} aria-hidden="true">
               ${result.edges.map((edge) => this._renderEdge(edge, blocks, maxPower))}
             </svg>
-            ${result.blocks.map((block) => this._renderBlock(block, devices, measured, rest))}
+            ${result.frames.map((frame) => this._renderFrame(frame))}
+            ${result.blocks.map((block) => this._renderBlock(block, devices, measured, rest, flows))}
           </div>
         </div>
       </section>
@@ -1805,6 +2019,15 @@ export class EnergyFlowMapperPanel extends LitElement {
     return "var(--primary-color)";
   }
 
+  /** Dashed: untracked, without a value, and the home meter (it measures Home, it does not feed it). */
+  private _dashed(edge: Edge, from: Block): boolean {
+    return (
+      edge.kind === "untracked" ||
+      ((edge.kind === "device" || edge.kind === "group") && edge.power === null) ||
+      (edge.kind === "source" && from.role === "home")
+    );
+  }
+
   private _renderEdge(edge: Edge, blocks: Map<string, Block>, maxPower: number) {
     const from = blocks.get(edge.from);
     const to = blocks.get(edge.to);
@@ -1812,11 +2035,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return nothing;
     }
     const color = this._edgeColor(edge, blocks);
-    // The home meter measures Home; it does not feed it.
-    const dashed =
-      edge.kind === "untracked" ||
-      (edge.kind === "device" && edge.power === null) ||
-      (edge.kind === "source" && from.role === "home");
+    const dashed = this._dashed(edge, from);
     const width = strokeWidth(edge.power, maxPower);
     const head = arrowSize(width);
     // The line ends just inside the base of the arrowhead (flat end), so it
@@ -1875,7 +2094,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     return buildTree(devices).map((node) => values.get(node.stat) ?? null);
   }
 
-  private _blockStyle(block: Block): string {
+  private _blockStyle(block: Pick<Block, "x" | "y" | "w" | "h">): string {
     return `left:${block.x}px;top:${block.y}px;width:${block.w}px;height:${block.h}px`;
   }
 
@@ -1884,9 +2103,12 @@ export class EnergyFlowMapperPanel extends LitElement {
     devices: Device[],
     measured: number | null,
     rest: Map<string, number | null>,
+    flows: Map<string, number | null>,
   ): TemplateResult {
     const style = this._blockStyle(block);
     switch (block.kind) {
+      case "group":
+        return this._renderGroupBlock(block, flows.get(block.id) ?? null);
       case "home": {
         const drop = this._dragHandlers(HOME);
         return html`<div
@@ -2018,7 +2240,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       .join(" · ");
     const collapsed = this._collapsed.has(stat);
     return html`<div
-      class="block device node ${suggestion ? "suggested" : ""} ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._dropTarget ===
+      class="block device node ${suggestion ? "suggested" : ""} ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._multi.has(stat) ? "multi" : ""} ${this._dropTarget ===
       stat
         ? "drop"
         : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""} ${this._dragged?.stat ===
@@ -2038,7 +2260,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       @dragover=${handlers.over}
       @dragleave=${handlers.leave}
       @drop=${handlers.drop}
-      @click=${() => {
+      @click=${(e: MouseEvent) => {
+        if (this._selecting(e)) {
+          this._toggleMulti(stat);
+          return;
+        }
         this._selected = stat;
         if (this.narrow) {
           this._dialog = { kind: "details" };
@@ -2083,6 +2309,98 @@ export class EnergyFlowMapperPanel extends LitElement {
     </div>`;
   }
 
+  /** "1 device", "4 devices": all devices in a group, also in the groups inside it. */
+  private _devicesText(id: string): string {
+    return this._countText(groupDevices(this._groups, id).length);
+  }
+
+  private _countText(count: number): string {
+    return count === 1
+      ? this._t("group_devices_one")
+      : this._t("group_devices_other", { count: formatNumber(this.hass, count) });
+  }
+
+  /**
+   * A group: collapsed, a dashed block with its name, devices and value
+   * (tapping it opens its actions); expanded, the header of its frame
+   * «▾ name · value», which a tap collapses again.
+   */
+  private _renderGroupBlock(block: Block, value: number | null): TemplateResult {
+    const group = block.group!;
+    const id = block.id;
+    const collapsed = this._collapsed.has(id);
+    const valueText = value === null ? null : this._formatValue(value);
+    const handlers = this._dragHandlers(id);
+    return html`<div
+      class="block group ${collapsed ? "collapsed" : "header"} ${this._multi.has(id) ? "multi" : ""} ${this._dropTarget ===
+      id
+        ? "drop"
+        : ""} ${this._dragged?.stat === id ? "dragged" : this._dragged && this._canDrop(id) ? "can-drop" : ""}"
+      style=${this._blockStyle(block)}
+      draggable="true"
+      data-group=${group.id}
+      @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "group", stat: id })}
+      @dragend=${() => {
+        this._dragged = null;
+        this._dropTarget = null;
+      }}
+      @dragover=${handlers.over}
+      @dragleave=${handlers.leave}
+      @drop=${handlers.drop}
+      @click=${(e: MouseEvent) => {
+        if (this._selecting(e)) {
+          this._toggleMulti(id);
+        } else if (collapsed) {
+          this._dialog = { kind: "group", id: group.id };
+        } else {
+          this._toggle(id);
+        }
+      }}
+    >
+      <button
+        class="icon toggle"
+        aria-label=${group.name}
+        aria-expanded=${String(!collapsed)}
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          this._toggle(id);
+        }}
+      >
+        ${collapsed ? "▸" : "▾"}
+      </button>
+      <div class="block-text">
+        ${collapsed
+          ? html`<span class="node-name" title=${group.name}>${group.name}</span>
+              <span class="sub">${[this._devicesText(group.id), valueText].filter(Boolean).join(" · ")}</span>`
+          : html`<span class="node-name" title=${group.name}>${[group.name, valueText].filter(Boolean).join(" · ")}</span>
+              <span class="sub">${this._devicesText(group.id)}</span>`}
+      </div>
+      <button
+        class="icon"
+        aria-label=${this._t("group_actions", { name: group.name })}
+        @click=${(e: Event) => {
+          e.stopPropagation();
+          this._dialog = { kind: "group", id: group.id };
+        }}
+      >
+        ${icon("dots")}
+      </button>
+    </div>`;
+  }
+
+  /** The dashed frame around an expanded group; dropping on it joins the group. */
+  private _renderFrame(frame: Frame): TemplateResult {
+    const handlers = this._dragHandlers(frame.id);
+    return html`<div
+      class="frame ${this._dropTarget === frame.id ? "drop" : ""} ${this._dragged && this._canDrop(frame.id) ? "can-drop" : ""}"
+      style=${this._blockStyle(frame)}
+      data-group=${frame.group.id}
+      @dragover=${handlers.over}
+      @dragleave=${handlers.leave}
+      @drop=${handlers.drop}
+    ></div>`;
+  }
+
   private _toggle(stat: string): void {
     const next = new Set(this._collapsed);
     if (next.has(stat)) {
@@ -2091,6 +2409,72 @@ export class EnergyFlowMapperPanel extends LitElement {
       next.add(stat);
     }
     this._collapsed = next;
+  }
+
+  // --- selecting and grouping -------------------------------------------------
+
+  /** Whether a click selects for grouping: Ctrl/Cmd+click, or any tap in the select mode. */
+  private _selecting(event: MouseEvent): boolean {
+    return this._selectMode || event.ctrlKey || event.metaKey;
+  }
+
+  /** Switch the select mode for touch; leaving it drops the selection. */
+  setSelectMode(on: boolean): void {
+    this._selectMode = on;
+    if (!on) {
+      this._multi = new Set();
+    }
+  }
+
+  /** Add a block (device statistic or group block id) to the selection, or take it out. */
+  _toggleMulti(id: string): void {
+    const next = new Set(this._multi);
+    if (next.has(id)) {
+      next.delete(id);
+    } else {
+      next.add(id);
+    }
+    this._multi = next;
+  }
+
+  /** The real parent of the selection (that of its first block). */
+  private _selectionParent(): string | null {
+    const [first] = this._multi;
+    if (first?.startsWith(GROUP_PREFIX)) {
+      return this._groups.find((g) => groupBlockId(g.id) === first)?.parent ?? null;
+    }
+    return this.draft.find((d) => d.stat_consumption === first)?.included_in_stat ?? null;
+  }
+
+  /**
+   * Make a group of the selected devices and groups. When all of them sit in
+   * the same group, the new group goes inside it; a new group starts expanded.
+   */
+  _groupSelection(name: string): void {
+    const ids = [...this._multi];
+    const groups = this._groups;
+    if (!canGroup(this.draft, groups, ids)) {
+      return;
+    }
+    const members = ids.filter((id) => !id.startsWith(GROUP_PREFIX));
+    const nested = ids.filter((id) => id.startsWith(GROUP_PREFIX)).map((id) => id.slice(GROUP_PREFIX.length));
+    const enclosing = new Set([
+      ...members.map((stat) => groups.find((g) => g.members.includes(stat))?.id ?? null),
+      ...nested.map((id) => groups.find((g) => g.id === id)?.group ?? null),
+    ]);
+    const change: Change = {
+      type: "create_group",
+      id: newGroupId(),
+      name: name.trim(),
+      parent: this._selectionParent(),
+      group: enclosing.size === 1 ? [...enclosing][0] : null,
+      members,
+      groups: nested,
+      ...this._kind(),
+    };
+    this._close();
+    this._multi = new Set();
+    this._change(change);
   }
 
   // --- list (hidden, kept for later use) --------------------------------------
@@ -2375,14 +2759,43 @@ export class EnergyFlowMapperPanel extends LitElement {
     `;
   }
 
-  private _renderFooter(): TemplateResult | typeof nothing {
-    if (this._changes.length === 0) {
+  /** «N selected · Group · Clear selection» while blocks are selected for grouping. */
+  private _renderSelection(): TemplateResult | typeof nothing {
+    const selected = this._multi.size;
+    if (selected === 0) {
       return nothing;
     }
+    const groupable = canGroup(this.draft, this._groups, [...this._multi]);
+    return html`<div class="selection">
+      <span>${this._t("selected_count", { count: formatNumber(this.hass, selected) })}</span>
+      <button
+        class="group-selection"
+        ?disabled=${!groupable}
+        title=${groupable ? "" : this._t("group_parents_hint")}
+        @click=${() => {
+          this._renameValue = "";
+          this._dialog = { kind: "group_name" };
+        }}
+      >
+        ${this._t("group_selection")}
+      </button>
+      <button class="clear-selection" @click=${() => (this._multi = new Set())}>${this._t("clear_selection")}</button>
+    </div>`;
+  }
+
+  private _renderFooter(): TemplateResult | typeof nothing {
+    if (this._changes.length === 0 && this._multi.size === 0) {
+      return nothing;
+    }
+    return html`<div class="footer">${this._renderSelection()} ${this._changes.length ? this._renderDraftBar() : nothing}</div>`;
+  }
+
+  /** The draft's changes, what blocks saving, and undo, discard and save. */
+  private _renderDraftBar(): TemplateResult {
     const count = this._validation?.diff.length ?? this._changes.length;
     const errors = this._validation?.issues.filter((i) => i.severity === "error").length ?? 0;
-    return html`<div class="footer">
-      <span
+    return html`
+      <span class="count"
         >${count === 1
           ? this._t("change_one")
           : this._t("change_other", { count: formatNumber(this.hass, count) })}</span
@@ -2400,7 +2813,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       </button>
       <button @click=${() => this._discard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
-    </div>`;
+    `;
   }
 
   /** The suggestion for a device, with Apply and Ignore. */
@@ -2442,7 +2855,26 @@ export class EnergyFlowMapperPanel extends LitElement {
     return entry.kind === "water" ? this._t("diff_water", { text }) : text;
   }
 
+  /** «Group “Kitchen” created (4 devices)» and the other group entries. */
+  private _groupDiffLine(entry: DiffEntry): string {
+    const name = entry.name ?? "";
+    const devices = this._countText(entry.count ?? 0);
+    switch (entry.type) {
+      case "group_created":
+        return this._t("diff_group_created", { name, devices });
+      case "group_renamed":
+        return this._t("diff_group_renamed", { from: entry.from ?? "", to: entry.to ?? "" });
+      case "group_dissolved":
+        return this._t("diff_group_dissolved", { name });
+      default:
+        return this._t("diff_group_changed", { name, devices });
+    }
+  }
+
   private _diffLine(entry: DiffEntry): string {
+    if (entry.type.startsWith("group_")) {
+      return this._groupDiffLine(entry);
+    }
     const kind = entry.kind ?? "electricity";
     const devices = this.draftOf(kind);
     const saved = (kind === "water"
@@ -2928,6 +3360,38 @@ export class EnergyFlowMapperPanel extends LitElement {
               ${this._t("export_save")}
             </button>
           </div>`;
+      case "group": {
+        // Rename, dissolve and the sum meter come with the group actions.
+        const group = this._groups.find((g) => g.id === dialog.id);
+        return html`${group
+            ? html`<h2>${group.name}</h2>
+                <p class="hint">${this._devicesText(group.id)}</p>`
+            : nothing}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("close")}</button>
+          </div>`;
+      }
+      case "group_name": {
+        const name = this._renameValue.trim();
+        const parent = this._selectionParent();
+        const taken = name !== "" && this._groups.some((g) => g.parent === parent && g.name === name);
+        return html`<h2>${this._t("group_name_title")}</h2>
+          <label
+            >${this._t("name_label")}
+            <input
+              type="text"
+              .value=${this._renameValue}
+              @input=${(e: Event) => (this._renameValue = (e.target as HTMLInputElement).value)}
+            />
+          </label>
+          ${taken ? html`<p class="warning">${this._t("error_group_name_taken", { stat: name })}</p>` : nothing}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button class="primary" ?disabled=${!name || taken} @click=${() => this._groupSelection(name)}>
+              ${this._t("ok")}
+            </button>
+          </div>`;
+      }
       case "details":
         return html`${this._renderDetails()}
           <div class="dialog-actions">
@@ -3363,6 +3827,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       --block-bg: var(--card-background-color, var(--primary-background-color));
       --block-border: color-mix(in srgb, var(--primary-text-color) 35%, transparent);
       --canvas-bg: color-mix(in srgb, var(--primary-text-color) 4%, var(--primary-background-color));
+      --group-color: var(--accent-color, #ff9800);
       position: relative;
       overflow: hidden;
       /* Window height minus header, tabs, card header, hint and search. */
@@ -3486,8 +3951,42 @@ export class EnergyFlowMapperPanel extends LitElement {
       color: var(--primary-text-color);
     }
     .dragging .block.device:not(.can-drop):not(.dragged),
+    .dragging .block.group:not(.can-drop):not(.dragged),
     .dragging .block.home:not(.can-drop) {
       opacity: 0.45;
+    }
+    /* Groups: dashed in the group colour; a frame around an expanded one. */
+    .block.group {
+      cursor: grab;
+      border: 2px dashed var(--group-color);
+      background: color-mix(in srgb, var(--group-color) 10%, var(--block-bg));
+    }
+    .block.group.header {
+      box-shadow: none;
+    }
+    .frame {
+      position: absolute;
+      box-sizing: border-box;
+      border: 2px dashed var(--group-color);
+      border-radius: 14px;
+      background: color-mix(in srgb, var(--group-color) 5%, transparent);
+    }
+    .frame.can-drop {
+      border-color: var(--primary-color);
+    }
+    .frame.drop {
+      border-style: solid;
+      border-color: var(--primary-color);
+      background: color-mix(in srgb, var(--primary-color) 12%, transparent);
+    }
+    .block.multi {
+      outline: 3px solid var(--group-color);
+      outline-offset: 3px;
+    }
+    .select-mode.active {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+      color: var(--text-primary-color, #fff);
     }
     .block.can-drop {
       outline: 2px dashed var(--primary-color);
@@ -3542,8 +4041,18 @@ export class EnergyFlowMapperPanel extends LitElement {
       border-top: 1px solid var(--divider-color);
       z-index: 2;
     }
-    .footer > span:first-child {
+    .footer {
+      flex-wrap: wrap;
+    }
+    .footer .count,
+    .footer .selection {
       flex: 1;
+    }
+    .footer .selection {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
     }
     .footer .blocked {
       display: inline-flex;
