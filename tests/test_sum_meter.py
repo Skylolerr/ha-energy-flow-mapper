@@ -10,6 +10,7 @@ from homeassistant.data_entry_flow import FlowResultType, InvalidData, UnknownFl
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.energy_flow_mapper import sum_meter as sum_module
+from custom_components.energy_flow_mapper import websocket as ws_module
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
@@ -208,8 +209,6 @@ async def test_ws_failed_rate_sum_removes_the_energy_sum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the rate sum fails, the energy sum is removed again and forgotten."""
-    from custom_components.energy_flow_mapper import websocket as ws_module
-
     original = ws_module.async_create_sum
     calls = 0
 

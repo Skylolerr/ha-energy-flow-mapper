@@ -199,7 +199,13 @@ def test_imported_groups_keep_only_their_fields() -> None:
     }
     _, groups = parse_import(document)
     assert groups == {"electricity": GROUPS["electricity"], "water": []}
-    assert list(groups["electricity"][0]) == ["id", "name", "parent", "group", "members"]
+    assert list(groups["electricity"][0]) == [
+        "id",
+        "name",
+        "parent",
+        "group",
+        "members",
+    ]
 
 
 def test_duplicate_group_ids_are_refused() -> None:
