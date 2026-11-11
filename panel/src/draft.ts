@@ -61,6 +61,14 @@ function setOptional(device: Device, key: string, value: unknown): void {
   }
 }
 
+const GROUP_CHANGE_TYPES: ReadonlySet<string> = new Set([
+  "create_group",
+  "rename_group",
+  "set_group",
+  "dissolve_group",
+  "move_group",
+]);
+
 /** The device list a change belongs to, or null for a source change. */
 export function changeKind(change: Change): DeviceKind | null {
   if (change.type === "assign_source" || change.type === "unassign_source") {
@@ -80,7 +88,11 @@ export function applyChanges(
 ): Device[] {
   const result: Device[] = structuredClone(devices);
   for (const change of changes) {
-    if (changeKind(change) !== kind) {
+    // Group changes do not touch the devices; groups.ts applies them.
+    if (changeKind(change) !== kind || GROUP_CHANGE_TYPES.has(change.type)) {
+      continue;
+    }
+    if (!("stat" in change)) {
       continue;
     }
     const index = result.findIndex((d) => d.stat_consumption === change.stat);

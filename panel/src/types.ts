@@ -49,6 +49,22 @@ export interface Source {
   [key: string]: unknown;
 }
 
+/** A purely visual group of devices below one real parent (mirrors groups.py). */
+export interface Group {
+  /** uuid4 hex, made by the panel. */
+  id: string;
+  name: string;
+  /** Real parent statistic; null = Home. */
+  parent: string | null;
+  /** Enclosing group id; null = top level of its parent. */
+  group: string | null;
+  /** Device statistics directly in this group. */
+  members: string[];
+}
+
+/** The groups of each device list. */
+export type Groups = Partial<Record<DeviceKind, Group[]>>;
+
 export interface Prefs {
   energy_sources: Source[];
   device_consumption: Device[];
@@ -141,6 +157,8 @@ export interface Snapshot {
   /** Child device suggestions and the ignored ones. */
   child_pairs?: ChildPair[];
   ignored_suggestions?: ChildPair[];
+  /** The groups of devices (display only, not part of the energy settings). */
+  groups?: Groups;
 }
 
 /** Device changes name their list; without `kind` they change electricity. */
@@ -167,14 +185,46 @@ export type Change =
     }
   | { type: "unassign_source"; stat: string }
   /** Turn an electricity device into the home meter (HA 2026.11 and newer). */
-  | { type: "use_as_home_meter"; stat: string };
+  | { type: "use_as_home_meter"; stat: string }
+  | {
+      type: "create_group";
+      id: string;
+      name: string;
+      parent: string | null;
+      /** Enclosing group; without it the group is at the top level of its parent. */
+      group?: string | null;
+      members: string[];
+      /** Existing groups that move into the new one. */
+      groups: string[];
+      kind?: DeviceKind;
+    }
+  | { type: "rename_group"; id: string; name: string; kind?: DeviceKind }
+  /** Put a device (`stat`) or a group (`group_id`) into a group, or out of it (null). */
+  | { type: "set_group"; stat?: string; group_id?: string; group: string | null; kind?: DeviceKind }
+  | { type: "dissolve_group"; id: string; kind?: DeviceKind }
+  | { type: "move_group"; id: string; parent: string | null; group?: string | null; kind?: DeviceKind };
 
 /** Source roles a free sensor can be assigned to. */
 export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "gas" | "home";
 
 export interface DiffEntry {
-  type: "added" | "removed" | "moved" | "renamed" | "rate" | "source_added" | "source_removed";
+  type:
+    | "added"
+    | "removed"
+    | "moved"
+    | "renamed"
+    | "rate"
+    | "source_added"
+    | "source_removed"
+    | "group_created"
+    | "group_renamed"
+    | "group_dissolved"
+    | "group_changed";
   stat: string;
+  /** Group entries: the group id, its name and the number of devices in it. */
+  id?: string;
+  name?: string;
+  count?: number;
   role?: string;
   parent?: string | null;
   from?: string | null;

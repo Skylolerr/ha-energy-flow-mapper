@@ -102,7 +102,7 @@ function mockHass(language = "en"): Mock {
       "energy_flow_mapper/validate": (msg: { changes: Change[] }) => ({
         valid: true,
         issues: [],
-        diff: msg.changes.map((c) => ({ type: "moved", stat: c.stat })),
+        diff: msg.changes.map((c) => ({ type: "moved", stat: (c as { stat?: string }).stat ?? "" })),
       }),
       "energy_flow_mapper/save": { hash: "hash-2", backup_id: "b2" },
       "energy_flow_mapper/backups": { backups: [] },

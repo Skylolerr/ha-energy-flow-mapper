@@ -65,7 +65,7 @@ function mockHass(snap: Snapshot = snapshot()): Mock {
       "energy_flow_mapper/validate": (msg: { changes: Change[] }) => ({
         valid: true,
         issues: [],
-        diff: msg.changes.map((c) => ({ type: "moved", stat: c.stat })),
+        diff: msg.changes.map((c) => ({ type: "moved", stat: (c as { stat?: string }).stat ?? "" })),
       }),
     },
     hass: undefined as unknown as HomeAssistant,
