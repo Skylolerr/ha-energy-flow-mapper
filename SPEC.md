@@ -320,6 +320,7 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
   - Einheit passt nicht zur Liste (`not_energy_unit` bzw. `not_water_unit`)
 - `apply_changes(prefs, changes)` wendet Entwurfs-Änderungen an und **behält alle übrigen Felder jedes Eintrags bei**. Änderungsarten: `move` (neues `included_in_stat` oder keins), `add` (neuer Eintrag mit `stat_consumption`, optional `stat_rate`, `name`), `remove`, `rename`, jeweils mit optionalem `kind` (ohne: Strom); dazu `assign_source`, `unassign_source`.
   - Wird ein Gerät entfernt, rutschen seine Kinder eine Ebene nach oben (sie erben das `included_in_stat` des entfernten Geräts).
+  - Namen von Geräten und Gruppen werden genau wie mit JavaScripts `trim()` gekürzt (`JS_TRIM` in `hierarchy.py`), damit die Vorschau im Panel und der gespeicherte Name gleich sind.
 - **Gruppen** (ab v0.9.0): die reine Logik steht in `groups.py` (ohne HA-Imports, Tests zuerst, 100 % Abdeckung wie `hierarchy.py`): Aufräumen, Anwenden aller Änderungen in Reihenfolge (§8), Diff, Hash. Fehlercodes (`ChangeError`, übersetzt in allen vier Sprachen):
   - `unknown_group`: unbekannte Gruppen-ID
   - `group_parents_differ`: Mitglieder mit verschiedenen echten Elternteilen

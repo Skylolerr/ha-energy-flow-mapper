@@ -24,6 +24,16 @@ KEY_DEVICES_WATER = "device_consumption_water"
 
 STAT = "stat_consumption"
 PARENT = "included_in_stat"
+
+# The characters JavaScript's `String.prototype.trim()` removes (white space and line
+# terminators), so a name is trimmed here exactly as the panel previews it. Python's
+# `str.strip()` differs: it also removes U+001C-U+001F and U+0085, but not U+FEFF.
+JS_TRIM = (
+    "\t\n\v\f\r \u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
 NAME = "name"
 RATE = "stat_rate"
 
@@ -434,7 +444,7 @@ def has_errors(issues: Sequence[Issue]) -> bool:
 def _set_optional(device: Device, key: str, value: Any) -> None:
     """Set a text field, or remove it when the value is empty."""
     if isinstance(value, str):
-        value = value.strip()
+        value = value.strip(JS_TRIM)
     if value:
         device[key] = value
     else:

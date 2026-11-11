@@ -347,6 +347,25 @@ def test_apply_move_and_keep_unknown_fields() -> None:
     assert new["device_consumption_water"] is not old["device_consumption_water"]
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        (chr(0xFEFF) + "TV", "TV"),
+        (chr(0x1C) + "TV", chr(0x1C) + "TV"),
+        ("TV" + chr(0x85), "TV" + chr(0x85)),
+    ],
+)
+def test_rename_trims_like_the_panel(name: str, expected: str) -> None:
+    # Exactly the characters JavaScript's String.prototype.trim() removes (draft.ts).
+    new = apply_changes(
+        prefs(), [{"type": "rename", "stat": "sensor.office", "name": name}]
+    )
+    office = next(
+        d for d in new["device_consumption"] if d["stat_consumption"] == "sensor.office"
+    )
+    assert office["name"] == expected
+
+
 def test_apply_add_rename_remove() -> None:
     new = apply_changes(
         prefs(),
