@@ -226,7 +226,10 @@ Undo takes back the draft changes; the helpers stay (as today with integral help
 - **Parent removed in the draft** (`remove`, `use_as_home_meter`, which move the children
   up to the grandparent): the groups below that device **follow their members** to the
   grandparent and keep the user's grouping. `groups.py` and `draft.ts` apply this as part
-  of those changes. *(Claude's call, after the builder check.)*
+  of those changes. *(Claude's call, after the builder check.)* If a group of the same
+  name exists there already, the moved group gets the first free number: "Kitchen (2)",
+  "Kitchen (3)", ... The adoption in clean-up step 2 does the same, so two groups below
+  one parent never share a name. *(Maintainer decision of 2026-11-11.)*
 - **Entity ID renames:** listen to entity registry updates and rename statistics in the
   group store, as HA renames them in its energy preferences. *(Builder: check whether HA
   2026.10 renames energy preferences on entity ID changes; follow the same behaviour.)*

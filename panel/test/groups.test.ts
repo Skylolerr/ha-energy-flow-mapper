@@ -45,6 +45,10 @@ function create(
   return { type: "create_group", id, name: id, parent, members, groups: [], ...extra };
 }
 
+function named(id: string, name: string, members: string[], parent: string | null): Group {
+  return { ...grp(id, members, parent), name };
+}
+
 function run(changes: Change[], stored: Group[] = []): Group[] {
   return applyGroupChanges(base(), stored, changes, "electricity");
 }
@@ -80,6 +84,18 @@ describe("cleanGroups", () => {
     );
     expect(cleaned.map((g) => g.parent)).toEqual(["p", "p"]);
     expect(cleaned[1].group).toBe("outer");
+  });
+
+  it("numbers a name taken at the adopted parent", () => {
+    // The parent p was removed outside the mapper; a and b moved up to Home.
+    const cleaned = cleanGroups(
+      [named("home1", "Kitchen", ["e"], null), named("g1", "Kitchen", ["a", "b"], "p")],
+      [dev("a"), dev("b"), dev("e")],
+    );
+    expect(cleaned.map((g) => [g.name, g.parent])).toEqual([
+      ["Kitchen", null],
+      ["Kitchen (2)", null],
+    ]);
   });
 
   it("drops a member with another parent", () => {
@@ -379,6 +395,24 @@ describe("applyGroupChanges", () => {
     const group = run([{ type: "remove", stat: "p" }], [grp("g", ["a", "b"], "p")])[0];
     expect(group.parent).toBeNull();
     expect(group.members).toEqual(["a", "b"]);
+  });
+
+  it("numbers names taken at the grandparent when a parent is removed", () => {
+    const stored = [
+      named("home1", "Kitchen", ["e"], null),
+      named("home2", "Kitchen (2)", ["d"], "p"),
+      named("g1", "Kitchen", ["a"], "p"),
+      named("g2", "Kitchen (2)", ["b"], "p"),
+      named("g3", "Office", ["c"], "p"),
+    ];
+    const result = run([{ type: "remove", stat: "p" }], stored);
+    expect(result.map((g) => [g.name, g.parent])).toEqual([
+      ["Kitchen", null],
+      ["Kitchen (2)", null],
+      ["Kitchen (3)", null],
+      ["Kitchen (2) (2)", null],
+      ["Office", null],
+    ]);
   });
 
   it("keeps the rest of a group when a member is removed", () => {

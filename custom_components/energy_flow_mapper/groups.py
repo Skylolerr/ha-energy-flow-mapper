@@ -106,6 +106,24 @@ def _enclosing_loops(groups: list[Group], group: Group) -> bool:
     return False
 
 
+def _reparent(groups: list[Group], group: Group, parent: str | None) -> None:
+    """Give `group` a new real parent; a name taken there gets a number.
+
+    The first free of "Name (2)", "Name (3)", ... among the other groups of that
+    parent, so no two groups below one parent share a name.
+    """
+    group["parent"] = parent
+    taken = {
+        g["name"] for g in groups if g["parent"] == parent and g["id"] != group["id"]
+    }
+    name = group["name"]
+    number = 2
+    while name in taken:
+        name = f"{group['name']} ({number})"
+        number += 1
+    group["name"] = name
+
+
 def _clean_kind(groups: list[Group], parents: dict[str, str | None]) -> list[Group]:
     """Clean the groups of one kind against its device parents."""
     # 1. Drop members whose device is gone; a device stays only in its first group.
@@ -122,7 +140,7 @@ def _clean_kind(groups: list[Group], parents: dict[str, str | None]) -> list[Gro
     for group in groups:
         real = {parents[stat] for stat in all_devices(groups, group["id"])}
         if group["parent"] not in real and len(real) == 1:
-            group["parent"] = next(iter(real))
+            _reparent(groups, group, next(iter(real)))
 
     # 3. Drop members whose real parent differs from the group's parent.
     for group in groups:
@@ -362,13 +380,14 @@ def _adopt_removed_parent(
     """Re-parent the groups below a device that is about to disappear.
 
     Its children move up to its own parent, so its groups go with them and the
-    grouping survives the clean-up.
+    grouping survives the clean-up. A name taken there gets a number.
     """
     devices = prefs.get(DEVICE_KEYS[kind], [])
     former = next((d.get(PARENT) for d in devices if d[STAT] == stat), None)
-    for group in groups.get(kind.value, []):
+    kind_groups = groups.get(kind.value, [])
+    for group in kind_groups:
         if group["parent"] == stat:
-            group["parent"] = former
+            _reparent(kind_groups, group, former)
 
 
 def _leave_group_on_move(groups: Groups, change: Mapping[str, Any]) -> None:

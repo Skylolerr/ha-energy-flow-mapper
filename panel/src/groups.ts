@@ -85,6 +85,22 @@ function enclosingLoops(groups: Group[], group: Group): boolean {
 }
 
 /**
+ * Give `group` a new real parent; a name taken there gets a number: the first
+ * free of "Name (2)", "Name (3)", ... among the other groups of that parent.
+ */
+function reparent(groups: Group[], group: Group, parent: string | null): void {
+  group.parent = parent;
+  const taken = new Set(groups.filter((g) => g.parent === parent && g.id !== group.id).map((g) => g.name));
+  let name = group.name;
+  let number = 2;
+  while (taken.has(name)) {
+    name = `${group.name} (${number})`;
+    number++;
+  }
+  group.name = name;
+}
+
+/**
  * The groups fitted to the current devices (the five steps of `clean_groups`):
  * drop vanished devices, adopt a new common parent, drop members with another
  * parent, move misfit nested groups to the top, remove empty groups. Never
@@ -110,7 +126,7 @@ export function cleanGroups(groups: Group[], devices: Device[]): Group[] {
   for (const group of kept) {
     const real = new Set(groupDevices(kept, group.id).map((stat) => parents.get(stat) ?? null));
     if (!real.has(group.parent) && real.size === 1) {
-      group.parent = [...real][0];
+      reparent(kept, group, [...real][0]);
     }
   }
 
@@ -326,7 +342,10 @@ function applyGroupChange(devices: Device[], groups: Group[], kind: DeviceKind, 
   return devices;
 }
 
-/** Groups below a device that is about to disappear go to its former parent. */
+/**
+ * Groups below a device that is about to disappear go to its former parent; a
+ * name taken there gets a number.
+ */
 function adoptRemovedParent(devices: Device[], groups: Group[], stat: string): void {
   const removed = devices.find((d) => d.stat_consumption === stat);
   if (removed === undefined) {
@@ -334,7 +353,7 @@ function adoptRemovedParent(devices: Device[], groups: Group[], stat: string): v
   }
   for (const group of groups) {
     if (group.parent === stat) {
-      group.parent = removed.included_in_stat ?? null;
+      reparent(groups, group, removed.included_in_stat ?? null);
     }
   }
 }

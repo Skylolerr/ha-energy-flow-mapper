@@ -28,7 +28,8 @@ and Home Assistant show when they offer the update.
   parent and area with at least two ungrouped children). Groups are part of the draft:
   undo, check, one save, backup, restore, export and import (export format version 2;
   version 1 files are still accepted). They are display only and change nothing in the
-  energy settings.
+  energy settings. When a removed device brings two groups of the same name below one
+  parent, the moved group gets a number, like *Kitchen (2)*.
 - **Sum meters:** *Create sum meter* turns a group, or sensors you pick, into a real meter:
   a Home Assistant sum helper (sensor group, *ignore non-numeric* off, so a member that
   is briefly unavailable makes the sum unavailable instead of dropping). The members move

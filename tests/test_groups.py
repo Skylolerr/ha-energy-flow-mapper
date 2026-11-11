@@ -472,6 +472,59 @@ def test_remove_parent_keeps_groups_below_it() -> None:
     assert group["members"] == ["a", "b"]
 
 
+def named(gid: str, name: str, members: list[str], parent: str | None) -> Group:
+    """Return a group with its own name."""
+    return {**grp(gid, members, parent), "name": name}
+
+
+def test_remove_parent_numbers_a_name_taken_at_the_grandparent() -> None:
+    stored = electricity(
+        named("home1", "Kitchen", ["e"], None),
+        named("g1", "Kitchen", ["a", "b"], "p"),
+        named("g2", "Office", ["c"], "p"),
+    )
+    # Office does not clash.
+    _, result = run([{"type": "remove", "stat": "p"}], stored)
+    names = {g["id"]: (g["name"], g["parent"]) for g in result["electricity"]}
+    assert names == {
+        "home1": ("Kitchen", None),
+        "g1": ("Kitchen (2)", None),
+        "g2": ("Office", None),
+    }
+
+
+def test_remove_parent_takes_the_first_free_number() -> None:
+    stored = electricity(
+        named("home1", "Kitchen", ["e"], None),
+        named("home2", "Kitchen (2)", ["d"], "p"),
+        named("g1", "Kitchen", ["a"], "p"),
+        named("g2", "Kitchen (2)", ["b"], "p"),
+        named("g3", "Office", ["c"], "p"),
+    )
+    # Same case as in the panel's groups.test.ts, so both give the same names.
+    _, result = run([{"type": "remove", "stat": "p"}], stored)
+    assert [g["name"] for g in result["electricity"]] == [
+        "Kitchen",
+        "Kitchen (2)",
+        "Kitchen (3)",
+        "Kitchen (2) (2)",
+        "Office",
+    ]
+
+
+def test_clean_adoption_numbers_a_name_taken_at_the_new_parent() -> None:
+    # The parent p was removed outside the mapper; a and b moved up to Home.
+    stored = electricity(
+        named("home1", "Kitchen", ["e"], None),
+        named("g1", "Kitchen", ["a", "b"], "p"),
+    )
+    cleaned = clean_groups(stored, prefs(dev("a"), dev("b"), dev("e")))
+    assert [(g["name"], g["parent"]) for g in cleaned["electricity"]] == [
+        ("Kitchen", None),
+        ("Kitchen (2)", None),
+    ]
+
+
 def test_remove_member_keeps_the_rest() -> None:
     stored = electricity(grp("g", ["a", "b"], "p"))
     _, result = run([{"type": "remove", "stat": "a"}], stored)
