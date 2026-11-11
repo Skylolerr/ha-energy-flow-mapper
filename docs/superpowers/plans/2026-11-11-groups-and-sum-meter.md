@@ -65,12 +65,14 @@
 ```python
 # groups.py
 class Group(TypedDict):
-    id: str            # uuid4 hex, made by the panel
+    id: str  # uuid4 hex, made by the panel
     name: str
-    parent: str | None # real parent statistic; None = Home
+    parent: str | None  # real parent statistic; None = Home
     group: str | None  # enclosing group id; None = top level of its parent
-    members: list[str] # device statistics directly in this group
-type Groups = dict[str, list[Group]]   # by DeviceKind value: "electricity", "water"
+    members: list[str]  # device statistics directly in this group
+
+
+type Groups = dict[str, list[Group]]  # by DeviceKind value: "electricity", "water"
 ```
 
 Store file content: `{"groups": Groups}`.
