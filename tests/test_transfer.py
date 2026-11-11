@@ -187,3 +187,34 @@ def test_version_1_with_groups_is_refused() -> None:
     }
     with pytest.raises(InvalidImportError):
         parse_import(document)
+
+
+def test_imported_groups_keep_only_their_fields() -> None:
+    """Extra keys of an imported group are dropped, like when groups are loaded."""
+    group = {**GROUPS["electricity"][0], "secret": "x", "extra": [1]}
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 2,
+        "data": {"groups": {"electricity": [group]}},
+    }
+    _, groups = parse_import(document)
+    assert groups == {"electricity": GROUPS["electricity"], "water": []}
+    assert list(groups["electricity"][0]) == ["id", "name", "parent", "group", "members"]
+
+
+def test_duplicate_group_ids_are_refused() -> None:
+    """Two groups of one kind with the same id are not a valid import."""
+    twin = {**GROUPS["electricity"][0], "name": "Twin"}
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 2,
+        "data": {"groups": {"electricity": [GROUPS["electricity"][0], twin]}},
+    }
+    with pytest.raises(InvalidImportError):
+        parse_import(document)
+    # The same id in two different kinds is fine.
+    document["data"]["groups"] = {
+        "electricity": [GROUPS["electricity"][0]],
+        "water": [GROUPS["electricity"][0]],
+    }
+    parse_import(document)

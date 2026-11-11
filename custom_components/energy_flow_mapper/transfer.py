@@ -13,7 +13,7 @@ from typing import Any
 
 import probatio as vol
 
-from .groups import GROUP_KINDS, Groups, empty_groups, is_group
+from .groups import GROUP_KINDS, Group, Groups, empty_groups, is_group
 from .hierarchy import KEY_DEVICES, KEY_DEVICES_WATER, KEY_SOURCES
 
 EXPORT_FORMAT = "energy_flow_mapper"
@@ -100,5 +100,17 @@ def parse_import(document: Any) -> tuple[dict[str, list[Any]], Groups | None]:
     for kind, entries in raw.items():
         if not all(is_group(entry) for entry in entries):
             raise InvalidImportError(f"invalid {kind} groups")
-        groups[kind] = entries
+        rebuilt = [
+            Group(
+                id=entry["id"],
+                name=entry["name"],
+                parent=entry["parent"],
+                group=entry["group"],
+                members=list(entry["members"]),
+            )
+            for entry in entries
+        ]
+        if len({group["id"] for group in rebuilt}) != len(rebuilt):
+            raise InvalidImportError(f"duplicate {kind} group ids")
+        groups[kind] = rebuilt
     return data, groups
