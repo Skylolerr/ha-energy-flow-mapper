@@ -294,6 +294,15 @@ describe("card", () => {
     expect(el.shadowRoot!.querySelector('.block.group[data-group="g1"]')!.textContent).toContain("Racks");
   });
 
+  it("opens the start group when the root changes on a live card", async () => {
+    const el = await view({ period: "week" }, mockHass((msg) => (msg.period ? data({ ...periodValues(), groups: GROUPS }) : data({ groups: GROUPS }))));
+    expect(block(el, "sensor.nas")).toBeNull();
+    el.config = cardConfig({ type: `custom:${CARD_TAG}`, period: "week", root: "group:g1" });
+    await settle(el);
+    expect(el.shadowRoot!.querySelector('.frame[data-group="g1"]')).not.toBeNull();
+    expect(block(el, "sensor.nas")).not.toBeNull();
+  });
+
   it("shows a message when the root group is gone", async () => {
     const el = await view({ root: "group:gone" }, mockHass(() => data({ groups: GROUPS })));
     expect(text(el)).toContain("This device is no longer in the energy dashboard.");

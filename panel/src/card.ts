@@ -117,6 +117,7 @@ export class EnergyFlowMapperCardView extends LitElement {
   declare _collapsed: Set<string>;
   /** Groups already met, so only new ones start collapsed. */
   private _seenGroups = new Set<string>();
+  private _root: string | undefined;
   declare _data: CardData | null;
   declare _error: string | null;
   declare _width: number;
@@ -180,6 +181,13 @@ export class EnergyFlowMapperCardView extends LitElement {
       this._collapsed = new Set();
       this._seenGroups = new Set();
       void this._load();
+    }
+    // A new start group opens, whatever was toggled before; other toggles stay.
+    if (this.config.root !== this._root) {
+      this._root = this.config.root;
+      if (this._root?.startsWith(GROUP_PREFIX) && this._collapsed.delete(this._root)) {
+        this._collapsed = new Set(this._collapsed);
+      }
     }
     if (this.config.orientation !== this._orientation) {
       this._orientation = this.config.orientation;
