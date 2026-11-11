@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { buildTree } from "../src/draft";
 import {
@@ -12,6 +12,7 @@ import {
   groupBlockId,
   groupDevices,
   groupValue,
+  newGroupId,
 } from "../src/groups";
 import type { Change, Device, Group, StatInfo } from "../src/types";
 
@@ -657,5 +658,32 @@ describe("ids", () => {
   it("builds block ids", () => {
     expect(GROUP_PREFIX).toBe("group:");
     expect(groupBlockId("abc")).toBe("group:abc");
+  });
+});
+
+describe("newGroupId", () => {
+  it("makes 32 hex characters, different each time", () => {
+    const one = newGroupId();
+    expect(one).toMatch(/^[0-9a-f]{32}$/);
+    expect(newGroupId()).not.toBe(one);
+    // Version 4 and variant bits.
+    expect(one[12]).toBe("4");
+    expect("89ab").toContain(one[16]);
+  });
+
+  it("works without crypto.randomUUID (no secure context)", () => {
+    vi.stubGlobal("crypto", { getRandomValues: crypto.getRandomValues.bind(crypto) });
+    try {
+      expect(newGroupId()).toMatch(/^[0-9a-f]{32}$/);
+      const devices = [dev("a"), dev("b")];
+      const stats = {
+        a: { area_name: "Bath" },
+        b: { area_name: "Bath" },
+      } as unknown as Record<string, StatInfo>;
+      const [change] = areaGroups(devices, [], stats, (area) => area);
+      expect((change as { id: string }).id).toMatch(/^[0-9a-f]{32}$/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

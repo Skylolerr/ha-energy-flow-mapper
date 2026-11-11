@@ -13,6 +13,18 @@ export function groupBlockId(id: string): string {
   return `${GROUP_PREFIX}${id}`;
 }
 
+/**
+ * A new group id: a uuid4 as 32 lowercase hex characters. `crypto.randomUUID`
+ * only exists in secure contexts (not on plain http), so build it from
+ * `getRandomValues`, which works everywhere.
+ */
+export function newGroupId(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
 const GROUP_CHANGE_TYPES: ReadonlySet<string> = new Set([
   "create_group",
   "rename_group",
@@ -548,7 +560,7 @@ export function areaGroups(
       taken.push({ parent, name });
       changes.push({
         type: "create_group",
-        id: crypto.randomUUID().replaceAll("-", ""),
+        id: newGroupId(),
         name,
         parent,
         members,
