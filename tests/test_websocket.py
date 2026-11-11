@@ -2174,3 +2174,38 @@ async def test_group_change_error_is_translated(
         changes=[{"type": "create_group", "id": "g1"}],
     )
     assert response["error"]["code"] == "invalid_format"
+
+
+async def test_backup_holds_stored_groups_not_cleaned(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """The backup keeps what the store held, including members cleaned on read."""
+    stored = {
+        "electricity": [
+            {
+                "id": "g1",
+                "name": "Kitchen stuff",
+                "parent": "sensor.main_energy",
+                "group": None,
+                "members": ["sensor.kitchen_energy", "sensor.gone"],
+            }
+        ],
+        "water": [],
+    }
+    await loaded_entry.runtime_data.groups.async_save(stored)
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{"type": "rename_group", "id": "g1", "name": "Kitchen"}],
+    )
+    assert response["success"], response
+    (backup,) = hass_storage[STORAGE_KEY]["data"]["backups"]
+    assert backup["groups"] == stored
+    groups = loaded_entry.runtime_data.groups.groups()
+    assert groups["electricity"][0]["members"] == ["sensor.kitchen_energy"]

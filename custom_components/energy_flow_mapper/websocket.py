@@ -424,7 +424,7 @@ async def _async_write_with_backup(
         connection.user.id,
         connection.user.name,
         summary,
-        old_groups if groups_changed else None,
+        runtime.groups.groups() if groups_changed else None,
     )
     if update:
         try:
