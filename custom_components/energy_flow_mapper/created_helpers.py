@@ -45,6 +45,12 @@ class CreatedHelpers:
             self._entries.append(entry_id)
         await self._store.async_save({"entries": self._entries})
 
+    async def async_discard(self, entry_id: str) -> None:
+        """Forget one helper (it was removed again) and save immediately."""
+        if entry_id in self._entries:
+            self._entries.remove(entry_id)
+            await self._store.async_save({"entries": self._entries})
+
     async def async_remove(self) -> None:
         """Delete the store file; the helpers themselves stay."""
         self._entries = []

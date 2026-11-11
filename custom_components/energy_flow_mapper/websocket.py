@@ -623,9 +623,15 @@ async def websocket_create_sum_meter(
     stat_rate = None
     if msg.get("rate_entity_ids"):
         suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
-        rate_entry_id, stat_rate = await async_create_sum(
-            hass, msg.get("rate_name", name + suffix), msg["rate_entity_ids"]
-        )
+        try:
+            rate_entry_id, stat_rate = await async_create_sum(
+                hass, msg.get("rate_name", name + suffix), msg["rate_entity_ids"]
+            )
+        except HomeAssistantError:
+            # Do not leave the energy sum behind; a retry would create a second one.
+            await hass.config_entries.async_remove(entry_id)
+            await runtime.helpers.async_discard(entry_id)
+            raise
         await runtime.helpers.async_add(rate_entry_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 

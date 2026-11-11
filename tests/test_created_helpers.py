@@ -29,3 +29,17 @@ async def test_add_reload_and_remove(
     await reloaded.async_remove()
     assert reloaded.entries() == []
     assert HELPERS_STORAGE_KEY not in hass_storage
+
+
+async def test_discard_forgets_one_id(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A discarded ID is saved away at once; an unknown one changes nothing."""
+    store = CreatedHelpers(hass)
+    await store.async_load()
+    await store.async_add("a")
+    await store.async_add("b")
+    await store.async_discard("a")
+    await store.async_discard("zzz")
+    assert store.entries() == ["b"]
+    assert hass_storage[HELPERS_STORAGE_KEY]["data"] == {"entries": ["b"]}

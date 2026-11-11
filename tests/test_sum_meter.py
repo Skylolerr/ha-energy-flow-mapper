@@ -201,6 +201,40 @@ async def test_ws_create_sum_meter_without_rate(
     assert len(loaded_entry.runtime_data.helpers.entries()) == 1
 
 
+async def test_ws_failed_rate_sum_removes_the_energy_sum(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the rate sum fails, the energy sum is removed again and forgotten."""
+    from custom_components.energy_flow_mapper import websocket as ws_module
+
+    original = ws_module.async_create_sum
+    calls = 0
+
+    async def second_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise sum_module._failed()
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(ws_module, "async_create_sum", second_fails)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_sum_meter",
+        kind="electricity",
+        name="Kitchen energy",
+        entity_ids=["sensor.kitchen_energy", "sensor.coffee_energy"],
+        rate_entity_ids=["sensor.main_power", "sensor.printer_power"],
+    )
+    assert response["error"]["translation_key"] == "sum_failed"
+    assert hass.config_entries.async_entries("group") == []
+    assert loaded_entry.runtime_data.helpers.entries() == []
+
+
 @pytest.mark.usefixtures("loaded_entry")
 async def test_ws_create_sum_meter_refuses(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
