@@ -632,3 +632,36 @@ def test_state_hash_changes_with_groups() -> None:
     assert state_hash(base(), one) != state_hash(prefs(), one)
     reordered = {"water": [], "electricity": one["electricity"]}
     assert state_hash(base(), one) == state_hash(base(), reordered)
+
+
+def test_move_single_member_leaves_its_group() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    new_prefs, result = run([{"type": "move", "stat": "a", "parent": "e"}], stored)
+    assert result["electricity"] == []
+    moved = next(
+        d for d in new_prefs["device_consumption"] if d["stat_consumption"] == "a"
+    )
+    assert moved["included_in_stat"] == "e"
+
+
+def test_move_within_the_same_parent_stays_in_group() -> None:
+    stored = electricity(grp("g", ["a", "b"], "p"))
+    _, result = run([{"type": "move", "stat": "a", "parent": "p"}], stored)
+    assert result["electricity"][0]["members"] == ["a", "b"]
+
+
+def test_move_group_refuses_a_name_taken_at_the_new_parent() -> None:
+    stored = electricity(grp("g", ["a"], "p"), grp("same", ["e"], None))
+    stored["electricity"][1]["name"] = "g"
+    change = {"type": "move_group", "id": "g", "parent": None}
+    assert code_of([change], stored) == "group_name_taken"
+
+
+def test_other_device_changes_pass_through() -> None:
+    stored = electricity(grp("g", ["a"], "p"))
+    change = {"type": "rename", "stat": "a", "name": "Lamp"}
+    new_prefs, result = run([change], stored)
+    assert result == stored
+    assert {"stat_consumption": "a", "included_in_stat": "p", "name": "Lamp"} in (
+        new_prefs["device_consumption"]
+    )

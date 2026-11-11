@@ -294,6 +294,9 @@ def _move_group(
             raise ChangeError("unknown_device", parent)
     enclosing_id: str | None = change.get("group")
     nested = _nested_ids(groups, group["id"])
+    for other in groups:
+        if other["id"] in nested:
+            _check_name(groups, other["name"], parent, other["id"])
     if enclosing_id is not None:
         enclosing = _find(groups, enclosing_id)
         if enclosing_id in nested:
@@ -351,6 +354,18 @@ def _adopt_removed_parent(
             group["parent"] = former
 
 
+def _leave_group_on_move(groups: Groups, change: Mapping[str, Any]) -> None:
+    """Take a device out of its group when it moves to another parent."""
+    kind = DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
+    kind_groups = groups.get(kind.value, [])
+    for group in kind_groups:
+        if change["stat"] in group["members"] and group["parent"] != change.get(
+            "parent"
+        ):
+            _take_out(kind_groups, change["stat"])
+            return
+
+
 def apply_all(
     prefs: Prefs, groups: Groups, changes: Sequence[Mapping[str, Any]]
 ) -> tuple[dict[str, Any], Groups]:
@@ -373,6 +388,8 @@ def apply_all(
                     else DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
                 )
                 _adopt_removed_parent(current, result, kind, change["stat"])
+            elif change_type == ChangeType.MOVE:
+                _leave_group_on_move(result, change)
             current = apply_changes(current, [change])
         result = clean_groups(result, current)
     return current, result
