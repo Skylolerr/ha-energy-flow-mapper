@@ -665,3 +665,54 @@ def test_other_device_changes_pass_through() -> None:
     assert {"stat_consumption": "a", "included_in_stat": "p", "name": "Lamp"} in (
         new_prefs["device_consumption"]
     )
+
+
+def _parents(new_prefs: dict) -> dict[str, str | None]:
+    return {
+        d["stat_consumption"]: d.get("included_in_stat")
+        for d in new_prefs["device_consumption"]
+    }
+
+
+def test_sum_meter_draft_sequence_for_a_group_with_a_nested_group() -> None:
+    """The draft the panel sends to replace a group by a sum meter."""
+    stored = electricity(grp("g", ["a", "b"], "p"), grp("h", ["c"], "p", "g"))
+    new_prefs, result = run(
+        [
+            {"type": "add", "stat": "new", "parent": "p"},
+            {"type": "move_group", "id": "h", "parent": "new"},
+            {"type": "move", "stat": "a", "parent": "new"},
+            {"type": "move", "stat": "b", "parent": "new"},
+        ],
+        stored,
+    )
+    parents = _parents(new_prefs)
+    assert parents["new"] == "p"
+    assert parents["a"] == parents["b"] == parents["c"] == "new"
+    assert parents["d"] == "p"
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert set(by_id) == {"h"}
+    assert by_id["h"]["parent"] == "new"
+    assert by_id["h"]["group"] is None
+    assert by_id["h"]["members"] == ["c"]
+
+
+def test_sum_meter_draft_sequence_for_a_group_nested_in_another() -> None:
+    """The enclosing group survives and holds the sum meter instead."""
+    stored = electricity(grp("e", [], "p"), grp("g", ["a", "b"], "p", "e"))
+    new_prefs, result = run(
+        [
+            {"type": "add", "stat": "new", "parent": "p"},
+            {"type": "set_group", "stat": "new", "group": "e"},
+            {"type": "move", "stat": "a", "parent": "new"},
+            {"type": "move", "stat": "b", "parent": "new"},
+        ],
+        stored,
+    )
+    parents = _parents(new_prefs)
+    assert parents["new"] == "p"
+    assert parents["a"] == parents["b"] == "new"
+    by_id = {g["id"]: g for g in result["electricity"]}
+    assert set(by_id) == {"e"}
+    assert by_id["e"]["members"] == ["new"]
+    assert by_id["e"]["parent"] == "p"
