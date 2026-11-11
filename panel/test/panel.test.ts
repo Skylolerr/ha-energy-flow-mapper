@@ -2649,6 +2649,42 @@ describe("groups", () => {
     expect(el._collapsed.has("group:g9")).toBe(true);
   });
 
+  it("names a vanished group in errors and drops the stale check", async () => {
+    const mock = groupMock();
+    const el = await mount(mock);
+    el._change({ type: "set_group", stat: "sensor.nas", group: "g1" });
+    await settle(el);
+    expect(el._validation).not.toBeNull();
+    // Another admin dissolved Media; the draft still refers to it.
+    const snap = groupSnapshot();
+    snap.groups = { electricity: [] };
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.responses["energy_flow_mapper/validate"] = {
+      translation_key: "unknown_group",
+      translation_placeholders: { stat: "g1" },
+    };
+    await el._load();
+    await settle(el);
+    expect(el._validation).toBeNull();
+    expect(text(el)).toContain("Media is not a group.");
+    expect(text(el)).not.toContain("g1 is not a group.");
+    // A group the panel never knew keeps its id; a group of the draft its draft name.
+    mock.responses["energy_flow_mapper/validate"] = {
+      translation_key: "unknown_group",
+      translation_placeholders: { stat: "zz" },
+    };
+    el._change({ type: "create_group", id: "g2", name: " Rack ", parent: null, members: ["sensor.tv"], groups: [] });
+    await settle(el);
+    expect(text(el)).toContain("zz is not a group.");
+    mock.responses["energy_flow_mapper/validate"] = {
+      translation_key: "group_loop",
+      translation_placeholders: { stat: "g2" },
+    };
+    el._change({ type: "rename_group", id: "g2", name: "Living" });
+    await settle(el);
+    expect(text(el)).toContain("A group cannot be placed inside itself (Living).");
+  });
+
   it("keeps a group created in this panel expanded after saving", async () => {
     const mock = groupMock();
     const el = await mount(mock);

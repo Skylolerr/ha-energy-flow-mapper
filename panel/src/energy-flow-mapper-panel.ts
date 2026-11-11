@@ -156,6 +156,9 @@ type Dialog =
 
 type SumDialog = Extract<Dialog, { kind: "sum" }>;
 
+/** Errors whose `stat` may be a group id; the panel shows the group's name instead. */
+const GROUP_ERRORS: ReadonlySet<string> = new Set(["unknown_group", "group_parents_differ", "group_loop", "group_exists"]);
+
 /** State classes of meters a sensor group can add up (as `create_sum_meter` checks). */
 const METER_STATE_CLASSES = ["total", "total_increasing"];
 
@@ -329,6 +332,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _steps = new WeakMap<Change, object>();
   /** Group ids this panel has shown or made; only unseen saved groups start collapsed. */
   private _seenGroups = new Set<string>();
+  /** Names of the groups of all settings loaded, for errors about a group that is gone. */
+  private _groupNames = new Map<string, string>();
   /** Turns the picture of the diagram into a PNG; replaced in tests. */
   _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
@@ -485,6 +490,9 @@ export class EnergyFlowMapperPanel extends LitElement {
    * expanded or made in this panel stay as they are across reloads.
    */
   private _collapseGroups(snapshot: Snapshot): void {
+    for (const group of Object.values(snapshot.groups ?? {}).flatMap((groups) => groups ?? [])) {
+      this._groupNames.set(group.id, group.name);
+    }
     const ids = Object.values(snapshot.groups ?? {})
       .flatMap((groups) => (groups ?? []).map((g) => g.id))
       .filter((id) => !this._seenGroups.has(id));
@@ -933,13 +941,44 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       return result;
     } catch (err) {
+      // No result for this draft: the footer must not show the last one.
+      if (request === this._validateRequest) {
+        this._validation = null;
+      }
       await this._handleError(err);
       return null;
     }
   }
 
+  /** The name of a group of the draft or of any settings loaded so far. */
+  private _groupName(id: string): string | null {
+    for (const change of [...this._changes].reverse()) {
+      if ((change.type === "create_group" || change.type === "rename_group") && change.id === id) {
+        const name = (change.name ?? "").trim();
+        if (name) {
+          return name;
+        }
+      }
+    }
+    return this._groupNames.get(id) ?? null;
+  }
+
+  /** The error text, with a group's name instead of its id where the panel knows it. */
+  private _errorText(err: unknown): string {
+    const error = (err ?? {}) as WSError;
+    const stat = error.translation_placeholders?.stat;
+    const name = GROUP_ERRORS.has(error.translation_key ?? "") && typeof stat === "string" ? this._groupName(stat) : null;
+    if (name === null) {
+      return errorText(this.hass, err);
+    }
+    return errorText(this.hass, {
+      translation_key: error.translation_key,
+      translation_placeholders: { ...error.translation_placeholders, stat: name },
+    });
+  }
+
   private async _handleError(err: unknown): Promise<void> {
-    this._showToast(errorText(this.hass, err));
+    this._showToast(this._errorText(err));
     if ((err as WSError)?.translation_key === "conflict") {
       this._snapshot = null;
       await this._load();
