@@ -93,7 +93,7 @@ from .hierarchy import (
 )
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
-from .sum_meter import async_create_sum, check_sum_members
+from .sum_meter import async_create_sum, check_rate_members, check_sum_members
 from .transfer import InvalidImportError, build_export, parse_import
 
 ATTR_BASE_HASH = "base_hash"
@@ -617,6 +617,7 @@ async def websocket_create_sum_meter(
     kind = DeviceKind(msg[ATTR_KIND])
     name = msg[ATTR_NAME].strip()
     check_sum_members(hass, msg["entity_ids"], kind)
+    check_rate_members(hass, msg.get("rate_entity_ids", []))
     entry_id, entity_id = await async_create_sum(hass, name, msg["entity_ids"])
     await runtime.helpers.async_add(entry_id)
     stat_rate = None

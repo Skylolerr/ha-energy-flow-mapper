@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.data_entry_flow import FlowResultType, InvalidData, UnknownFlow
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.energy_flow_mapper import sum_meter as sum_module
@@ -262,3 +262,78 @@ async def test_ws_create_sum_meter_rate_names(
         assert response["success"], response
         titles = {e.title for e in hass.config_entries.async_entries("group")}
         assert expected in titles
+
+
+async def test_options_flow_failure_removes_the_helper(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A helper whose options could not be set is removed again."""
+
+    async def not_done(flow_id: str, user_input: Any = None) -> dict[str, Any]:
+        return {"type": FlowResultType.FORM, "flow_id": flow_id}
+
+    monkeypatch.setattr(hass.config_entries.options, "async_configure", not_done)
+    with pytest.raises(HomeAssistantError) as err:
+        await sum_module.async_create_sum(hass, "x", ["sensor.kitchen_energy"])
+    assert err.value.translation_key == "sum_failed"
+    assert hass.config_entries.async_entries("group") == []
+
+
+async def test_missing_entity_removes_the_helper(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A helper without entity is removed again."""
+    monkeypatch.setattr(
+        sum_module.er, "async_entries_for_config_entry", lambda registry, entry: []
+    )
+    with pytest.raises(HomeAssistantError):
+        await sum_module.async_create_sum(hass, "x", ["sensor.kitchen_energy"])
+    assert hass.config_entries.async_entries("group") == []
+
+
+@pytest.mark.parametrize("manager", ["flow", "options"])
+@pytest.mark.parametrize("error", [InvalidData, UnknownFlow])
+async def test_flow_errors_are_mapped(
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    manager: str,
+    error: type[Exception],
+) -> None:
+    """Errors of the flows end in `sum_failed`, leaving no helper behind."""
+    target = getattr(hass.config_entries, manager)
+    original = target.async_configure
+    calls = 0
+
+    async def failing(flow_id: str, user_input: Any = None) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        if manager == "flow" and calls < 2:
+            return await original(flow_id, user_input)
+        raise (
+            error("refused") if error is UnknownFlow else error("refused", [], None, {})
+        )
+
+    monkeypatch.setattr(target, "async_configure", failing)
+    with pytest.raises(HomeAssistantError) as err:
+        await sum_module.async_create_sum(hass, "x", ["sensor.kitchen_energy"])
+    assert err.value.translation_key == "sum_failed"
+    assert hass.config_entries.async_entries("group") == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_refuses_bad_rate_member_before_creating(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A bad rate member is refused and no helper exists afterwards."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_sum_meter",
+        kind="electricity",
+        name="x",
+        entity_ids=["sensor.kitchen_energy"],
+        rate_entity_ids=["sensor.main_power", "ext:rate"],
+    )
+    assert response["error"]["translation_key"] == "sum_not_possible"
+    assert response["error"]["translation_placeholders"] == {"entity": "ext:rate"}
+    assert hass.config_entries.async_entries("group") == []
