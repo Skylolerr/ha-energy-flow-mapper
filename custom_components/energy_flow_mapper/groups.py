@@ -320,6 +320,20 @@ def _dissolve_group(groups: list[Group], group_id: str) -> None:
     groups.remove(group)
 
 
+def _with_descendants(entries: list[dict[str, Any]], stats: list[str]) -> set[str]:
+    """Return `stats` and every device below one of them."""
+    parents = parent_map(entries)
+    found = set(stats)
+    grew = True
+    while grew:
+        grew = False
+        for stat, parent in parents.items():
+            if parent in found and stat not in found:
+                found.add(stat)
+                grew = True
+    return found
+
+
 def _move_group(
     prefs: dict[str, Any],
     groups: list[Group],
@@ -331,7 +345,7 @@ def _move_group(
     parent: str | None = change.get("parent")
     devices = all_devices(groups, group["id"])
     if parent is not None:
-        if parent in devices:
+        if parent in _with_descendants(prefs.get(DEVICE_KEYS[kind], []), devices):
             raise ChangeError("group_loop", parent)
         known = {d[STAT] for d in prefs.get(DEVICE_KEYS[kind], [])}
         if parent not in known:

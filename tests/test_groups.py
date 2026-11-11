@@ -719,6 +719,17 @@ def test_move_within_the_same_parent_stays_in_group() -> None:
     assert result["electricity"][0]["members"] == ["a", "b"]
 
 
+def test_move_group_refuses_a_descendant_of_its_devices() -> None:
+    # B is below A; moving the group of A below B would put A below itself.
+    p = prefs(dev("A"), dev("B", "A"), dev("C", "B"))
+    stored = electricity(grp("g", ["A"], None))
+    for parent in ("B", "C"):
+        change = {"type": "move_group", "id": "g", "parent": parent}
+        with pytest.raises(ChangeError) as err:
+            apply_all(p, stored, [change])
+        assert err.value.code == "group_loop"
+
+
 def test_move_group_refuses_a_name_taken_at_the_new_parent() -> None:
     stored = electricity(grp("g", ["a"], "p"), grp("same", ["e"], None))
     stored["electricity"][1]["name"] = "g"

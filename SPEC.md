@@ -323,7 +323,7 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 - **Gruppen** (ab v0.9.0): die reine Logik steht in `groups.py` (ohne HA-Imports, Tests zuerst, 100 % Abdeckung wie `hierarchy.py`): Aufräumen, Anwenden aller Änderungen in Reihenfolge (§8), Diff, Hash. Fehlercodes (`ChangeError`, übersetzt in allen vier Sprachen):
   - `unknown_group`: unbekannte Gruppen-ID
   - `group_parents_differ`: Mitglieder mit verschiedenen echten Elternteilen
-  - `group_loop`: eine Gruppe in sich selbst
+  - `group_loop`: eine Gruppe in sich selbst, oder `move_group` unter ein Gerät der Gruppe oder ein Gerät darunter (das gäbe einen Kreis im echten Baum)
   - `group_name_empty`: leerer Name
   - `group_name_taken`: Name schon vergeben unter demselben Elternteil (damit `root`-Auswahl und Änderungsliste lesbar bleiben)
   - `group_exists`: die ID gibt es schon

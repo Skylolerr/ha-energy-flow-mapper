@@ -368,6 +368,17 @@ describe("applyGroupChanges", () => {
     }
   });
 
+  it("skips move_group below a descendant of its devices", () => {
+    // B is below A; moving the group of A below B would put A below itself.
+    const devices = [dev("A"), dev("B", "A"), dev("C", "B")];
+    const stored = [grp("g", ["A"], null)];
+    for (const parent of ["B", "C"]) {
+      const result = applyAllChanges(devices, stored, [{ type: "move_group", id: "g", parent }], "electricity");
+      expect(result.groups).toEqual(stored);
+      expect(result.devices).toEqual(devices);
+    }
+  });
+
   it("skips move_group when the name is taken at the new parent", () => {
     const stored = [grp("g", ["a"], "p"), { ...grp("same", ["e"], null), name: "g" }];
     const { devices, groups } = applyAllChanges(

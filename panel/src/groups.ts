@@ -279,6 +279,23 @@ function dissolveGroup(groups: Group[], id: string): void {
   groups.splice(groups.indexOf(group), 1);
 }
 
+/** The statistics `stats` and every device below one of them. */
+function withDescendants(devices: Device[], stats: string[]): Set<string> {
+  const parents = parentMap(devices);
+  const found = new Set(stats);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const [stat, parent] of parents) {
+      if (parent !== null && found.has(parent) && !found.has(stat)) {
+        found.add(stat);
+        grew = true;
+      }
+    }
+  }
+  return found;
+}
+
 /** Move a group; returns the devices with all devices of the group moved. */
 function moveGroup(
   devices: Device[],
@@ -290,7 +307,7 @@ function moveGroup(
   const parent = change.parent ?? null;
   const members = groupDevices(groups, group.id);
   if (parent !== null) {
-    if (members.includes(parent)) {
+    if (withDescendants(devices, members).has(parent)) {
       throw new Skip("group_loop");
     }
     if (!devices.some((d) => d.stat_consumption === parent)) {
