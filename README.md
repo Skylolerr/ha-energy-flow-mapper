@@ -53,6 +53,12 @@ solar, battery or water meter, and which meters are not used yet.
   <tr>
     <td colspan="2"><b>Electricity and water.</b> Each has its own tab with its own devices, meters and free sensors.</td>
   </tr>
+  <tr>
+    <td colspan="2"><img alt="Grouping two devices: Ctrl+click Heat pump and Backup heater, click Group, name it Basement, then collapse the new group to one block with its sum" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/groups.gif"></td>
+  </tr>
+  <tr>
+    <td colspan="2"><b>Groups.</b> Select devices, group them, and fold the group into one block with its sum.</td>
+  </tr>
 </table>
 
 ## Features
@@ -264,6 +270,13 @@ the sensors live.
 | *30 days:* energy per device, untracked consumption, and a warning | *Saving:* every change is listed before anything is written |
 | ![The list of backups with export and restore buttons](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/backups.png) | ![The water tab over 30 days in litres and m³](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/water-dark.png) |
 | *Backups:* restore, export or import | *Water, 30 days:* litres and m³ per device |
+| ![The Create sum meter dialog opened from the Basement group, listing Heat pump and Backup heater](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/sum-meter.png) | ![The Gas tab with the gas meter and 48.6 m³ in the last 30 days](https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/gas.png) |
+| *Sum meter:* turn a group into a real meter | *Gas:* gas meters in their own tab |
+
+<p align="center">
+  <img alt="Two dashboard cards: the energy flow with a collapsed and an expanded group, and a card that shows only the Main floor group" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/card-groups.png">
+</p>
+<p align="center"><sub><i>Dashboard card:</i> groups fold and unfold; <code>root: group:&lt;id&gt;</code> shows just one group.</sub></p>
 
 <p align="center">
   <img alt="The panel on a phone, dark theme" src="https://raw.githubusercontent.com/Skylolerr/ha-energy-flow-mapper/main/docs/images/phone-dark.png" width="260">
@@ -276,22 +289,25 @@ the sensors live.
 
 - **When:** before every save, restore and import, Energy Flow Mapper backs up the
   previous content of the energy settings it changes (sources, devices and/or water
-  devices), with the time, the user and a short summary.
+  devices) and of the groups when they change, with the time, the user and a short
+  summary.
 - **Where:** in `/config/.storage/energy_flow_mapper.backups`, next to Home Assistant's own
   energy settings (`/config/.storage/energy`). Both are part of every **Home Assistant
   backup**, so to keep them off the device, use a Home Assistant backup location such as a
   network share or the cloud.
 - **How many:** the last 20 by default; set 5 to 100 in the [options](#options).
 - **Restore:** *Undo last save* restores the newest backup, *Backups* → *Restore* any of
-  them. The current settings are backed up first.
+  them, groups included. The current settings are backed up first.
 - **Export:** *Backups* → *Export current settings* downloads the energy sources,
-  devices and water devices as a JSON file; *Export* next to a backup downloads that
-  backup. Keep it wherever you like.
+  devices, water devices and groups as a JSON file; *Export* next to a backup downloads
+  that backup. Keep it wherever you like.
 - **Import:** *Backups* → *Import from file …* reads such a file, checks it like a draft
   (including what Home Assistant itself would reject) and shows the list of changes
   before anything is written. Only files exported by Energy Flow Mapper are accepted;
-  files from 0.2.0 (without water devices) leave the water devices as they are.
-- **Removal:** the backups are deleted with the integration; exported files stay.
+  files from 0.2.0 (without water devices) leave the water devices as they are, and files
+  from before 0.9.0 (without groups) leave the groups as they are.
+- **Removal:** the backups and the groups are deleted with the integration; exported
+  files stay.
 
 <details>
 <summary><b>How it works</b></summary>
