@@ -110,6 +110,8 @@ const DRAFT_KEY = "energy_flow_mapper.draft";
 interface KeptDraft {
   hash: string;
   changes: Change[];
+  /** The undo step of each change; changes with the same number go back together. */
+  steps?: number[];
 }
 
 interface Zoom {
@@ -241,10 +243,10 @@ function keptDraft(): KeptDraft | null {
 }
 
 /** Keep the draft for these settings in this browser, or forget it when empty. */
-function keepDraft(hash: string, changes: Change[]): void {
+function keepDraft(hash: string, changes: Change[], steps: number[] = []): void {
   try {
     if (changes.length) {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ hash, changes }));
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ hash, changes, steps }));
     } else {
       localStorage.removeItem(DRAFT_KEY);
     }
@@ -508,6 +510,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     if (kept.hash === hash) {
+      this._restoreSteps(kept);
       this._changes = kept.changes;
       this._showToast(this._t("draft_restored"));
     } else {
@@ -516,11 +519,35 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
+  /** Bundle the changes of a kept draft into their undo steps again (none: one each). */
+  private _restoreSteps(kept: KeptDraft): void {
+    const steps = kept.steps;
+    if (!Array.isArray(steps) || steps.length !== kept.changes.length) {
+      return;
+    }
+    let start = 0;
+    for (let index = 1; index <= steps.length; index++) {
+      if (index === steps.length || steps[index] !== steps[start]) {
+        this._bundle(kept.changes.slice(start, index));
+        start = index;
+      }
+    }
+  }
+
   /** Keep the draft in this browser for the loaded settings, once it was checked. */
   private _keepDraft(): void {
-    if (this._draftChecked && this._snapshot) {
-      keepDraft(this._snapshot.hash, this._changes);
+    if (!this._draftChecked || !this._snapshot) {
+      return;
     }
+    // Number the undo steps: changes of one user action share a number.
+    const steps: number[] = [];
+    let previous: object | undefined;
+    for (const [index, change] of this._changes.entries()) {
+      const step = this._steps.get(change);
+      steps.push(index > 0 && step !== undefined && step === previous ? steps[index - 1] : index);
+      previous = step;
+    }
+    keepDraft(this._snapshot.hash, this._changes, steps);
   }
 
   /** Load Home Assistant's texts for its energy check, once. */

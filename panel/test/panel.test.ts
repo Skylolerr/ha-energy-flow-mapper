@@ -460,7 +460,7 @@ describe("kept draft", () => {
     const el = await mount(mockHass());
     el._change(move);
     await settle(el);
-    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toEqual({ hash: "hash-1", changes: [move] });
+    expect(JSON.parse(localStorage.getItem(DRAFT_KEY)!)).toEqual({ hash: "hash-1", changes: [move], steps: [0] });
     el._undoChange();
     await settle(el);
     expect(localStorage.getItem(DRAFT_KEY)).toBeNull();
@@ -489,6 +489,36 @@ describe("kept draft", () => {
     const again = await mount(mock);
     expect(again._changes).toEqual([move]);
     expect(text(again)).toContain("Your unsaved changes were restored");
+  });
+
+  it("keeps the undo steps with the draft", async () => {
+    const pair: Change[] = [
+      { type: "move", stat: "sensor.tv", parent: "sensor.server" },
+      { type: "rename", stat: "sensor.tv", name: "TV" },
+    ];
+    const single: Change = { type: "rename", stat: "sensor.server", name: "Server" };
+    const first = await mount(mockHass());
+    first._changeAll(pair);
+    first._change(single);
+    await settle(first);
+    first.remove();
+    const again = await mount(mockHass());
+    expect(again._changes).toEqual([...pair, single]);
+    again._undoChange();
+    expect(again._changes).toEqual(pair);
+    again._undoChange();
+    expect(again._changes).toEqual([]);
+  });
+
+  it("restores an older draft without steps one change per step", async () => {
+    localStorage.setItem(
+      DRAFT_KEY,
+      JSON.stringify({ hash: "hash-1", changes: [move, { type: "rename", stat: "sensor.tv", name: "TV" }] }),
+    );
+    const el = await mount(mockHass());
+    expect(el._changes).toHaveLength(2);
+    el._undoChange();
+    expect(el._changes).toEqual([move]);
   });
 
   it("drops a draft for settings that changed meanwhile", async () => {
