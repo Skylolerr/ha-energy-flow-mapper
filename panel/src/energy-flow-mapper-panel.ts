@@ -32,6 +32,7 @@ import {
   SOURCE_COLORS,
   strokeWidth,
   WATER_PLACEHOLDER_ROLES,
+  GAS_PLACEHOLDER_ROLES,
 } from "./layout";
 import {
   coverageText,
@@ -68,6 +69,7 @@ import type {
   SaveResult,
   Snapshot,
   Source,
+  Tab,
   StatInfo,
   ValidateResult,
   WSError,
@@ -104,7 +106,7 @@ interface Zoom {
   k: number;
 }
 
-export const TABS: DeviceKind[] = ["electricity", "water"];
+export const TABS: Tab[] = ["electricity", "water", "gas"];
 
 type Dragged = { kind: "device" | "candidate"; stat: string };
 
@@ -128,6 +130,8 @@ type Dialog =
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
 const SOURCE_TARGET = "src:";
+/** Energy units of a gas meter measured by energy; its period value comes in kWh. */
+const ENERGY_UNITS = ["mWh", "Wh", "kWh", "MWh", "GWh", "TWh", "J", "kJ", "MJ", "GJ", "cal", "kcal", "Mcal", "Gcal"];
 
 /** The assign role of a source block role, if sensors can be dropped on it. */
 export function assignRole(role: string | undefined): AssignRole | null {
@@ -137,6 +141,7 @@ export function assignRole(role: string | undefined): AssignRole | null {
     case "production":
     case "battery":
     case "water":
+    case "gas":
     case "home":
       return role;
     case "discharge":
@@ -288,8 +293,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _ignored: ChildPair[];
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
-  /** The device list shown: electricity or water. */
-  declare _tab: DeviceKind;
+  /** The tab shown: electricity, water or gas. */
+  declare _tab: Tab;
   /** Text searched in the diagram, and which match is shown. */
   declare _find: string;
   declare _findIndex: number;
@@ -458,8 +463,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Switch between the electricity and the water devices. */
-  setTab(tab: DeviceKind): void {
+  /** Switch between the electricity, water and gas tabs. */
+  setTab(tab: Tab): void {
     if (tab === this._tab) {
       return;
     }
@@ -505,9 +510,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     return applyChanges(devices ?? [], this._changes, kind);
   }
 
-  /** The device list of the current tab with the draft applied. */
+  /** The device list of the current tab with the draft applied; gas has none. */
   get draft(): Device[] {
-    return this.draftOf(this._tab);
+    return this._tab === "gas" ? [] : this.draftOf(this._tab);
+  }
+
+  /** The device list of the current tab (electricity on the gas tab, which has none). */
+  private _deviceKind(): DeviceKind {
+    return this._tab === "water" ? "water" : "electricity";
   }
 
   /** Device changes of the water tab name their list. */
@@ -516,8 +526,19 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /** Free meters of a tab, as the backend found them. */
-  _candidates(kind: DeviceKind = this._tab): Candidate[] {
-    return (kind === "water" ? this._snapshot?.water_candidates : this._snapshot?.candidates) ?? [];
+  _candidates(kind: Tab = this._tab): Candidate[] {
+    const snapshot = this._snapshot;
+    const lists = {
+      electricity: snapshot?.candidates,
+      water: snapshot?.water_candidates,
+      gas: snapshot?.gas_candidates,
+    };
+    return lists[kind] ?? [];
+  }
+
+  /** Free meters of every tab. */
+  private _allCandidates(): Candidate[] {
+    return [...this._candidates("electricity"), ...this._candidates("water"), ...this._candidates("gas")];
   }
 
   /** The sources with the draft applied. */
@@ -565,7 +586,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _info(stat: string): StatInfo | undefined {
     return (
       this._snapshot?.stats[stat] ??
-      [...this._candidates("electricity"), ...this._candidates("water")].find((c) => c.stat === stat) ??
+      this._allCandidates().find((c) => c.stat === stat) ??
       this._snapshot?.power_candidates?.find((c) => c.stat === stat) ??
       this._snapshot?.flow_candidates?.find((c) => c.stat === stat)
     );
@@ -574,9 +595,11 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Display name; devices of the current tab come first, then the other tab. */
   private _name(
     stat: string,
-    devices: Device[] = [...this.draft, ...this.draftOf(this._tab === "water" ? "electricity" : "water")],
+    devices: Device[] = this._tab === "water"
+      ? [...this.draftOf("water"), ...this.draftOf("electricity")]
+      : [...this.draftOf("electricity"), ...this.draftOf("water")],
   ): string {
-    const candidates = [...this._candidates("electricity"), ...this._candidates("water")];
+    const candidates = this._allCandidates();
     return displayName(stat, devices, {
       ...this._snapshot?.stats,
       ...Object.fromEntries(candidates.map((c) => [c.stat, c])),
@@ -595,7 +618,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (memo && memo.key.every((part, i) => part === key[i])) {
       return memo.value;
     }
-    const value = suggestionsFor(this.draft, this._snapshot?.child_pairs ?? [], this._ignored, this._tab);
+    const value = suggestionsFor(this.draft, this._snapshot?.child_pairs ?? [], this._ignored, this._deviceKind());
     this._suggestionMemo = { key, value };
     return value;
   }
@@ -617,7 +640,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   _applyAllSuggestions(): void {
     const before = this._changes.length;
     for (const pair of this._suggestions()) {
-      if (suggestionsFor(this.draft, [pair], this._ignored, this._tab).length) {
+      if (suggestionsFor(this.draft, [pair], this._ignored, this._deviceKind()).length) {
         this._changes = [...this._changes, this._suggestionChange(pair)];
       }
     }
@@ -653,7 +676,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     try {
       const result = await this.hass.callWS<{ ignored: ChildPair[] }>({
         type: `${DOMAIN}/clear_suggestions`,
-        kind: this._tab,
+        kind: this._deviceKind(),
       });
       this._ignored = result.ignored;
     } catch (err) {
@@ -947,7 +970,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     const parent = target === HOME ? null : target;
     if (dragged.kind === "candidate") {
-      return true;
+      // Gas has no devices: a free gas meter only goes onto a gas source.
+      return this._tab !== "gas";
     }
     return canMove(this.draft, dragged.stat, parent);
   }
@@ -1065,7 +1089,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /**
    * Assign a free sensor to a source role; a battery asks for its second
-   * meter. `replace` names the grid or water meter it replaces, so that the
+   * meter. `replace` names the grid, water or gas meter it replaces, so that the
    * right source changes when there are several.
    */
   _assign(role: AssignRole, stat: string, replace: string | null = null): void {
@@ -1074,7 +1098,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     this._dialog = null;
-    const replaces = role === "import" || role === "export" || role === "water";
+    const replaces = role === "import" || role === "export" || role === "water" || role === "gas";
     this._change({ type: "assign_source", role, stat, ...(replaces && replace ? { replace } : {}) });
   }
 
@@ -1097,7 +1121,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   _freePowerSensors(): StatInfo[] {
     const used = this._usedInDraft();
     const sensors =
-      (this._tab === "water" ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? [];
+      this._tab === "gas"
+        ? []
+        : ((this._tab === "water" ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? []);
     return sensors.filter((c) => !used.has(c.stat));
   }
 
@@ -1243,7 +1269,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             data-tab=${tab}
             @click=${() => this.setTab(tab)}
           >
-            ${icon(tab === "water" ? "water" : "flash")} ${this._t(`tab_${tab}`)}
+            ${icon(tab === "water" ? "water" : tab === "gas" ? "fire" : "flash")} ${this._t(`tab_${tab}`)}
           </button>`,
         )}
       </div>
@@ -1264,7 +1290,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Power in W, or for water flow in L/min, of each device's rate sensor. */
   private _rateMap(devices: Device[]): Map<string, number | null> {
     return new Map(
-      devices.map((d) => [d.stat_consumption, this.hass ? rateValue(this.hass, d.stat_rate, this._tab) : null]),
+      devices.map((d) => [
+        d.stat_consumption,
+        this.hass ? rateValue(this.hass, d.stat_rate, this._deviceKind()) : null,
+      ]),
     );
   }
 
@@ -1286,7 +1315,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._collapsed,
       this._tab === "water"
         ? WATER_PLACEHOLDER_ROLES
-        : this._snapshot?.home_supported
+        : this._tab === "gas"
+          ? GAS_PLACEHOLDER_ROLES
+          : this._snapshot?.home_supported
           ? HOME_PLACEHOLDER_ROLES
           : PLACEHOLDER_ROLES,
       true,
@@ -1628,7 +1659,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`
       <section class="card diagram-card">
         <div class="card-header">
-          <h2>${this._t(this._tab === "water" ? "diagram_water" : "diagram")}</h2>
+          <h2>${this._t(this._tab === "electricity" ? "diagram" : `diagram_${this._tab}`)}</h2>
           <div class="periods" role="group" aria-label=${this._t("period_label")}>
             ${(["now", "today", "week", "month"] as const).map(
               (period) => html`<button
@@ -1920,6 +1951,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             ${block.stat
               ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
               : nothing}
+            ${block.stat && role === "gas" ? this._renderGasValue(block.stat) : nothing}
           </div>
           ${haStats.some((stat) => this._haIssuesFor(stat).length)
             ? html`<span class="badge" title=${haStats.map((stat) => this._badgeTitle(stat, [])).filter(Boolean).join("\n")}
@@ -1940,6 +1972,33 @@ export class EnergyFlowMapperPanel extends LitElement {
       default:
         return this._renderDeviceBlock(block, devices);
     }
+  }
+
+  /**
+   * What a gas meter used in the period, or its flow now. Gas is measured by
+   * volume (in `gas_unit`) or by energy (in kWh); the flow is shown as its
+   * sensor reports it.
+   */
+  private _renderGasValue(stat: string): TemplateResult | typeof nothing {
+    let text: string | null = null;
+    if (this._period === "now") {
+      const rate = this.draftSources.find((s) => s.type === "gas" && s.stat_energy_from === stat)?.stat_rate;
+      const state = typeof rate === "string" ? this.hass?.states[rate] : undefined;
+      const value = state ? Number(state.state) : NaN;
+      if (state && state.state !== "" && Number.isFinite(value)) {
+        text = `${formatNumber(this.hass, value, 2)} ${state.attributes.unit_of_measurement ?? ""}`.trim();
+      }
+    } else {
+      const value = this._energy?.energy[stat];
+      if (value != null) {
+        const unit = this._info(stat)?.unit;
+        text =
+          unit && ENERGY_UNITS.includes(unit)
+            ? formatEnergy(this.hass, value)
+            : formatVolume(this.hass, value, this._energy?.gas_unit ?? "m³");
+      }
+    }
+    return text === null ? nothing : html`<span class="sub value">${text}</span>`;
   }
 
   private _renderDeviceBlock(block: Block, devices: Device[]): TemplateResult {
@@ -2190,7 +2249,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`
       <section class="card">
         <div class="card-header"><h2>${this._t("free_sensors")}</h2></div>
-        <p class="hint">${this._t(this._tab === "water" ? "free_sensors_hint_water" : "free_sensors_hint")}</p>
+        <p class="hint">${this._t(this._tabKey("free_sensors_hint"))}</p>
         <input
           type="search"
           placeholder=${this._t("search")}
@@ -2199,7 +2258,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           @input=${(e: Event) => (this._search = (e.target as HTMLInputElement).value)}
         />
         ${candidates.length === 0
-          ? html`<p class="empty">${this._t(this._tab === "water" ? "no_candidates_water" : "no_candidates")}</p>`
+          ? html`<p class="empty">${this._t(this._tabKey("no_candidates"))}</p>`
           : html`<ul class="candidates">
               ${candidates.map(
                 (c) => html`<li
@@ -2225,7 +2284,10 @@ export class EnergyFlowMapperPanel extends LitElement {
                         .join(" · ") || c.stat}</span
                     >
                   </div>
-                  <button @click=${() => (this._dialog = { kind: "add", stat: c.stat })}>
+                  <button
+                    @click=${() =>
+                      this._tab === "gas" ? this._assign("gas", c.stat) : (this._dialog = { kind: "add", stat: c.stat })}
+                  >
                     ${this._t("add")}
                   </button>
                 </li>`,
@@ -2271,7 +2333,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     const info = this._info(stat);
     const water = this._tab === "water";
-    const rate = this.hass ? rateValue(this.hass, device.stat_rate, this._tab) : null;
+    const rate = this.hass ? rateValue(this.hass, device.stat_rate, this._deviceKind()) : null;
     const rateText =
       rate === null
         ? null
@@ -2468,6 +2530,11 @@ export class EnergyFlowMapperPanel extends LitElement {
         ? html`<p>${this._t("confirm_rejected")}</p>
             <p class="rejected">${result.rejected}</p>`
         : nothing}`;
+  }
+
+  /** A text key with the tab's variant: `<key>_water`, `<key>_gas`, or `<key>` for electricity. */
+  private _tabKey(key: "free_sensors_hint" | "no_candidates"): StringKey {
+    return this._tab === "electricity" ? key : `${key}_${this._tab}`;
   }
 
   /** Close the dialog and show the block of a problem in its tab. */
@@ -2725,9 +2792,8 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>`;
       }
       case "source": {
-        // Gas is only shown: no assign role, nothing to change.
         const assign = assignRole(dialog.role);
-        const replaces = assign === "import" || assign === "export" || assign === "water";
+        const replaces = assign === "import" || assign === "export" || assign === "water" || assign === "gas";
         const source = this.draftSources.find(
           (s) => s.stat_energy_from === dialog.stat || s.stat_energy_to === dialog.stat,
         );
@@ -2773,7 +2839,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "assign":
         return html`<h2>${this._t("assign_title", { role: this._roleLabel(dialog.role) })}</h2>
-          <p class="hint">${this._t(dialog.role === "water" ? "assign_hint_water" : "assign_hint")}</p>
+          <p class="hint">
+            ${this._t(
+              dialog.role === "water" ? "assign_hint_water" : dialog.role === "gas" ? "assign_hint_gas" : "assign_hint",
+            )}
+          </p>
           ${dialog.role === "import" ? this._powerOnlyGridStats().map((stat) => this._renderHaIssues(stat)) : nothing}
           ${this._sensorList([], (stat) => this._assign(dialog.role, stat, dialog.replace ?? null))}
           <div class="dialog-actions">

@@ -192,6 +192,7 @@ async def sensors(hass: HomeAssistant) -> None:
     # Not candidates: no meter state class, other device class.
     _meter(hass, "sensor.energy_today", state_class="measurement")
     _meter(hass, "sensor.water_meter", device_class="water", unit="m³")
+    _meter(hass, "sensor.gas_meter", device_class="gas", unit="m³")
 
     # Power-only sensors: the UPS has no meter; the PoE port already feeds an
     # integral helper.

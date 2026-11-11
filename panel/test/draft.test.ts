@@ -288,9 +288,11 @@ describe("sourceRows", () => {
       { type: "water", stat_energy_from: "water" },
     ];
     expect(sourceRows(sources, "water").map((r) => r.stat)).toEqual(["water"]);
-    expect(sourceRows(sources, "electricity").map((r) => r.stat)).toEqual(["imp", "gas"]);
+    expect(sourceRows(sources, "electricity").map((r) => r.stat)).toEqual(["imp"]);
+    expect(sourceRows(sources, "gas").map((r) => r.stat)).toEqual(["gas"]);
     expect(sourceKind(sources[2])).toBe("water");
-    expect(sourceKind(sources[1])).toBe("electricity");
+    expect(sourceKind(sources[1])).toBe("gas");
+    expect(sourceKind(sources[0])).toBe("electricity");
   });
 });
 
@@ -360,9 +362,24 @@ describe("applySourceChanges", () => {
     expect(result).toEqual([grid, { ...second, stat_energy_from: "c" }]);
   });
 
-  it("keeps gas sources", () => {
-    const gas = { type: "gas", stat_energy_from: "g" };
-    expect(applySourceChanges([gas], [{ type: "unassign_source", stat: "g" }])).toEqual([gas]);
+  it("adds, replaces and removes gas meters", () => {
+    const gas = { type: "gas", stat_energy_from: "g1", number_energy_price: 1.2 };
+    const water = { type: "water", stat_energy_from: "w" };
+    const result = applySourceChanges(
+      [gas, water],
+      [
+        { type: "assign_source", role: "gas", stat: "g2", replace: "g1" },
+        // A water meter is no gas meter: nothing to replace.
+        { type: "assign_source", role: "gas", stat: "g3", replace: "w" },
+        { type: "assign_source", role: "gas", stat: "g4" },
+      ],
+    );
+    expect(result).toEqual([
+      { type: "gas", stat_energy_from: "g2", number_energy_price: 1.2 },
+      water,
+      { ...NEW_WATER, type: "gas", stat_energy_from: "g4" },
+    ]);
+    expect(applySourceChanges(result, [{ type: "unassign_source", stat: "g2" }])).toEqual(result.slice(1));
   });
 
   it("adds, replaces and removes water meters", () => {

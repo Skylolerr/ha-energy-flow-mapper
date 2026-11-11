@@ -28,6 +28,9 @@ export interface HomeAssistant {
 /** The device lists of the energy dashboard, one tab each. */
 export type DeviceKind = "electricity" | "water";
 
+/** The tabs: the device lists, and gas, which has only sources (HA has no gas devices). */
+export type Tab = DeviceKind | "gas";
+
 /** An entry of `device_consumption(_water)`; unknown fields are kept as they are. */
 export interface Device {
   stat_consumption: string;
@@ -96,14 +99,14 @@ export interface Issue {
   severity: "error" | "warning";
   stat: string;
   details: Record<string, unknown>;
-  /** The device list the issue belongs to. */
-  kind?: DeviceKind;
+  /** The tab the issue belongs to. */
+  kind?: Tab;
 }
 
 /** A message of Home Assistant's own energy check, attached to a block. */
 export interface HaIssue {
   stat: string;
-  kind: DeviceKind;
+  kind: Tab;
   type: string;
   placeholders: Record<string, string> | null;
   /** Affected entities with HA's detail (state, unit, ...). */
@@ -124,6 +127,8 @@ export interface Snapshot {
   candidates: Candidate[];
   /** Water meters that are not used yet. */
   water_candidates: Candidate[];
+  /** Gas meters that are not used yet. */
+  gas_candidates?: Candidate[];
   /** Power sensors without an energy meter. */
   power_candidates: StatInfo[];
   /** Flow sensors without a water meter. */
@@ -156,8 +161,8 @@ export type Change =
       role: AssignRole;
       stat: string;
       stat_to?: string;
-      /** Grid or water meter to replace; without it, the first grid connection
-       * is used, and a water meter is added. */
+      /** Grid, water or gas meter to replace; without it, the first grid
+       * connection is used, and a water or gas meter is added. */
       replace?: string | null;
     }
   | { type: "unassign_source"; stat: string }
@@ -165,7 +170,7 @@ export type Change =
   | { type: "use_as_home_meter"; stat: string };
 
 /** Source roles a free sensor can be assigned to. */
-export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "home";
+export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "gas" | "home";
 
 export interface DiffEntry {
   type: "added" | "removed" | "moved" | "renamed" | "rate" | "source_added" | "source_removed";
@@ -237,6 +242,8 @@ export interface EnergyResult {
   energy: Record<string, number | null>;
   /** "L" or "gal". */
   water_unit: string;
+  /** "m³" or "ft³": gas meters with a volume unit; gas in an energy unit is in kWh. */
+  gas_unit?: string;
   untracked: Record<string, number | null>;
   issues: Issue[];
   /** Home consumption of the electricity tree; missing for water. */

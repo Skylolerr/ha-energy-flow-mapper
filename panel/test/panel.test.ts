@@ -1289,7 +1289,7 @@ describe("sources", () => {
     expect(root(el).querySelector('dialog button.target[data-target="sensor.printer"]')).not.toBeNull();
   });
 
-  it("offers assigning on solar and battery blocks and nothing on gas", async () => {
+  it("offers assigning on solar blocks; gas has its own tab", async () => {
     const mock = mockHass();
     const snap = snapshot();
     snap.prefs.energy_sources = [
@@ -1301,12 +1301,7 @@ describe("sources", () => {
     root(el).querySelector<HTMLButtonElement>('.block.source[data-role="production"]:not(.placeholder)')!.click();
     await settle(el);
     expect(root(el).querySelector("dialog")!.textContent).toContain("Assign sensor");
-    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="gas"]')!.click();
-    await settle(el);
-    const dialog = root(el).querySelector("dialog")!.textContent!;
-    expect(dialog).toContain("Gas");
-    expect(dialog).not.toContain("Assign sensor");
-    expect(dialog).not.toContain("Remove as source");
+    expect(root(el).querySelector('.block.source[data-role="gas"]')).toBeNull();
   });
 
   it("describes source changes", async () => {
@@ -1705,6 +1700,128 @@ describe("water", () => {
     expect(el._diffText({ type: "rate", stat: "sensor.tv", kind: "electricity" })).toBe(
       "Power sensor of TV changed",
     );
+  });
+});
+
+describe("gas", () => {
+  function gasMock(): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({
+      type: "gas",
+      stat_energy_from: "sensor.gas",
+      stat_rate: "sensor.gas_flow",
+      number_energy_price: 1.2,
+    });
+    snap.stats["sensor.gas"] = info("sensor.gas", "Gas meter", { unit: "m³", device_class: "gas" });
+    snap.gas_candidates = [
+      { ...info("sensor.boiler_gas", "Boiler gas", { unit: "m³", device_class: "gas" }), power: null },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.gas_flow"] = entity("sensor.gas_flow", "0.42", "m³/h");
+    return mock;
+  }
+
+  it("has its own tab with the gas meters and free gas sensors", async () => {
+    const el = await mount(gasMock());
+    expect(el.diagramLayout().blocks.some((b) => b.role === "gas")).toBe(false);
+    root(el).querySelector<HTMLButtonElement>('.tabs button[data-tab="gas"]')!.click();
+    await settle(el);
+    expect(el._tab).toBe("gas");
+    const blocks = el.diagramLayout().blocks;
+    expect(blocks.filter((b) => b.kind === "source").map((b) => b.stat)).toEqual(["sensor.gas"]);
+    expect(blocks.some((b) => b.kind === "device" || b.kind === "placeholder")).toBe(false);
+    const candidates = [...root(el).querySelectorAll(".candidate")].map((c) => c.getAttribute("data-stat"));
+    expect(candidates).toEqual(["sensor.boiler_gas"]);
+    // The gas flow now, read from the meter's flow sensor.
+    expect(root(el).querySelector('.block.source[data-role="gas"]')!.textContent).toContain("0.42 m³/h");
+  });
+
+  it("offers a gas placeholder without a gas meter", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/get"] = {
+      ...snapshot(),
+      gas_candidates: [{ ...info("sensor.boiler_gas", "Boiler gas", { unit: "m³" }), power: null }],
+    };
+    const el = await mount(mock);
+    el.setTab("gas");
+    await settle(el);
+    const placeholder = root(el).querySelector<HTMLButtonElement>('.block.placeholder[data-role="gas"]')!;
+    expect(placeholder.textContent).toContain("+ Gas");
+    placeholder.click();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Pick a free gas meter");
+    root(el).querySelector<HTMLButtonElement>('dialog [data-target="sensor.boiler_gas"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "gas", stat: "sensor.boiler_gas" }]);
+  });
+
+  it("adds, replaces and removes gas meters", async () => {
+    const el = await mount(gasMock());
+    el.setTab("gas");
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>('.candidate[data-stat="sensor.boiler_gas"] button')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "assign_source", role: "gas", stat: "sensor.boiler_gas" }]);
+    const gas = () => el.draftSources.filter((s) => s.type === "gas");
+    expect(gas().map((s) => s.stat_energy_from)).toEqual(["sensor.gas", "sensor.boiler_gas"]);
+    el._undoChange();
+    await settle(el);
+
+    // A free gas meter goes onto a gas meter (replacing it), never below Home.
+    el._dragged = { kind: "candidate", stat: "sensor.boiler_gas" };
+    expect(el._canDrop("__home__")).toBe(false);
+    const block = el.diagramLayout().blocks.find((b) => b.stat === "sensor.gas")!;
+    el._drop(`src:gas:${block.id}`);
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "assign_source", role: "gas", stat: "sensor.boiler_gas", replace: "sensor.gas" },
+    ]);
+    expect(gas()).toEqual([
+      expect.objectContaining({ stat_energy_from: "sensor.boiler_gas", number_energy_price: 1.2 }),
+    ]);
+
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="gas"]')!.click();
+    await settle(el);
+    buttonWith(el, "Remove as source").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.boiler_gas" });
+    expect(gas()).toEqual([]);
+  });
+
+  it("shows the gas used in a period, by volume or by energy", async () => {
+    const mock = gasMock();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.prefs.energy_sources.push({ type: "gas", stat_energy_from: "sensor.gas_kwh" });
+    snap.stats["sensor.gas_kwh"] = info("sensor.gas_kwh", "Gas kWh");
+    mock.responses["energy_flow_mapper/energy"] = {
+      period: "week",
+      start: "",
+      end: "",
+      energy: { "sensor.gas": 3.5, "sensor.gas_kwh": 41 },
+      water_unit: "L",
+      gas_unit: "m³",
+      untracked: {},
+      issues: [],
+    };
+    const el = await mount(mock);
+    el.setTab("gas");
+    el.setPeriod("week");
+    await settle(el);
+    const blocks = [...root(el).querySelectorAll('.block.source[data-role="gas"]')].map((b) => b.textContent);
+    expect(blocks[0]).toContain("3.5 m³");
+    expect(blocks[1]).toContain("41 kWh");
+  });
+
+  it("puts Home Assistant's gas messages in the gas tab", async () => {
+    const mock = gasMock();
+    (mock.responses["energy_flow_mapper/get"] as Snapshot).ha_issues = [
+      { stat: "sensor.gas", kind: "gas", type: "entity_unavailable", placeholders: null, entities: [] },
+    ];
+    const el = await mount(mock);
+    el.setTab("gas");
+    await settle(el);
+    expect(root(el).querySelector('.block.source[data-role="gas"] .badge')).not.toBeNull();
   });
 });
 

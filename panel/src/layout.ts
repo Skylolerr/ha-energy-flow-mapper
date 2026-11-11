@@ -69,6 +69,8 @@ export interface Layout {
 export const PLACEHOLDER_ROLES = ["import", "production", "battery", "export"] as const;
 /** The same for the water tab. */
 export const WATER_PLACEHOLDER_ROLES = ["water"] as const;
+/** The same for the gas tab. */
+export const GAS_PLACEHOLDER_ROLES = ["gas"] as const;
 /** The electricity roles with the home meter (HA 2026.11 and newer). */
 export const HOME_PLACEHOLDER_ROLES = [...PLACEHOLDER_ROLES, "home"] as const;
 

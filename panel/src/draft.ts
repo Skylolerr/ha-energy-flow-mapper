@@ -1,7 +1,7 @@
 // Pure draft logic of the panel. It mirrors hierarchy.py so the tree can be
 // shown and edited before anything is sent; the backend checks again on save.
 
-import type { Change, ChildPair, Device, DeviceKind, HomeAssistant, Source, StatInfo } from "./types";
+import type { Change, ChildPair, Device, DeviceKind, HomeAssistant, Source, StatInfo, Tab } from "./types";
 
 /** A grid connection without costs, as the energy settings page creates it. */
 export const NEW_GRID: Source = {
@@ -348,9 +348,9 @@ const SOURCE_ROLES: Record<string, [SourceRole, SourceRole | null]> = {
   home: ["home", "home"],
 };
 
-/** The tab a source is shown in: water on its own, everything else with electricity. */
-export function sourceKind(source: Source): DeviceKind {
-  return source.type === "water" ? "water" : "electricity";
+/** The tab a source is shown in: water and gas on their own, everything else with electricity. */
+export function sourceKind(source: Source): Tab {
+  return source.type === "water" || source.type === "gas" ? source.type : "electricity";
 }
 
 const POWER_CONFIG_KEYS = ["stat_rate", "stat_rate_inverted", "stat_rate_from", "stat_rate_to"] as const;
@@ -363,7 +363,7 @@ export function powerStats(source: Source): string[] {
 }
 
 /** One row per energy statistic of the sources (of one tab, if `kind` is given). */
-export function sourceRows(sources: Source[], kind?: DeviceKind): SourceRow[] {
+export function sourceRows(sources: Source[], kind?: Tab): SourceRow[] {
   const rows: SourceRow[] = [];
   for (const source of sources) {
     if (kind !== undefined && sourceKind(source) !== kind) {
@@ -382,14 +382,14 @@ export function sourceRows(sources: Source[], kind?: DeviceKind): SourceRow[] {
 
 const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
 
-/** Source types the panel may change; gas is only shown. */
-const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "water", "home"];
+/** Source types the panel may change. */
+const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "gas", "water", "home"];
 
 /**
  * Apply the source changes of a draft to a copy, like hierarchy.py: grid
  * import/export replace the meter given as `replace`, or else that of the
- * first grid connection (keeping its prices); a water meter replaces the one
- * given as `replace`, or else is added; solar and battery add a source; the
+ * first grid connection (keeping its prices); a water or gas meter replaces
+ * the one of its type given as `replace`, or else is added; solar and battery add a source; the
  * home meter replaces the one there is. A device used as home meter brings
  * its power sensor from `devices`. Changes that do not fit are skipped.
  */
@@ -434,18 +434,19 @@ export function applySourceChanges(sources: Source[], changes: Change[], devices
         });
       } else if (change.role === "battery" && change.stat_to) {
         result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
-      } else if (change.role === "water") {
-        let water = change.replace
-          ? result.find((s) => s.type === "water" && s.stat_energy_from === change.replace)
+      } else if (change.role === "water" || change.role === "gas") {
+        const type = change.role;
+        let meter = change.replace
+          ? result.find((s) => s.type === type && s.stat_energy_from === change.replace)
           : undefined;
-        if (water === undefined) {
+        if (meter === undefined) {
           if (change.replace) {
             continue;
           }
-          water = structuredClone(NEW_WATER);
-          result.push(water);
+          meter = { ...structuredClone(NEW_WATER), type };
+          result.push(meter);
         }
-        water.stat_energy_from = change.stat;
+        meter.stat_energy_from = change.stat;
       }
     } else if (change.type === "unassign_source") {
       const index = result.findIndex(

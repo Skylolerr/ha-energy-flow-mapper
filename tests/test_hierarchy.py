@@ -9,6 +9,7 @@ import pytest
 
 from custom_components.energy_flow_mapper.hierarchy import (
     HOME,
+    NEW_GAS,
     NEW_GRID,
     NEW_WATER,
     PRICE_ISSUE_TYPES,
@@ -33,6 +34,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     plausibility,
     prefs_hash,
     source_energy_stats,
+    source_kind,
     source_roles,
     summarize,
     tree_depth,
@@ -769,7 +771,6 @@ def test_assign_solar_and_battery_add_sources() -> None:
     "change",
     [
         {"type": "assign_source", "role": "battery", "stat": "sensor.out"},
-        {"type": "assign_source", "role": "gas", "stat": "sensor.gas"},
         {"type": "assign_source", "stat": "sensor.x"},
     ],
 )
@@ -815,17 +816,101 @@ def test_unassign_sources() -> None:
     assert err.value.code == "unknown_source"
 
 
-def test_gas_sources_cannot_be_unassigned() -> None:
-    """Gas is only shown; removing it is refused."""
-    sources = [
-        {"type": "gas", "stat_energy_from": "sensor.gas", "stat_cost": "sensor.cost"},
+GAS_WITH_PRICE = {
+    "type": "gas",
+    "stat_energy_from": "sensor.gas_a",
+    "stat_rate": "sensor.gas_flow",
+    "stat_cost": None,
+    "entity_energy_price": None,
+    "number_energy_price": 1.4,
+    "name": "Boiler",
+    "future_field": True,
+}
+
+
+def test_assign_gas_adds_or_replaces() -> None:
+    """A new gas meter has no costs; replacing one keeps its other fields."""
+    water = NEW_WATER | {"stat_energy_from": "sensor.water"}
+    old = prefs(energy_sources=[deepcopy(GAS_WITH_PRICE), deepcopy(water)])
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "assign_source",
+                "role": "gas",
+                "stat": "sensor.gas_b",
+                "replace": "sensor.gas_a",
+            },
+            {"type": "assign_source", "role": "gas", "stat": "sensor.gas_c"},
+        ],
+    )
+    assert new["energy_sources"] == [
+        GAS_WITH_PRICE | {"stat_energy_from": "sensor.gas_b"},
+        water,
+        NEW_GAS | {"stat_energy_from": "sensor.gas_c"},
     ]
+    assert NEW_GAS == {
+        "type": "gas",
+        "stat_energy_from": None,
+        "stat_cost": None,
+        "entity_energy_price": None,
+        "number_energy_price": None,
+    }
+    # A water meter is no gas meter.
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            old,
+            [
+                {
+                    "type": "assign_source",
+                    "role": "gas",
+                    "stat": "sensor.x",
+                    "replace": "sensor.water",
+                }
+            ],
+        )
+    assert (err.value.code, err.value.stat) == ("unknown_source", "sensor.water")
+
+
+def test_unknown_source_types_cannot_be_unassigned() -> None:
+    """A source type the panel does not know (a future one) stays as it is."""
+    sources = [{"type": "wind", "stat_energy_from": "sensor.wind"}]
     with pytest.raises(ChangeError) as err:
         apply_changes(
             prefs(energy_sources=deepcopy(sources)),
-            [{"type": "unassign_source", "stat": "sensor.gas"}],
+            [{"type": "unassign_source", "stat": "sensor.wind"}],
         )
     assert err.value.code == "unknown_source"
+
+
+def test_unassign_gas() -> None:
+    """A gas meter is removed with its source, prices and all."""
+    new = apply_changes(
+        prefs(energy_sources=[deepcopy(GAS_WITH_PRICE)]),
+        [{"type": "unassign_source", "stat": "sensor.gas_a"}],
+    )
+    assert new["energy_sources"] == []
+
+
+@pytest.mark.parametrize(
+    ("source", "kind"),
+    [
+        ({"type": "grid"}, DeviceKind.ELECTRICITY),
+        ({"type": "home"}, DeviceKind.ELECTRICITY),
+        ({"type": "water"}, DeviceKind.WATER),
+        ({"type": "gas"}, DeviceKind.GAS),
+    ],
+)
+def test_source_kind(source: dict[str, Any], kind: DeviceKind) -> None:
+    """Gas has its own tab now, apart from electricity."""
+    assert source_kind(source) is kind
+
+
+def test_duplicate_gas_source_belongs_to_gas() -> None:
+    gas = {"type": "gas", "stat_energy_from": "sensor.gas"}
+    issues = validate(prefs(energy_sources=[gas, dict(gas)]))
+    assert [(i.code, i.kind) for i in issues] == [("duplicate_source", DeviceKind.GAS)]
+    assert issues[0].as_dict()["kind"] == "gas"
 
 
 WATER_WITH_PRICE = {

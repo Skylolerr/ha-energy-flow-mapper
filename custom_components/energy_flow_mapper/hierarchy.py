@@ -42,8 +42,8 @@ SOURCE_ROLES: dict[str, dict[str, str]] = {
     "home": {TO: "home"},
 }
 
-# Source types the panel may change; gas is only shown.
-EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery", "water", "home")
+# Source types the panel may change.
+EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery", "gas", "water", "home")
 
 # Key of Home in untracked values and issues.
 HOME = "home"
@@ -71,17 +71,26 @@ NEW_WATER: dict[str, Any] = {
     "number_energy_price": None,
 }
 
+# A gas meter without costs, as the energy settings page creates it.
+NEW_GAS: dict[str, Any] = NEW_WATER | {"type": "gas"}
+
 type Device = dict[str, Any]
 type Prefs = Mapping[str, Any]
 
 
 class DeviceKind(StrEnum):
-    """The device lists of the energy dashboard."""
+    """The tabs: the device lists of the energy dashboard, and gas.
+
+    Home Assistant has no gas devices, so gas only has sources; it is not in
+    `DEVICE_KEYS`.
+    """
 
     ELECTRICITY = "electricity"
     WATER = "water"
+    GAS = "gas"
 
 
+# The kinds with a device list, by list key.
 DEVICE_KEYS: dict[DeviceKind, str] = {
     DeviceKind.ELECTRICITY: KEY_DEVICES,
     DeviceKind.WATER: KEY_DEVICES_WATER,
@@ -130,6 +139,7 @@ class AssignRole(StrEnum):
     EXPORT = "export"
     PRODUCTION = "production"
     BATTERY = "battery"
+    GAS = "gas"
     WATER = "water"
     HOME = "home"
 
@@ -264,8 +274,11 @@ def source_energy_stats(sources: Sequence[Mapping[str, Any]]) -> set[str]:
 
 
 def source_kind(source: Mapping[str, Any]) -> DeviceKind:
-    """Return the device list a source belongs to (gas counts as electricity)."""
-    return DeviceKind.WATER if source.get("type") == "water" else DeviceKind.ELECTRICITY
+    """Return the tab a source belongs to: water, gas or electricity."""
+    kind = source.get("type")
+    if kind in (DeviceKind.WATER, DeviceKind.GAS):
+        return DeviceKind(kind)
+    return DeviceKind.ELECTRICITY
 
 
 # The sensors of a grid connection's `power_config`, in HA's order.
@@ -440,18 +453,18 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
 
     Grid import and export replace the meter given as `replace`, or else that
     of the first grid connection, and keep the connection's prices; without a
-    grid connection, one without costs is created. A water meter replaces the
-    one given as `replace` (keeping its prices), or else is added without
-    costs. Solar and battery always add a new source; a battery needs both
-    meters.
+    grid connection, one without costs is created. A water or gas meter
+    replaces the one of its type given as `replace` (keeping its prices), or
+    else is added without costs. Solar and battery always add a new source; a
+    battery needs both meters.
     """
     role = change.get("role")
     stat = change["stat"]
     if role == AssignRole.HOME:
         _assign_home(sources, stat)
         return
-    if role == AssignRole.WATER:
-        _assign_water(sources, stat, change.get("replace"))
+    if role in (AssignRole.WATER, AssignRole.GAS):
+        _assign_meter(sources, str(role), stat, change.get("replace"))
         return
     if role in (AssignRole.IMPORT, AssignRole.EXPORT):
         key = FROM if role == AssignRole.IMPORT else TO
@@ -476,21 +489,21 @@ def _assign_source(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> 
         raise ChangeError("unknown_change", stat)
 
 
-def _assign_water(
-    sources: list[dict[str, Any]], stat: str, replace: str | None
+def _assign_meter(
+    sources: list[dict[str, Any]], kind: str, stat: str, replace: str | None
 ) -> None:
-    """Replace the water meter `replace` (keeping its prices), or add one."""
+    """Replace the water or gas meter `replace` (keeping its prices), or add one."""
     if replace:
-        water = next(
-            (s for s in sources if s.get("type") == "water" and s.get(FROM) == replace),
+        meter = next(
+            (s for s in sources if s.get("type") == kind and s.get(FROM) == replace),
             None,
         )
-        if water is None:
+        if meter is None:
             raise ChangeError("unknown_source", replace)
     else:
-        water = deepcopy(NEW_WATER)
-        sources.append(water)
-    water[FROM] = stat
+        meter = deepcopy(NEW_GAS if kind == "gas" else NEW_WATER)
+        sources.append(meter)
+    meter[FROM] = stat
 
 
 def _assign_home(
@@ -515,8 +528,7 @@ def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
     """Remove a statistic from the sources.
 
     A grid connection only loses that meter (it is removed once nothing is
-    left); solar, battery and water sources are removed as a whole. Gas
-    sources are only shown, so they cannot be removed here.
+    left); solar, battery, gas and water sources are removed as a whole.
     """
     for index, source in enumerate(sources):
         if source.get("type") not in EDITABLE_SOURCE_TYPES:

@@ -65,6 +65,7 @@ async def test_get(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> N
         "sensor.printer_energy",
     ]
     assert [c["stat"] for c in result["water_candidates"]] == ["sensor.water_meter"]
+    assert [c["stat"] for c in result["gas_candidates"]] == ["sensor.gas_meter"]
     assert result["issues"] == []
 
 
@@ -183,6 +184,60 @@ async def test_save_water(
         "energy_sources": ENERGY_PREFS["energy_sources"],
         "device_consumption_water": [],
     }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_save_gas(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A gas meter is assigned, then replaced keeping its price, then removed."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{"type": "assign_source", "role": "gas", "stat": "sensor.gas_meter"}],
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["energy_sources"][-1] == {
+        "type": "gas",
+        "stat_energy_from": "sensor.gas_meter",
+        "stat_cost": None,
+        "entity_energy_price": None,
+        "number_energy_price": None,
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["gas_candidates"] == []
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=response["result"]["hash"],
+        changes=[{"type": "unassign_source", "stat": "sensor.gas_meter"}],
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["energy_sources"] == ENERGY_PREFS["energy_sources"]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_card_leaves_gas_out(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Gas has its own tab in the panel; the electricity card does not show it."""
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *ENERGY_PREFS["energy_sources"],
+                {"type": "gas", "stat_energy_from": "sensor.gas_meter"},
+            ]
+        },
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    assert "gas" not in {s["type"] for s in response["result"]["sources"]}
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -1012,9 +1067,13 @@ def energy_values(monkeypatch: pytest.MonkeyPatch) -> dict[str, float | None]:
     calls: list[Any] = []
 
     async def fake(
-        hass: HomeAssistant, stats: list[str], period: str, now: Any
+        hass: HomeAssistant,
+        stats: list[str],
+        period: str,
+        now: Any,
+        volume_unit: str | None = None,
     ) -> dict[str, float | None]:
-        calls.append((stats, period))
+        calls.append((stats, period, volume_unit))
         return {stat: values.get(stat) for stat in stats}
 
     async def recent(hass: HomeAssistant, stats: list[str]) -> dict[str, Any]:
@@ -1057,7 +1116,7 @@ async def test_energy(
         }
     ]
     assert result["water_unit"] == "L"
-    stats, period = energy_values["_calls"][0]
+    stats, period, _ = energy_values["_calls"][0]
     assert period == "week"
     assert stats[:5] == [
         "sensor.main_energy",
@@ -1067,6 +1126,32 @@ async def test_energy(
         "sensor.garage_energy",
     ]
     assert "sensor.solar_energy" in stats
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_energy_of_gas_in_its_volume_unit(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """Gas meters are asked for in m³ apart from the rest; Home ignores gas."""
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *ENERGY_PREFS["energy_sources"],
+                {"type": "gas", "stat_energy_from": "sensor.gas_meter"},
+            ]
+        },
+    )
+    energy_values["sensor.gas_meter"] = 3.5
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
+    result = response["result"]
+    assert result["gas_unit"] == "m³"
+    assert result["energy"]["sensor.gas_meter"] == 3.5
+    calls = energy_values["_calls"]
+    assert "sensor.gas_meter" not in calls[0][0]
+    assert calls[1] == (["sensor.gas_meter"], "week", "m³")
 
 
 @pytest.mark.usefixtures("loaded_entry")

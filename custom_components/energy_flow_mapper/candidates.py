@@ -44,9 +44,21 @@ WATER_UNITS = frozenset(
         UnitOfVolume.MILLE_CUBIC_FEET,
     )
 )
+# The volume units Home Assistant accepts for gas meters.
+GAS_UNITS = frozenset(
+    unit.value
+    for unit in (
+        UnitOfVolume.CENTUM_CUBIC_FEET,
+        UnitOfVolume.CUBIC_FEET,
+        UnitOfVolume.CUBIC_METERS,
+        UnitOfVolume.LITERS,
+        UnitOfVolume.MILLE_CUBIC_FEET,
+    )
+)
 UNITS: dict[DeviceKind, frozenset[str]] = {
     DeviceKind.ELECTRICITY: ENERGY_UNITS,
     DeviceKind.WATER: WATER_UNITS,
+    DeviceKind.GAS: GAS_UNITS,
 }
 # Flow units an integral helper turns into a water unit, with the time unit it
 # integrates over: L/min over minutes gives L. mL/s is left out, mL being no
@@ -72,6 +84,7 @@ RATE_UNITS: dict[DeviceKind, frozenset[str]] = {
 METER_CLASSES: dict[DeviceKind, tuple[SensorDeviceClass, SensorDeviceClass]] = {
     DeviceKind.ELECTRICITY: (SensorDeviceClass.ENERGY, SensorDeviceClass.POWER),
     DeviceKind.WATER: (SensorDeviceClass.WATER, SensorDeviceClass.VOLUME_FLOW_RATE),
+    DeviceKind.GAS: (SensorDeviceClass.GAS, SensorDeviceClass.VOLUME_FLOW_RATE),
 }
 METER_STATE_CLASSES = (SensorStateClass.TOTAL, SensorStateClass.TOTAL_INCREASING)
 INTEGRATION_DOMAIN = "integration"
@@ -254,7 +267,7 @@ def async_candidates(
     prefs: Prefs,
     kind: DeviceKind = DeviceKind.ELECTRICITY,
 ) -> list[dict[str, Any]]:
-    """Return energy (or water) meters that are not used in the dashboard yet.
+    """Return energy (water, gas) meters that are not used in the dashboard yet.
 
     Each candidate suggests a power (or flow) sensor of the same device as
     `stat_rate`, in its field `power`. Disabled entities have no state and are
@@ -320,9 +333,9 @@ def async_external_candidates(
     external: Mapping[str, Mapping[str, Any]],
     kind: DeviceKind = DeviceKind.ELECTRICITY,
 ) -> list[dict[str, Any]]:
-    """Return external energy (or water) statistics that are not used yet.
+    """Return external energy (water, gas) statistics that are not used yet.
 
-    A volume statistic may also measure gas; the user decides.
+    A volume statistic may measure water or gas; the user decides.
     """
     used = used_stats(prefs)
     return _sorted(

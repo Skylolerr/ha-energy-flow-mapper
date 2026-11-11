@@ -44,6 +44,7 @@ from .energy_stats import (
     PERIODS,
     async_energy,
     async_last_ends,
+    gas_unit,
     period_range,
     stale_stat,
     water_unit,
@@ -102,7 +103,8 @@ EDITABLE_KEYS = (KEY_SOURCES, KEY_DEVICES, KEY_DEVICES_WATER)
 _OPTIONAL_TEXT = vol.Any(str, None)
 # Device changes name their list; without `kind` they change electricity.
 _KIND = vol.Optional("kind")
-_KINDS = vol.In([kind.value for kind in DeviceKind])
+# Only the kinds with devices; gas has sources only.
+_KINDS = vol.In([kind.value for kind in DEVICE_KEYS])
 # Every card asks every minute; HA's check of the energy dashboard runs at most
 # once a minute for all of them.
 CARD_VALIDATION_SECONDS = 60
@@ -251,7 +253,8 @@ async def websocket_get(
     """Return the preferences with metadata, issues and unused sensors.
 
     `candidates` are unused energy meters and external statistics,
-    `water_candidates` the same for water, `power_candidates` power sensors
+    `water_candidates` and `gas_candidates` the same for water and gas,
+    `power_candidates` power sensors
     without an energy meter and `flow_candidates` flow sensors without a water
     meter.
     """
@@ -259,13 +262,13 @@ async def websocket_get(
     prefs = await energy_access.async_get_prefs(hass)
     external = await async_external_statistics(hass)
     stats = async_stats_info(hass, prefs, external)
-    candidates, water = (
+    candidates, water, gas = (
         async_candidates(hass, prefs, kind)
         + async_external_candidates(hass, prefs, external, kind)
-        for kind in (DeviceKind.ELECTRICITY, DeviceKind.WATER)
+        for kind in (DeviceKind.ELECTRICITY, DeviceKind.WATER, DeviceKind.GAS)
     )
     created = runtime.helpers.entries()
-    async_mark_created(hass, [*stats.values(), *candidates, *water], created)
+    async_mark_created(hass, [*stats.values(), *candidates, *water, *gas], created)
     issues = _issues(hass, prefs)
     validation = await energy_access.async_validation(hass)
     connection.send_result(
@@ -276,6 +279,7 @@ async def websocket_get(
             "stats": stats,
             "candidates": candidates,
             "water_candidates": water,
+            "gas_candidates": gas,
             "power_candidates": async_power_candidates(hass, prefs),
             "flow_candidates": async_power_candidates(hass, prefs, DeviceKind.WATER),
             "issues": [issue.as_dict() for issue in issues],
@@ -475,7 +479,7 @@ async def websocket_create_integral(
     kind = next(
         (
             kind
-            for kind in DeviceKind
+            for kind in DEVICE_KEYS
             if power in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
         ),
         None,
@@ -506,10 +510,10 @@ async def websocket_energy(
 ) -> None:
     """Return the energy of devices and sources in a period.
 
-    Electricity is in kWh, water in `water_unit` (litres or gallons). With a
-    draft (`base_hash` and `changes`), untracked values and warnings follow
-    the draft's trees. Warnings flag devices whose children used clearly more
-    than they did.
+    Electricity is in kWh, water in `water_unit` (litres or gallons), gas in
+    kWh or `gas_unit` (m³ or ft³). With a draft (`base_hash` and `changes`),
+    untracked values and warnings follow the draft's trees. Warnings flag
+    devices whose children used clearly more than they did.
     """
     _runtime(hass)
     if ATTR_CHANGES in msg:
@@ -538,13 +542,20 @@ async def _async_period(
     """Return energy, untracked values and warnings of device lists in a period.
 
     Electricity is in kWh, water in `water_unit`; the energy of `sources` is
-    included too. With `home_sources` (the sources of the electricity list),
-    `home` holds the home consumption and what no top-level device covers.
+    included too. With `home_sources` (the sources of the electricity list,
+    or all of them), `home` holds the home consumption and what no top-level
+    device covers; gas meters among them come in `gas_unit` if they measure
+    a volume.
     """
+    gas = source_energy_stats(
+        [s for s in home_sources or [] if source_kind(s) is DeviceKind.GAS]
+    )
     stats = list(dict.fromkeys(d[STAT] for devices in lists.values() for d in devices))
-    stats += sorted(sources - set(stats))
+    stats += sorted(sources - gas - set(stats))
     now = dt_util.now()
     energy = await async_energy(hass, stats, period, now)
+    if gas:
+        energy |= await async_energy(hass, sorted(gas), period, now, gas_unit(hass))
     unit = water_unit(hass)
     minimum = {
         DeviceKind.ELECTRICITY: PLAUSIBILITY_MIN_KWH,
@@ -568,6 +579,7 @@ async def _async_period(
         "end": end.isoformat(),
         "energy": energy,
         "water_unit": unit,
+        "gas_unit": gas_unit(hass),
         "untracked": rest,
         "issues": issues,
     }

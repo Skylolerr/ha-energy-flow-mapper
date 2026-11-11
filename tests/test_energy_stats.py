@@ -15,6 +15,7 @@ from custom_components.energy_flow_mapper.energy_stats import (
     RECENT_LAG,
     async_energy,
     async_last_ends,
+    gas_unit,
     period_range,
     stale_stat,
     water_unit,
@@ -100,6 +101,17 @@ async def test_water_in_gallons_for_us_units(
     assert water_unit(hass) == "gal"
     await async_energy(hass, ["sensor.a"], "today", dt_util.now())
     assert statistics[0][5] == {"energy": "kWh", "volume": "gal"}
+
+
+async def test_gas_volume_unit(
+    hass: HomeAssistant, statistics: list[tuple[Any, ...]]
+) -> None:
+    """Gas comes in cubic metres, with US units in cubic feet."""
+    assert gas_unit(hass) == "m³"
+    await async_energy(hass, ["sensor.a"], "today", dt_util.now(), gas_unit(hass))
+    assert statistics[0][5] == {"energy": "kWh", "volume": "m³"}
+    hass.config.units = US_CUSTOMARY_SYSTEM
+    assert gas_unit(hass) == "ft³"
 
 
 @pytest.mark.parametrize(

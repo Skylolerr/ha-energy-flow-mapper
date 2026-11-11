@@ -40,6 +40,13 @@ def water_unit(hass: HomeAssistant) -> str:
     return UnitOfVolume.LITERS.value
 
 
+def gas_unit(hass: HomeAssistant) -> str:
+    """Return the unit gas volumes are shown in: cubic feet for US units, else m³."""
+    if hass.config.units is US_CUSTOMARY_SYSTEM:
+        return UnitOfVolume.CUBIC_FEET.value
+    return UnitOfVolume.CUBIC_METERS.value
+
+
 def period_range(period: str, now: datetime) -> tuple[datetime, datetime]:
     """Return start (local midnight) and end (now) of a period."""
     days, _ = PERIODS[period]
@@ -52,11 +59,13 @@ async def async_energy(
     stats: Collection[str],
     period: str,
     now: datetime,
+    volume_unit: str | None = None,
 ) -> dict[str, float | None]:
-    """Return the energy in kWh (water in `water_unit`) of each statistic.
+    """Return the energy in kWh (volumes in `water_unit`) of each statistic.
 
-    A statistic without data in the period maps to None. Without a recorder
-    every value is None.
+    Volumes come in `volume_unit` instead when given (gas). A statistic
+    without data in the period maps to None. Without a recorder every value
+    is None.
     """
     if not stats or "recorder" not in hass.config.components:
         return dict.fromkeys(stats)
@@ -69,7 +78,7 @@ async def async_energy(
         end,
         set(stats),
         resolution,
-        {"energy": "kWh", "volume": water_unit(hass)},
+        {"energy": "kWh", "volume": volume_unit or water_unit(hass)},
         {"change"},
     )
     result: dict[str, float | None] = {}
