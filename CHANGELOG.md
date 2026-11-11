@@ -11,6 +11,24 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Gas tab:** gas has its own tab with your gas meters. Assign, replace and remove them
+  like water meters; the price and other settings of a replaced meter stay. Each meter
+  shows its flow now and its use in a period, in m³ (ft³ with US units) or kWh. Home
+  Assistant has no gas devices, so there is nothing to arrange below them.
+- **Your draft survives leaving the panel:** unsaved changes are kept in the browser and
+  come back when you open the panel again. If the energy settings were changed in the
+  meantime, the draft is dropped with a message.
+- **Clearer when saving is not possible:** the bar at the bottom says how many problems
+  prevent saving. The check before saving marks problems that are already in the saved
+  settings, and *Show* takes you to the block.
+
+### 📦 Changed
+
+- **Gas is no longer shown in the electricity tab** or on the electricity card. It looked
+  as if gas flowed into Home there, but it was never counted in the home consumption.
+
 ## [0.8.0] - 2026-11-07
 
 > **Highlight:** see at a glance what is wrong and what is missing – Home Assistant's own

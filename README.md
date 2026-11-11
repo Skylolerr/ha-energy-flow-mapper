@@ -85,7 +85,7 @@ solar, battery or water meter, and which meters are not used yet.
 
 - **Drag and drop** (or the ⋮ menu on phones) – include a device in another one, move it to
   the top level, rename or remove it.
-- **Sources** – drop a sensor onto grid import, grid export, solar, battery or water.
+- **Sources** – drop a sensor onto grid import, grid export, solar, battery, water or gas.
   Prices and compensations of an existing source stay as they are.
 - **Free sensors** – energy and water meters and external statistics (for example from
   your supplier's portal) that are not in the dashboard yet, added with one drag.
@@ -97,7 +97,8 @@ solar, battery or water meter, and which meters are not used yet.
   admin. Nothing changes by itself, and connections such as a Zigbee stick never count.
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. *Undo change*
-  takes back a step, and every save stores a backup first.
+  takes back a step, and every save stores a backup first. Leave the panel and come back:
+  your unsaved draft is still there.
 
 **Everywhere**
 
@@ -106,6 +107,9 @@ solar, battery or water meter, and which meters are not used yet.
   records; *Hide names* turns devices into *Device 1, 2, …* and leaves out areas and
   sensor names. The image is made in your browser and sent nowhere.
 - **Water tab** – water devices and meters, in litres and m³ (gallons with US units).
+- **Gas tab** – your gas meters with their use, in m³ (ft³ with US units) or kWh; assign,
+  replace and remove them. Home Assistant has no gas devices, so there is nothing to
+  arrange below them.
 - **Backups, export and import** – restore any earlier state or keep a copy elsewhere.
 - **English, German, French and Italian**, light and dark theme, phone layout.
 
@@ -187,6 +191,7 @@ the sensors live.
 | Assign a source | Drag a free sensor onto *+ Grid import*, *+ Solar*, … or tap the source |
 | Replace or remove a source | Tap the source block |
 | Edit water devices and meters | Open the *Water* tab; everything works as for electricity |
+| Assign, replace or remove a gas meter | Open the *Gas* tab; *Add* a free gas meter or tap the meter |
 | Get a meter for a power sensor | *Power only* → *Create meter* |
 | Get a water meter for a flow sensor | *Water* tab → *Flow only* → *Create meter* |
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
@@ -217,6 +222,12 @@ the sensors live.
   last full hour. New meters only have values from the time they were created.
 - If someone changes the energy settings elsewhere while you edit, saving is refused and
   the panel reloads; your draft is kept and checked again.
+- **Your draft survives leaving the panel:** the browser keeps it until you save or
+  discard it. If the energy settings were changed in the meantime, it cannot be applied
+  any more and is dropped with a message.
+- **When saving is not possible,** the bar at the bottom says how many problems prevent
+  it. The check before saving lists them, marks problems that are already in the saved
+  settings, and *Show* takes you to the block.
 </details>
 
 ## Screenshots
@@ -277,11 +288,14 @@ the sensors live.
 - A device can be included in **one** other device only (a Home Assistant rule).
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.
-- Gas sources are shown only; Home Assistant has no gas devices, so there is nothing
-  to arrange.
+- Home Assistant has no gas devices, so the *Gas* tab has gas meters only. Gas
+  meters that measure energy (kWh) instead of volume are not offered as free gas meters;
+  assign them in the energy settings of Home Assistant. The dashboard card does not show
+  gas.
 - "Create meter" needs a flow in litres, m³, ft³ or gallons per time unit; mL/s has no
   matching water unit.
-- An external statistic in m³ is offered as free water meter; it may also measure gas.
+- An external statistic in m³ is offered as free water meter and as free gas meter; you
+  decide what it measures.
 - Dragging works with a mouse and with a long press on phones; the ⋮ menu offers the
   same actions.
 </details>
