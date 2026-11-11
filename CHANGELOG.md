@@ -11,6 +11,12 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-11
+
+> **Highlight:** bring order to big trees – fold devices into groups, turn any group into a
+> real sum meter, and give gas its own tab. Your unsaved draft now survives leaving the
+> panel.
+
 ### ✨ Added
 
 - **Gas tab:** gas has its own tab with your gas meters. Assign, replace and remove them
@@ -51,6 +57,8 @@ and Home Assistant show when they offer the update.
 
 - **Gas is no longer shown in the electricity tab** or on the electricity card. It looked
   as if gas flowed into Home there, but it was never counted in the home consumption.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.1 · minimum 2026.10.0*
 
 ## [0.8.0] - 2026-11-07
 
