@@ -12,12 +12,14 @@ import {
   moveTargets,
   rateValue,
   sourceRows,
+  subtree,
   type TreeNode,
   untracked,
 } from "./draft";
 import { anonymize, diagramSvg, type ExportBlock, type ExportEdge, FOOTER_H, svgToPng } from "./export";
 import {
   applyAllChanges,
+  areaGroups,
   canGroup,
   displayTree,
   GROUP_PREFIX,
@@ -138,10 +140,22 @@ type Dialog =
   | { kind: "battery"; discharge: string }
   | { kind: "integral"; stat: string }
   | { kind: "export"; hideNames: boolean }
-  /** The actions of a group (filled in by the group actions). */
+  /** The actions of a group: rename, dissolve, sum meter. */
   | { kind: "group"; id: string }
+  /** A new name for a group. */
+  | { kind: "group_rename"; id: string }
+  /**
+   * A sum meter: from a group (its devices are fixed) or free from a device
+   * (`origin`, whose parent the meter takes); `added` are the chosen sensors.
+   */
+  | { kind: "sum"; group: string | null; origin: string | null; added: string[]; picking: boolean }
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" };
+
+type SumDialog = Extract<Dialog, { kind: "sum" }>;
+
+/** State classes of meters a sensor group can add up (as `create_sum_meter` checks). */
+const METER_STATE_CLASSES = ["total", "total_increasing"];
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
 const SOURCE_TARGET = "src:";
@@ -309,6 +323,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _suggestionMemo: { key: unknown[]; value: ChildPair[] } | null = null;
   /** The devices and groups of each list with the draft applied, per snapshot and draft. */
   private _draftMemo = new Map<DeviceKind, { key: unknown[]; value: { devices: Device[]; groups: Group[] } }>();
+  /** Changes made by one user action share a step; undo takes the step back as a whole. */
+  private _steps = new WeakMap<Change, object>();
   /** Turns the picture of the diagram into a PNG; replaced in tests. */
   _toPng: (svg: string, width: number, height: number) => Promise<Blob> = svgToPng;
   declare _collapsed: Set<string>;
@@ -726,18 +742,40 @@ export class EnergyFlowMapperPanel extends LitElement {
     return { type: "move", stat: pair.stat, parent: pair.parent, ...this._kind() };
   }
 
-  /** Apply every suggestion that still fits after the ones before it, checked once. */
+  /** Apply every suggestion that still fits after the ones before it, checked once, as one step. */
   _applyAllSuggestions(): void {
-    const before = this._changes.length;
+    const added: Change[] = [];
     for (const pair of this._suggestions()) {
       if (suggestionsFor(this.draft, [pair], this._ignored, this._deviceKind()).length) {
-        this._changes = [...this._changes, this._suggestionChange(pair)];
+        const change = this._suggestionChange(pair);
+        added.push(change);
+        this._changes = [...this._changes, change];
       }
     }
-    if (this._changes.length > before) {
+    if (added.length) {
+      this._bundle(added);
       void this._validate();
       void this._loadEnergy();
     }
+  }
+
+  /**
+   * Put the ungrouped children of each parent that share an area into one
+   * group per area, as one step; says so when there is nothing to suggest.
+   */
+  _suggestGroups(): void {
+    const changes = areaGroups(
+      this.draft,
+      this._groups,
+      this._snapshot?.stats ?? {},
+      (area) => area,
+      this._deviceKind(),
+    );
+    if (changes.length === 0) {
+      this._showToast(this._t("suggest_groups_none"));
+      return;
+    }
+    this._changeAll(changes);
   }
 
   /** Stop suggesting this, for every admin and device. */
@@ -805,11 +843,22 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._changeAll([change]);
   }
 
-  /** Add several changes to the draft, checked once. */
+  /** Add several changes to the draft as one step (one undo), checked once. */
   _changeAll(changes: Change[]): void {
+    this._bundle(changes);
     this._changes = [...this._changes, ...changes];
     void this._validate();
     void this._loadEnergy();
+  }
+
+  /** Mark changes made by one user action, so undo takes them back together. */
+  private _bundle(changes: Change[]): void {
+    if (changes.length > 1) {
+      const step = {};
+      for (const change of changes) {
+        this._steps.set(change, step);
+      }
+    }
   }
 
   /** Ask the backend to check the draft; outdated answers are ignored. */
@@ -843,12 +892,18 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Take back the last change of the draft. */
+  /** Take back the last step of the draft: one change, or the changes of one action. */
   _undoChange(): void {
-    if (this._changes.length === 0) {
+    const changes = this._changes;
+    if (changes.length === 0) {
       return;
     }
-    this._changes = this._changes.slice(0, -1);
+    const step = this._steps.get(changes[changes.length - 1]);
+    let count = 1;
+    while (step !== undefined && count < changes.length && this._steps.get(changes[changes.length - 1 - count]) === step) {
+      count++;
+    }
+    this._changes = changes.slice(0, changes.length - count);
     this._showToast(this._t("change_undone"));
     void this._validate();
     void this._loadEnergy();
@@ -1317,6 +1372,161 @@ export class EnergyFlowMapperPanel extends LitElement {
       });
       this._selected = result.entity_id;
       this._showToast(this._t("meter_created", { name }));
+    } catch (err) {
+      this._dialog = null;
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
+  }
+
+  // --- sum meter --------------------------------------------------------------
+
+  /**
+   * Open the sum meter dialog: from a group (its devices are fixed) or freely
+   * from a device, which is preselected. The name defaults to «<name> Energy».
+   */
+  _openSum(from: { group: string } | { origin: string }): void {
+    const base =
+      "group" in from ? (this._groups.find((g) => g.id === from.group)?.name ?? "") : this._name(from.origin, this.draft);
+    this._renameValue = `${base} ${this._t(this._tab === "water" ? "water_suffix" : "energy_suffix")}`;
+    this._dialog =
+      "group" in from
+        ? { kind: "sum", group: from.group, origin: null, added: [], picking: false }
+        : { kind: "sum", group: null, origin: from.origin, added: [from.origin], picking: false };
+  }
+
+  /** The sensors of a sum: every device of the group (fixed), then the added ones. */
+  private _sumMembers(dialog: SumDialog): { fixed: string[]; all: string[] } {
+    const fixed = dialog.group !== null ? groupDevices(this._groups, dialog.group) : [];
+    return { fixed, all: [...fixed, ...dialog.added.filter((stat) => !fixed.includes(stat))] };
+  }
+
+  /** The real parent of the new meter: the group's, or that of the device it was opened from. */
+  private _sumParent(dialog: SumDialog): string | null {
+    if (dialog.group !== null) {
+      return this._groups.find((g) => g.id === dialog.group)?.parent ?? null;
+    }
+    return this.draft.find((d) => d.stat_consumption === dialog.origin)?.included_in_stat ?? null;
+  }
+
+  /**
+   * Why a sensor group helper cannot add up `stat`, or null when it can: it
+   * needs a sensor entity with the tab's device class and a meter state class
+   * (as `create_sum_meter` checks).
+   */
+  private _sumReason(stat: string): string | null {
+    const info = this._info(stat);
+    const entity = info ? info.entity_id : stat.includes(":") ? null : stat;
+    if (entity === null) {
+      return this._t("sum_reason_external");
+    }
+    if (!entity.startsWith("sensor.")) {
+      return this._t("sum_reason_not_sensor");
+    }
+    const state = this.hass?.states[entity];
+    if (state === undefined) {
+      return this._t("sum_reason_unavailable");
+    }
+    const expected = this._tab === "water" ? "water" : "energy";
+    if ((state.attributes.device_class ?? info?.device_class) !== expected) {
+      return this._t("sum_reason_device_class", { device_class: expected });
+    }
+    if (!METER_STATE_CLASSES.includes(String(state.attributes.state_class))) {
+      return this._t("sum_reason_state_class");
+    }
+    return null;
+  }
+
+  /** The state classes of the sensors; a sum needs them all equal. */
+  private _sumStateClasses(stats: string[]): Set<string> {
+    return new Set(stats.map((stat) => String(this.hass?.states[stat]?.attributes.state_class)));
+  }
+
+  /** The rate sensors to add up as well: only when every sensor is a device with one. */
+  private _sumRates(stats: string[]): string[] {
+    const devices = this.draft;
+    const rates = stats.map((stat) => devices.find((d) => d.stat_consumption === stat)?.stat_rate);
+    return rates.every((rate): rate is string => typeof rate === "string" && rate !== "") ? rates : [];
+  }
+
+  /** «Kitchen Power» for the meter «Kitchen Energy» (water: «… Flow»). */
+  private _sumRateName(name: string): string {
+    const water = this._tab === "water";
+    const suffix = ` ${this._t(water ? "water_suffix" : "energy_suffix")}`;
+    const base = name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
+    return `${base} ${this._t(water ? "flow_suffix" : "power_suffix")}`;
+  }
+
+  /**
+   * What can be added to a sum: devices and source sensors of the tab. Not
+   * the new meter's parent or a device above it (a loop), and not a device
+   * above or below one already in the sum (counted twice).
+   */
+  private _sumOptions(dialog: SumDialog): string[] {
+    const devices = this.draft;
+    const { all } = this._sumMembers(dialog);
+    const parent = this._sumParent(dialog);
+    const inSum = all.filter((stat) => devices.some((d) => d.stat_consumption === stat));
+    const fits = (stat: string) => {
+      const below = subtree(devices, stat);
+      return (
+        !all.includes(stat) &&
+        (parent === null || !below.has(parent)) &&
+        inSum.every((member) => !below.has(member) && !subtree(devices, member).has(stat))
+      );
+    };
+    const options = devices.map((d) => d.stat_consumption).filter(fits);
+    for (const row of sourceRows(this.draftSources, this._tab)) {
+      if (row.role !== "home" && !all.includes(row.stat) && !options.includes(row.stat)) {
+        options.push(row.stat);
+      }
+    }
+    return options;
+  }
+
+  /**
+   * Create the sum helper(s) right away, then put the new meter into the
+   * draft as one step: at the parent, the group's nested groups and every
+   * device of the sum below it (sources stay sources). A group left empty
+   * disappears by itself. Undo takes back the draft; the helper stays.
+   */
+  async _createSum(dialog: SumDialog): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    const name = this._renameValue.trim();
+    const devices = this.draft;
+    const groups = this._groups;
+    const { all } = this._sumMembers(dialog);
+    const parent = this._sumParent(dialog);
+    // A group inside another group: the meter takes its place there.
+    const enclosing = dialog.group !== null ? (groups.find((g) => g.id === dialog.group)?.group ?? null) : null;
+    const nested = dialog.group !== null ? groups.filter((g) => g.group === dialog.group).map((g) => g.id) : [];
+    const following = new Set(nested.flatMap((id) => groupDevices(groups, id)));
+    const moves = all.filter((stat) => devices.some((d) => d.stat_consumption === stat) && !following.has(stat));
+    const rates = this._sumRates(all);
+    this._busy = true;
+    try {
+      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
+        type: `${DOMAIN}/create_sum_meter`,
+        kind: this._deviceKind(),
+        name,
+        entity_ids: all,
+        ...(rates.length ? { rate_entity_ids: rates, rate_name: this._sumRateName(name) } : {}),
+      });
+      this._dialog = null;
+      await this._load();
+      const stat = result.entity_id;
+      const kind = this._kind();
+      this._changeAll([
+        { type: "add", stat, parent, ...(result.stat_rate ? { stat_rate: result.stat_rate } : {}), ...kind },
+        ...(enclosing !== null ? [{ type: "set_group" as const, stat, group: enclosing, ...kind }] : []),
+        ...nested.map((id) => ({ type: "move_group" as const, id, parent: stat, ...kind })),
+        ...moves.map((member) => ({ type: "move" as const, stat: member, parent: stat, ...kind })),
+      ]);
+      this._selected = stat;
+      this._showToast(this._t("sum_created", { name }));
     } catch (err) {
       this._dialog = null;
       await this._handleError(err);
@@ -1889,7 +2099,8 @@ export class EnergyFlowMapperPanel extends LitElement {
                   @click=${() => this.setSelectMode(!this._selectMode)}
                 >
                   ${this._t("select_mode")}
-                </button>`
+                </button>
+                <button class="suggest-groups" @click=${() => this._suggestGroups()}>${this._t("suggest_groups")}</button>`
               : nothing}
             ${this._tab === "electricity" && (this._coverageRatio() !== null || this._energyLoading())
               ? html`<button
@@ -3023,6 +3234,86 @@ export class EnergyFlowMapperPanel extends LitElement {
     </ul>`;
   }
 
+  /**
+   * The sum meter dialog: name, the sensors in the sum (each with the reason
+   * it cannot be summed, if so), adding and removing sensors, and Create.
+   */
+  private _renderSum(dialog: SumDialog): TemplateResult {
+    const { fixed, all } = this._sumMembers(dialog);
+    const reasons = new Map(all.map((stat) => [stat, this._sumReason(stat)]));
+    const blocked = [...reasons.values()].some((reason) => reason !== null);
+    const mixed = !blocked && this._sumStateClasses(all).size > 1;
+    const name = this._renameValue.trim();
+    const rates = this._sumRates(all);
+    const water = this._tab === "water";
+    const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
+    const options = dialog.picking ? this._sumOptions(dialog) : [];
+    return html`<h2>${this._t("sum_create")}</h2>
+      <label
+        >${this._t("name_label")}
+        <input
+          type="text"
+          .value=${this._renameValue}
+          @input=${(e: Event) => (this._renameValue = (e.target as HTMLInputElement).value)}
+        />
+      </label>
+      <h3>${this._t("sum_members")}</h3>
+      ${dialog.group !== null ? html`<p class="hint">${this._t("sum_fixed_hint")}</p>` : nothing}
+      <ul class="sum-members">
+        ${all.map((stat) => {
+          const reason = reasons.get(stat) ?? null;
+          const label = this._name(stat);
+          return html`<li class="sum-member" data-stat=${stat}>
+            <div class="candidate-text">
+              <span class="node-name">${label}</span>
+              ${reason ? html`<span class="sub warning">${reason}</span>` : nothing}
+            </div>
+            ${fixed.includes(stat)
+              ? nothing
+              : html`<button
+                  class="icon remove"
+                  aria-label=${this._t("sum_remove", { name: label })}
+                  title=${this._t("sum_remove", { name: label })}
+                  @click=${() => update(dialog.added.filter((s) => s !== stat), dialog.picking)}
+                >
+                  ✕
+                </button>`}
+          </li>`;
+        })}
+      </ul>
+      ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
+      ${mixed ? html`<p class="warning">${this._t("error_sum_state_classes_differ")}</p>` : nothing}
+      ${dialog.picking
+        ? options.length
+          ? html`<ul class="targets">
+              ${options.map(
+                (stat) => html`<li>
+                  <button class="target" data-target=${stat} @click=${() => update([...dialog.added, stat], false)}>
+                    ${this._name(stat)}
+                  </button>
+                </li>`,
+              )}
+            </ul>`
+          : html`<p class="empty">${this._t("sum_no_sensors")}</p>`
+        : html`<button class="sum-add" @click=${() => update(dialog.added, true)}>${this._t("sum_add")}</button>`}
+      <p class="hint">${this._t("sum_text", { helper: name })}</p>
+      ${rates.length
+        ? html`<p class="hint">
+            ${this._t(water ? "sum_rate_hint_water" : "sum_rate_hint", { helper: this._sumRateName(name) })}
+          </p>`
+        : nothing}
+      <div class="dialog-actions">
+        <button @click=${() => this._close()}>${this._t("cancel")}</button>
+        <button
+          class="primary"
+          ?disabled=${!name || all.length === 0 || blocked || mixed || this._busy}
+          @click=${() => this._createSum(dialog)}
+        >
+          ${this._busy ? this._t("creating") : this._t("sum_create_button")}
+        </button>
+      </div>`;
+  }
+
   private _renderDialogContent(dialog: Dialog): TemplateResult {
     const devices = this.draft;
     switch (dialog.kind) {
@@ -3041,6 +3332,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             >
               ${this._t("rename")}
             </button>
+            <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
             ${this._canUseHomeMeter(dialog.stat)
               ? html`<button
                   @click=${() => {
@@ -3361,16 +3653,65 @@ export class EnergyFlowMapperPanel extends LitElement {
             </button>
           </div>`;
       case "group": {
-        // Rename, dissolve and the sum meter come with the group actions.
         const group = this._groups.find((g) => g.id === dialog.id);
         return html`${group
             ? html`<h2>${group.name}</h2>
                 <p class="hint">${this._devicesText(group.id)}</p>`
             : nothing}
-          <div class="dialog-actions">
+          <div class="dialog-actions column-actions">
+            ${group
+              ? html`<button
+                    @click=${() => {
+                      this._renameValue = group.name;
+                      this._dialog = { kind: "group_rename", id: group.id };
+                    }}
+                  >
+                    ${this._t("rename")}
+                  </button>
+                  <button
+                    @click=${() => {
+                      this._close();
+                      this._change({ type: "dissolve_group", id: group.id, ...this._kind() });
+                    }}
+                  >
+                    ${this._t("group_dissolve")}
+                  </button>
+                  <button @click=${() => this._openSum({ group: group.id })}>${this._t("sum_create")}</button>`
+              : nothing}
             <button @click=${() => this._close()}>${this._t("close")}</button>
           </div>`;
       }
+      case "group_rename": {
+        const group = this._groups.find((g) => g.id === dialog.id);
+        const name = this._renameValue.trim();
+        const taken =
+          name !== "" && this._groups.some((g) => g.id !== dialog.id && g.parent === group?.parent && g.name === name);
+        return html`<h2>${this._t("rename_title", { name: group?.name ?? "" })}</h2>
+          <label
+            >${this._t("name_label")}
+            <input
+              type="text"
+              .value=${this._renameValue}
+              @input=${(e: Event) => (this._renameValue = (e.target as HTMLInputElement).value)}
+            />
+          </label>
+          ${taken ? html`<p class="warning">${this._t("error_group_name_taken", { stat: name })}</p>` : nothing}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button
+              class="primary"
+              ?disabled=${!group || !name || taken || name === group.name}
+              @click=${() => {
+                this._close();
+                this._change({ type: "rename_group", id: dialog.id, name, ...this._kind() });
+              }}
+            >
+              ${this._t("ok")}
+            </button>
+          </div>`;
+      }
+      case "sum":
+        return this._renderSum(dialog);
       case "group_name": {
         const name = this._renameValue.trim();
         const parent = this._selectionParent();
@@ -3696,7 +4037,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       font: inherit;
     }
     .candidates li,
-    .backups li {
+    .backups li,
+    .sum-members li {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -4099,6 +4441,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     .column-actions {
       flex-direction: column;
       align-items: stretch;
+    }
+    .sum-add {
+      margin-top: 8px;
+    }
+    /* The reason a sensor cannot be summed may be long: it wraps. */
+    .sum-member .candidate-text .sub {
+      white-space: normal;
     }
     .targets {
       max-height: 50vh;

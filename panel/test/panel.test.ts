@@ -2824,4 +2824,411 @@ describe("groups", () => {
       vi.restoreAllMocks();
     }
   });
+
+  it("takes back a drag that moves a device into a group of another parent as one step", async () => {
+    const el = await mount(groupMock());
+    el._change({ type: "rename", stat: "sensor.nas", name: "Disk" });
+    drag(node(el, "sensor.tv"), group(el, "g1"));
+    await settle(el);
+    expect(el._changes).toHaveLength(3);
+    el._undoChange();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "rename", stat: "sensor.nas", name: "Disk" }]);
+    el._undoChange();
+    expect(el._changes).toEqual([]);
+  });
+
+  it("drops a group onto a group of the same parent: set_group", async () => {
+    const el = await mount(groupMock());
+    el._change({ type: "create_group", id: "g2", name: "Rack", parent: "sensor.server", members: ["sensor.nas"], groups: [] });
+    await settle(el);
+    drag(group(el, "g1"), group(el, "g2"));
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "set_group", group_id: "g1", group: "g2" });
+    expect(el._groups.find((g) => g.id === "g1")?.group).toBe("g2");
+  });
+
+  it("refuses a group dropped into its own nested group", async () => {
+    const el = await mount(groupMock());
+    el._change({ type: "create_group", id: "g2", name: "Rack", parent: "sensor.server", members: ["sensor.nas"], groups: ["g1"] });
+    await settle(el);
+    drag(group(el, "g2"), group(el, "g1"));
+    await settle(el);
+    expect(el._changes).toHaveLength(1);
+  });
+
+  it("refuses a move_group when a group of that name exists at the target", async () => {
+    const el = await mount(groupMock());
+    el._change({ type: "create_group", id: "g2", name: "Media", parent: null, members: ["sensor.tv"], groups: [] });
+    await settle(el);
+    drag(group(el, "g1"), root(el).querySelector<HTMLElement>(".block.home")!);
+    await settle(el);
+    expect(el._changes).toHaveLength(1);
+    // Onto a device without such a group it moves.
+    drag(group(el, "g1"), node(el, "sensor.tv"));
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "move_group", id: "g1", parent: "sensor.tv" });
+  });
+
+  // --- group actions, area suggestions, sum meter -----------------------------
+
+  /** An energy meter as Home Assistant reports it. */
+  function meter(entity_id: string, stateClass = "total_increasing", deviceClass = "energy"): HassEntity {
+    return {
+      entity_id,
+      state: "12.5",
+      attributes: { unit_of_measurement: "kWh", device_class: deviceClass, state_class: stateClass },
+    };
+  }
+
+  function dialogEl(el: EnergyFlowMapperPanel): HTMLDialogElement {
+    return root(el).querySelector("dialog")!;
+  }
+
+  function dialogButton(el: EnergyFlowMapperPanel, label: string): HTMLButtonElement {
+    const button = [...dialogEl(el).querySelectorAll("button")].find((b) => b.textContent!.includes(label));
+    if (!button) {
+      throw new Error(`No dialog button "${label}"`);
+    }
+    return button;
+  }
+
+  async function typeName(el: EnergyFlowMapperPanel, value: string): Promise<void> {
+    const input = dialogEl(el).querySelector<HTMLInputElement>('input[type="text"]')!;
+    input.value = value;
+    input.dispatchEvent(new Event("input"));
+    await settle(el);
+  }
+
+  function members(el: EnergyFlowMapperPanel): string[] {
+    return [...dialogEl(el).querySelectorAll<HTMLElement>(".sum-member")].map((m) => m.dataset.stat!);
+  }
+
+  it("renames and dissolves a group", async () => {
+    const el = await mount(groupMock());
+    group(el, "g1").click();
+    await settle(el);
+    expect(dialogEl(el).querySelector("h2")!.textContent).toContain("Media");
+    expect(dialogEl(el).textContent).toContain("Dissolve group");
+    expect(dialogEl(el).textContent).toContain("Create sum meter");
+    dialogButton(el, "Rename").click();
+    await settle(el);
+    expect(dialogEl(el).querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("Media");
+    await typeName(el, " ");
+    expect(dialogButton(el, "OK").disabled).toBe(true);
+    await typeName(el, " Audio ");
+    dialogButton(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "rename_group", id: "g1", name: "Audio" }]);
+    expect(group(el, "g1").textContent).toContain("Audio");
+    // Dissolving: the amp shows again, the group is gone.
+    group(el, "g1").click();
+    await settle(el);
+    dialogButton(el, "Dissolve group").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "dissolve_group", id: "g1" });
+    expect(group(el, "g1")).toBeNull();
+    expect(node(el, "sensor.sonos")).not.toBeNull();
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+  });
+
+  it("refuses a group name taken by another group of the parent", async () => {
+    const el = await mount(groupMock());
+    el._change({ type: "create_group", id: "g2", name: "Rack", parent: "sensor.server", members: ["sensor.nas"], groups: [] });
+    el._dialog = { kind: "group", id: "g1" };
+    await settle(el);
+    dialogButton(el, "Rename").click();
+    await settle(el);
+    await typeName(el, "Rack");
+    expect(dialogButton(el, "OK").disabled).toBe(true);
+    expect(dialogEl(el).textContent).toContain("There is already a group called Rack here");
+  });
+
+  it("creates a sum meter from a group: add, move_group and moves, group gone", async () => {
+    const mock = groupMock();
+    const snap = groupSnapshot();
+    // The NAS sits in the group "Shelf" inside "Media".
+    snap.groups!.electricity!.push({ id: "g2", name: "Shelf", parent: "sensor.server", group: "g1", members: ["sensor.nas"] });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.sonos"] = meter("sensor.sonos");
+    mock.hass.states["sensor.nas"] = meter("sensor.nas");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = {
+      entity_id: "sensor.media_energy",
+      stat_rate: "sensor.media_power",
+    };
+    const el = await mount(mock);
+    group(el, "g1").click();
+    await settle(el);
+    dialogButton(el, "Create sum meter").click();
+    await settle(el);
+    expect(dialogEl(el).querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("Media Energy");
+    expect(members(el)).toEqual(["sensor.sonos", "sensor.nas"]);
+    // The group's devices are fixed.
+    expect(dialogEl(el).querySelector(".sum-member button.remove")).toBeNull();
+    expect(dialogEl(el).textContent).toContain("stays");
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toEqual({
+      type: "energy_flow_mapper/create_sum_meter",
+      kind: "electricity",
+      name: "Media Energy",
+      entity_ids: ["sensor.sonos", "sensor.nas"],
+      rate_entity_ids: ["sensor.sonos_power", "sensor.nas_power"],
+      rate_name: "Media Power",
+    });
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.media_energy", parent: "sensor.server", stat_rate: "sensor.media_power" },
+      { type: "move_group", id: "g2", parent: "sensor.media_energy" },
+      { type: "move", stat: "sensor.sonos", parent: "sensor.media_energy" },
+    ]);
+    // Media is gone; Shelf now hangs from the new meter, with the NAS.
+    expect(el._groups.map((g) => [g.id, g.parent, g.group])).toEqual([["g2", "sensor.media_energy", null]]);
+    const parents = Object.fromEntries(el.draft.map((d) => [d.stat_consumption, d.included_in_stat ?? null]));
+    expect(parents).toMatchObject({
+      "sensor.media_energy": "sensor.server",
+      "sensor.sonos": "sensor.media_energy",
+      "sensor.nas": "sensor.media_energy",
+    });
+    expect(el._selected).toBe("sensor.media_energy");
+    expect(text(el)).toContain("Sum meter “Media Energy” created");
+    // One undo takes back the whole draft sequence; the helper stays.
+    el._undoChange();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+  });
+
+  it("creates a free sum meter from a device with a solar source added", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.solar" });
+    snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.tv"] = meter("sensor.tv");
+    mock.hass.states["sensor.solar"] = meter("sensor.solar");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.tv_sum", stat_rate: null };
+    const el = await mount(mock);
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    dialogButton(el, "Create sum meter").click();
+    await settle(el);
+    expect(dialogEl(el).querySelector<HTMLInputElement>('input[type="text"]')!.value).toBe("TV Energy");
+    expect(members(el)).toEqual(["sensor.tv"]);
+    dialogButton(el, "Add sensor").click();
+    await settle(el);
+    // Devices and sources of the tab; not the TV itself.
+    const offered = [...dialogEl(el).querySelectorAll<HTMLElement>("button.target")].map((b) => b.dataset.target);
+    expect(offered).toContain("sensor.solar");
+    expect(offered).toContain("sensor.server");
+    expect(offered).not.toContain("sensor.tv");
+    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.solar"]')!.click();
+    await settle(el);
+    expect(members(el)).toEqual(["sensor.tv", "sensor.solar"]);
+    // Freely chosen sensors can be removed again.
+    expect(dialogEl(el).querySelectorAll(".sum-member button.remove")).toHaveLength(2);
+    await typeName(el, "Sub panel");
+    dialogButton(el, "Create").click();
+    await settle(el);
+    // The TV has no power sensor, so there is no rate sum.
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toEqual({
+      type: "energy_flow_mapper/create_sum_meter",
+      kind: "electricity",
+      name: "Sub panel",
+      entity_ids: ["sensor.tv", "sensor.solar"],
+    });
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.tv_sum", parent: null },
+      { type: "move", stat: "sensor.tv", parent: "sensor.tv_sum" },
+    ]);
+    // The solar sensor stays a source.
+    expect(el.draftSources.some((s) => s.type === "solar" && s.stat_energy_from === "sensor.solar")).toBe(true);
+    expect(el.draft.some((d) => d.stat_consumption === "sensor.solar")).toBe(false);
+  });
+
+  it("puts a sum meter of a nested group in the group's place", async () => {
+    const mock = groupMock();
+    const snap = groupSnapshot();
+    snap.groups!.electricity!.push({ id: "g2", name: "Shelf", parent: "sensor.server", group: "g1", members: ["sensor.nas"] });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.nas"] = meter("sensor.nas");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.shelf_energy", stat_rate: null };
+    const el = await mount(mock);
+    el._openSum({ group: "g2" });
+    await settle(el);
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.shelf_energy", parent: "sensor.server" },
+      { type: "set_group", stat: "sensor.shelf_energy", group: "g1" },
+      { type: "move", stat: "sensor.nas", parent: "sensor.shelf_energy" },
+    ]);
+    expect(el._groups.map((g) => [g.id, g.members])).toEqual([["g1", ["sensor.sonos", "sensor.shelf_energy"]]]);
+  });
+
+  it("creates a water sum meter with a flow sum", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption_water = [{ stat_consumption: "sensor.tap", stat_rate: "sensor.tap_flow" }];
+    snap.stats["sensor.tap"] = info("sensor.tap", "Garden tap", { unit: "L", device_class: "water" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.tap"] = meter("sensor.tap", "total_increasing", "water");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.garden", stat_rate: "sensor.garden_flow" };
+    const el = await mount(mock);
+    el.setTab("water");
+    el._dialog = { kind: "actions", stat: "sensor.tap" };
+    await settle(el);
+    dialogButton(el, "Create sum meter").click();
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("“Garden tap Flow” adds up their flow");
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toMatchObject({
+      kind: "water",
+      name: "Garden tap Water",
+      entity_ids: ["sensor.tap"],
+      rate_entity_ids: ["sensor.tap_flow"],
+      rate_name: "Garden tap Flow",
+    });
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.garden", parent: null, stat_rate: "sensor.garden_flow", kind: "water" },
+      { type: "move", stat: "sensor.tap", parent: "sensor.garden", kind: "water" },
+    ]);
+    // An energy meter is not a water meter.
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tap", added: ["sensor.tap", "sensor.tv"], picking: false };
+    mock.hass.states["sensor.tv"] = meter("sensor.tv");
+    await settle(el);
+    expect(dialogEl(el).querySelector('.sum-member[data-stat="sensor.tv"]')!.textContent).toContain(
+      "Device class is not water",
+    );
+  });
+
+  it("does not offer the meter's parent or devices above or below the sum", async () => {
+    const el = await mount(mockHass());
+    const offered = () => [...dialogEl(el).querySelectorAll<HTMLElement>("button.target")].map((b) => b.dataset.target);
+    // From the amp: the server is the new meter's parent.
+    el._dialog = { kind: "sum", group: null, origin: "sensor.sonos", added: ["sensor.sonos"], picking: true };
+    await settle(el);
+    expect(offered()).toEqual(["sensor.tv", "sensor.import", "sensor.export"]);
+    // With the server in the sum, its amp is not offered.
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv", "sensor.server"], picking: true };
+    await settle(el);
+    expect(offered()).toEqual(["sensor.import", "sensor.export"]);
+    // Nothing left to add.
+    el._dialog = {
+      kind: "sum",
+      group: null,
+      origin: "sensor.tv",
+      added: ["sensor.tv", "sensor.server", "sensor.import", "sensor.export"],
+      picking: true,
+    };
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("No other sensor can be added.");
+    // Removing every sensor leaves nothing to create.
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: [], picking: false };
+    await settle(el);
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+  });
+
+  it("refuses a sum with an external statistic", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption.push({ stat_consumption: "portal:sub" });
+    snap.stats["portal:sub"] = info("portal:sub", "Portal sub meter", { entity_id: null });
+    snap.prefs.device_consumption.push({ stat_consumption: "sensor.boiler" });
+    snap.stats["sensor.boiler"] = info("sensor.boiler", "Boiler");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.tv"] = meter("sensor.tv");
+    mock.hass.states["sensor.boiler"] = meter("sensor.boiler", "measurement");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = {
+      translation_key: "sum_not_possible",
+      translation_placeholders: { entity: "sensor.tv" },
+    };
+    const el = await mount(mock);
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv", "portal:sub"], picking: false };
+    el._renameValue = "Sum";
+    await settle(el);
+    const external = dialogEl(el).querySelector('.sum-member[data-stat="portal:sub"]')!;
+    expect(external.textContent).toContain("External statistic");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    expect(dialogEl(el).textContent).toContain("cannot be summed");
+    // Removed, it can be created; a sensor without a meter state class cannot.
+    external.querySelector<HTMLButtonElement>("button.remove")!.click();
+    await settle(el);
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv", "sensor.boiler"], picking: false };
+    await settle(el);
+    expect(dialogEl(el).querySelector('.sum-member[data-stat="sensor.boiler"]')!.textContent).toContain(
+      "State class is not total or total increasing",
+    );
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // Different meter state classes cannot be summed either.
+    mock.hass.states["sensor.boiler"] = meter("sensor.boiler", "total");
+    el.requestUpdate();
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("do not all have the same state class");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // The backend's refusal is shown as other errors are.
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv"], picking: false };
+    await settle(el);
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(root(el).querySelector(".toast")!.textContent).toContain("sensor.tv cannot be summed");
+    expect(el._changes).toEqual([]);
+  });
+
+  it("suggests groups from areas as one undo step", async () => {
+    const mock = mockHass("de");
+    const snap = snapshot();
+    snap.prefs.device_consumption.push(
+      { stat_consumption: "sensor.nas", included_in_stat: "sensor.server" },
+      { stat_consumption: "sensor.lamp" },
+    );
+    snap.stats["sensor.nas"] = info("sensor.nas", "NAS", { area_name: "Rack" });
+    snap.stats["sensor.sonos"] = info("sensor.sonos", "Sonos amp", { area_name: "Rack" });
+    snap.stats["sensor.tv"] = info("sensor.tv", "TV backlight", { area_name: "Wohnzimmer" });
+    snap.stats["sensor.lamp"] = info("sensor.lamp", "Lamp", { area_name: "Wohnzimmer" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el._change({ type: "rename", stat: "sensor.tv", name: "Fernseher" });
+    await settle(el);
+    const before = mock.calls.filter((c) => c.type === "energy_flow_mapper/validate").length;
+    buttonWith(el, "Gruppen aus Bereichen vorschlagen").click();
+    await settle(el);
+    expect(el._changes.slice(1)).toEqual([
+      expect.objectContaining({ type: "create_group", name: "Wohnzimmer", parent: null, members: ["sensor.tv", "sensor.lamp"] }),
+      expect.objectContaining({ type: "create_group", name: "Rack", parent: "sensor.server", members: ["sensor.sonos", "sensor.nas"] }),
+    ]);
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/validate")).toHaveLength(before + 1);
+    expect(el._groups.map((g) => g.name).sort()).toEqual(["Rack", "Wohnzimmer"]);
+    el._undoChange();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "rename", stat: "sensor.tv", name: "Fernseher" }]);
+  });
+
+  it("says when there is nothing to suggest", async () => {
+    const el = await mount(mockHass());
+    buttonWith(el, "Suggest groups from areas").click();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    expect(root(el).querySelector(".toast")!.textContent).toContain("No groups to suggest");
+    // Gas has no devices, so nothing to group there.
+    el.setTab("gas");
+    await settle(el);
+    expect(() => buttonWith(el, "Suggest groups from areas")).toThrow();
+  });
+
+  it("takes back all applied suggestions as one step", async () => {
+    const mock = groupMock();
+    const snap = groupSnapshot();
+    snap.child_pairs = [
+      { kind: "electricity", stat: "sensor.tv", parent: "sensor.server" },
+      { kind: "electricity", stat: "sensor.nas", parent: "sensor.tv" },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    buttonWith(el, "Apply all suggestions").click();
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+    el._undoChange();
+    expect(el._changes).toEqual([]);
+  });
 });
