@@ -12,6 +12,7 @@ from homeassistant.helpers import issue_registry as ir
 from custom_components.energy_flow_mapper import energy_access
 from custom_components.energy_flow_mapper.const import (
     DOMAIN,
+    GROUPS_STORAGE_KEY,
     HELPERS_STORAGE_KEY,
     ISSUE_UNSUPPORTED_ENERGY_API,
     STORAGE_KEY,
@@ -37,7 +38,22 @@ async def test_setup_unload_and_remove(
         {"kind": "electricity", "stat": "a", "parent": "b"},
         {("electricity", "a"), ("electricity", "b")},
     )
+    await loaded_entry.runtime_data.groups.async_save(
+        {
+            "electricity": [
+                {
+                    "id": "g",
+                    "name": "K",
+                    "parent": None,
+                    "group": None,
+                    "members": ["a"],
+                }
+            ],
+            "water": [],
+        }
+    )
     assert STORAGE_KEY in hass_storage
+    assert GROUPS_STORAGE_KEY in hass_storage
     assert HELPERS_STORAGE_KEY in hass_storage
     assert SUGGESTIONS_STORAGE_KEY in hass_storage
 
@@ -49,6 +65,7 @@ async def test_setup_unload_and_remove(
     assert STORAGE_KEY not in hass_storage
     assert HELPERS_STORAGE_KEY not in hass_storage
     assert SUGGESTIONS_STORAGE_KEY not in hass_storage
+    assert GROUPS_STORAGE_KEY not in hass_storage
     assert "energy" in hass_storage
 
 

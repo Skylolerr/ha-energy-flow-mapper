@@ -15,6 +15,34 @@ from .common import MockConfigEntry
 async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -> None:
     """Diagnostics contain counts only, no entity IDs."""
     await loaded_entry.runtime_data.backups.async_add({}, None, None, {})
+    await loaded_entry.runtime_data.groups.async_save(
+        {
+            "electricity": [
+                {
+                    "id": "g1",
+                    "name": "Kitchen",
+                    "parent": None,
+                    "group": None,
+                    "members": ["sensor.a"],
+                },
+                {
+                    "id": "g2",
+                    "name": "Fridge",
+                    "parent": None,
+                    "group": "g1",
+                    "members": ["sensor.b"],
+                },
+                {
+                    "id": "loop",
+                    "name": "Loop",
+                    "parent": None,
+                    "group": "loop",
+                    "members": [],
+                },
+            ],
+            "water": [],
+        }
+    )
     await energy_access.async_write(
         hass,
         {
@@ -36,6 +64,10 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
         "backup_limit": 20,
         "created_helpers": 0,
         "ignored_suggestions": 0,
+        "groups": {
+            "electricity": {"count": 3, "max_depth": 2},
+            "water": {"count": 0, "max_depth": 0},
+        },
         "sources": {"grid": 1, "solar": 1, "battery": 1},
         "devices": 3,
         "water_devices": 2,
@@ -44,6 +76,7 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
         "issues": {"missing_parent": 1},
     }
     assert "sensor." not in str(result)
+    assert "Kitchen" not in str(result)
 
 
 async def test_diagnostics_unsupported(
@@ -58,4 +91,8 @@ async def test_diagnostics_unsupported(
         "backup_limit": 20,
         "created_helpers": 0,
         "ignored_suggestions": 0,
+        "groups": {
+            "electricity": {"count": 0, "max_depth": 0},
+            "water": {"count": 0, "max_depth": 0},
+        },
     }
