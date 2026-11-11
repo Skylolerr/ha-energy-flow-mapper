@@ -756,10 +756,13 @@ export class EnergyFlowMapperCardView extends LitElement {
       outline: 2px solid var(--primary-color);
       outline-offset: 2px;
     }
+    /* The card scales the diagram down: a large arrow stays easy to see and tap. */
     .toggle {
       flex: none;
-      width: 16px;
-      color: var(--secondary-text-color);
+      font-size: 20px;
+      line-height: 1;
+      padding: 0 2px;
+      color: var(--primary-text-color);
     }
     .frame {
       position: absolute;

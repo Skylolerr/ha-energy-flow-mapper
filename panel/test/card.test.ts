@@ -321,6 +321,18 @@ describe("card", () => {
     expect(text(none)).toContain("This group no longer exists.");
   });
 
+  it("shows a clearly visible arrow on a group", async () => {
+    const el = await view({}, mockHass(() => data({ groups: GROUPS })));
+    const toggle = el.shadowRoot!.querySelector<HTMLElement>('.block.group[data-group="g1"] .toggle')!;
+    expect(toggle.textContent).toBe("▸");
+    // The card scales the diagram down, so the arrow is larger than the text and
+    // in the main text colour, like the panel's.
+    const styles = String((el.constructor as unknown as { styles: { cssText: string } }).styles.cssText);
+    const rule = /\.toggle\s*\{([^}]*)\}/.exec(styles)![1];
+    expect(rule).toMatch(/font-size:\s*20px/);
+    expect(rule).toMatch(/color:\s*var\(--primary-text-color\)/);
+  });
+
   it("hides sources, untracked blocks and the title on request", async () => {
     const el = await view({ show_sources: false, show_untracked: false, title: "", period: "now" });
     expect(el.shadowRoot!.querySelector(".block.source")).toBeNull();
