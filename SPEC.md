@@ -108,6 +108,9 @@ ha-energy-flow-mapper/
 │   ├── hierarchy.py           # Reine Funktionen: Baum bauen, Prüfungen, Änderungen anwenden, Diff, Plausibilität – ohne HA-Imports
 │   ├── candidates.py          # Freie Sensoren und Statistiken ermitteln
 │   ├── integral.py            # Integral-Helfer für Leistungssensoren anlegen
+│   ├── groups.py              # Reine Funktionen für Gruppen (ab v0.9.0): aufräumen, Änderungen anwenden, Diff, Hash – ohne HA-Imports
+│   ├── group_store.py         # Store der Gruppen (`.storage/energy_flow_mapper.groups`) mit Migration
+│   ├── sum_meter.py           # Summen-Helfer (HA-Integration `group`) für Summen-Zähler anlegen
 │   ├── energy_stats.py        # Energie pro Zeitraum aus der Recorder-Statistik
 │   ├── created_helpers.py     # Store: welche Helfer das Panel angelegt hat
 │   ├── energy_access.py       # Einzige Stelle, die die HA-Energie-Konfiguration liest/schreibt
@@ -122,7 +125,7 @@ ha-energy-flow-mapper/
 │   ├── brand/…
 │   └── frontend/              # Gebaute Bundles (werden committet): Panel,
 │                              #   Startskript der Karte (-card.js), Karte (-card-view.js)
-├── panel/                     # Quellcode von Panel und Karte (TypeScript, Lit, Rollup)
+├── panel/                     # Quellcode von Panel und Karte (TypeScript, Lit, Rollup); Gruppen-Logik in `panel/src/groups.ts`
 ├── tests/
 ├── scripts/{deploy.sh, release.sh}
 ├── .github/workflows/{validate.yml, tests.yml, release.yml}
@@ -338,23 +341,23 @@ Reine Funktionen ohne HA-Imports, Input sind die Listen aus §3.
 - Einzige Stelle mit Abhängigkeit zu den Interna der `energy`-Integration. Nutzt `homeassistant.components.energy.data.async_get_manager(hass)`, das Attribut `manager.data` und `manager.async_update(update)`.
 - Gelesen wird immer frisch, nie aus einem eigenen Cache. `manager.data` ist `None`, solange das Energie-Dashboard nie eingerichtet wurde; das gilt als leere Konfiguration.
 - Geschrieben werden nur die Schlüssel, die sich geändert haben. Jeder wird als **vollständige Liste** übergeben, aufgebaut aus einer tiefen Kopie der aktuellen Daten.
-- **Konfliktschutz:** Das Panel bekommt beim Laden einen Hash der aktuellen Konfiguration. Beim Speichern schickt es diesen Hash mit. Stimmt er nicht mehr (jemand hat inzwischen in den HA-Einstellungen etwas geändert), wird nicht gespeichert und das Panel lädt neu.
+- **Konfliktschutz:** Das Panel bekommt beim Laden einen Hash der aktuellen Konfiguration. Beim Speichern schickt es diesen Hash mit. Stimmt er nicht mehr (jemand hat inzwischen in den HA-Einstellungen etwas geändert), wird nicht gespeichert und das Panel lädt neu. Ab v0.9.0 deckt der Hash auch die Gruppen ab (§12).
 - Fehlt die erwartete Schnittstelle (andere HA-Version), meldet die Integration einen Repair-Issue und das Panel zeigt «Diese HA-Version wird nicht unterstützt» statt falsch zu speichern.
 
 ---
 
 ## 11. Sicherungen (`backups.py`)
 
-- Store `.storage/energy_flow_mapper.backups`, `STORAGE_VERSION = 1`.
+- Store `.storage/energy_flow_mapper.backups`, `STORAGE_VERSION = 1`; ab v0.9.0 mit Minor-Version 2 (Gruppen, siehe unten).
 - Vor jedem Speichern wird der alte Inhalt der geänderten Schlüssel gesichert, mit Zeitstempel, HA-Benutzer und kurzer Zusammenfassung (z. B. «3 verschoben, 1 hinzugefügt»).
 - Es bleiben die letzten 20 Sicherungen (Option `max_backups`, 5–100, Optionen der Integration mit Neuladen des Eintrags). Ältere werden beim Anlegen einer neuen gelöscht; wird die Zahl verkleinert, gleich beim Laden.
 - «Rückgängig» im Panel stellt die letzte Sicherung wieder her. Die Liste «Sicherungen» erlaubt jede ältere. Auch das Wiederherstellen und der Import legen vorher eine Sicherung an.
 - **Kein frei wählbarer Speicherort** (entschieden 2026-10-24): `.storage` wird von HA sicher geschrieben und ist Teil jedes HA-Backups; ein externer Pfad brächte Ausfälle (nicht eingebundenes NAS), Sicherheitsfragen und fehlende Wiederherstellung mit sich. Wer eine Kopie woanders will, exportiert sie.
-- **Export/Import (`transfer.py`):** Datei-Format `{"format": "energy_flow_mapper", "version": 1, "exported", "source": "current" | "backup", "backup"?, "data": {energy_sources?, device_consumption?, device_consumption_water?}}`. Beim Import zählt nur `data`; andere Listen werden abgelehnt. Dateien aus v0.2.0 haben keine Wasser-Geräte und lassen diese unverändert. Erst HAs eigene Schemas, dann die Hierarchie-Prüfung, dann Bestätigung im Panel. Sicherung mit Zusammenfassung `{"imported": 1}`.
+- **Export/Import (`transfer.py`):** Datei-Format `{"format": "energy_flow_mapper", "version": 2 (ab v0.9.0, Version 1 wird weiter akzeptiert), "exported", "source": "current" | "backup", "backup"?, "data": {energy_sources?, device_consumption?, device_consumption_water?}}`. Beim Import zählt nur `data`; andere Listen werden abgelehnt. Dateien aus v0.2.0 haben keine Wasser-Geräte und lassen diese unverändert. Erst HAs eigene Schemas, dann die Hierarchie-Prüfung, dann Bestätigung im Panel. Sicherung mit Zusammenfassung `{"imported": 1}`.
 - **Gruppen** (ab v0.9.0): eigener Store `.storage/energy_flow_mapper.groups`, `GROUPS_STORAGE_VERSION = 1` mit Migrations-Hook, Inhalt `{"groups": {"electricity": [...], "water": [...]}}`; jede Gruppe `{"id", "name", "parent" (echtes Elternteil, `null` = Zuhause), "group" (umgebende Gruppe oder `null`), "members" (Geräte direkt darin)}`. Ein beschädigter Store lädt ohne Fehler und behält das Gültige. Beim Entfernen der Integration wird er gelöscht (wie die Helfer-Liste).
   - **Speichern:** Reihenfolge prüfen → Sicherung (mit den alten Gruppen) → Energie-Konfiguration schreiben (nur wenn geändert) → Gruppen-Store schreiben (nur wenn geändert). Lehnt HA die Energie-Konfiguration ab, bleibt der Gruppen-Store unberührt. Ein Speichern nur mit Gruppen fasst die Energie-Konfiguration nicht an.
   - **Sicherungen:** `Backup` bekommt `groups` (vorheriger Inhalt des Gruppen-Stores, wenn sich Gruppen ändern); Store-Minor-Version 2 mit Migration (alte Sicherungen haben kein `groups`, ihre Wiederherstellung lässt die Gruppen, wie sie sind). Wiederherstellen stellt die Gruppen wieder her, wenn die Sicherung welche hat.
-  - **Export:** Dateiformat-Version 2 mit `data.groups`; Import von Version-1-Dateien lässt die Gruppen unverändert; importierte Gruppen gehen durch dasselbe Aufräumen und dieselben Prüfungen. Diagnostics enthalten den Gruppen-Store.
+  - **Export:** Dateiformat-Version 2 mit `data.groups`; Import von Version-1-Dateien lässt die Gruppen unverändert; importierte Gruppen gehen durch dasselbe Aufräumen und dieselben Prüfungen. Diagnostics enthalten nur die Anzahl Gruppen je Liste und die grösste Verschachtelungstiefe, keine Namen, IDs oder Mitglieder.
 - Store-Format-Änderungen nur mit Migration.
 
 ---
@@ -390,7 +393,7 @@ Fehler kommen mit `translation_key`, damit das Panel sie übersetzt anzeigen kan
 
 - `ConfigEntry.runtime_data` mit typisiertem Entry-Alias, kein `hass.data`
 - Vollständig async, keine blockierenden Aufrufe im Event Loop
-- `diagnostics.py`: Anzahl Quellen, Geräte und Wasser-Geräte, Tiefe beider Bäume, Prüfergebnis, Anzahl und Grenze der Sicherungen, angelegte Helfer. Keine Entity-IDs oder Namen
+- `diagnostics.py`: Anzahl Quellen, Geräte und Wasser-Geräte, Tiefe beider Bäume, Anzahl Gruppen je Liste und grösste Verschachtelungstiefe (ab v0.9.0), Prüfergebnis, Anzahl und Grenze der Sicherungen, angelegte Helfer. Keine Entity-IDs oder Namen
 - `strings.json` plus `translations/{en,de,fr,it}.json` für Config Flow, Exceptions, Repair-Issues
 - `quality_scale.yaml` als interne Checkliste. Ziel: Silver vollständig, Gold soweit sinnvoll
 - mypy strict für eigene Module, Ruff

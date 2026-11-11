@@ -80,6 +80,9 @@ solar, battery or water meter, and which meters are not used yet.
   than it did (more than 5 % and 0.1 kWh, water 10 L) – usually a wrong assignment.
 - **Find a device** – the search field highlights matches, opens collapsed devices and
   moves to them.
+- **Groups** – bundle devices of the same parent into named groups, nested as deep as you
+  like. A collapsed group is one block with the sum of its members; expanded, it is a
+  labelled frame. Handy for big, flat trees (electricity and water).
 
 **Change it safely**
 
@@ -95,6 +98,9 @@ solar, battery or water meter, and which meters are not used yet.
   another one (an outlet of a power strip, a channel of a multi-channel meter), the panel
   suggests including it there. *Apply* puts it into the draft, *Ignore* hides it for every
   admin. Nothing changes by itself, and connections such as a Zigbee stick never count.
+- **Sum meters** – *Create sum meter* turns a group (or sensors you pick, for example a
+  sub panel plus its solar) into a real Home Assistant sum helper that becomes a device
+  in the energy dashboard, with the members below it.
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. *Undo change*
   takes back a step, and every save stores a backup first. Leave the panel and come back:
@@ -102,7 +108,8 @@ solar, battery or water meter, and which meters are not used yet.
 
 **Everywhere**
 
-- **Dashboard card** – the same tree, read-only, on any dashboard and for every user.
+- **Dashboard card** – the same tree, read-only, on any dashboard and for every user;
+  groups open and close by tapping, and the card can start at a group.
 - **Save as image** – the whole diagram as a PNG for a question, a forum post or your own
   records; *Hide names* turns devices into *Device 1, 2, …* and leaves out areas and
   sensor names. The image is made in your browser and sent nowhere.
@@ -168,7 +175,7 @@ with the integration; there is no resource to add. In YAML:
 type: custom:energy-flow-mapper-card
 kind: electricity      # or water
 period: today          # now, today, week or month
-root: sensor.kitchen_energy   # optional: only this device and everything below it
+root: sensor.kitchen_energy   # optional: only this device (or group:<id>) and everything below it
 title: Kitchen         # optional; an empty title hides the header
 orientation: vertical  # horizontal (top-down, default) or vertical (left to right)
 show_sources: true     # sources before Home (not with root)
@@ -194,6 +201,13 @@ the sensors live.
 | Assign, replace or remove a gas meter | Open the *Gas* tab; *Add* a free gas meter or tap the meter |
 | Get a meter for a power sensor | *Power only* → *Create meter* |
 | Get a water meter for a flow sensor | *Water* tab → *Flow only* → *Create meter* |
+| Group devices | Ctrl/Cmd+click several blocks (on a phone: *Select*, then tap them) → *Group* → name |
+| Add a device to a group | Drag its block onto the group |
+| Take a device out of a group | Drag it out of the frame onto its parent |
+| Rename or dissolve a group | Tap the group → *Rename* or *Dissolve group* (members stay) |
+| Group devices by area | *Suggest groups from areas* in the toolbar |
+| Create a sum meter | Tap a group → *Create sum meter*, or ⋮ on a device to pick sensors freely |
+| Show one group on a dashboard | Card option `root: group:<id>`, or pick the group in the card editor |
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
 | Take back a change of the draft | *Undo change* in the bar at the bottom, or Ctrl+Z |
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
@@ -222,6 +236,16 @@ the sensors live.
   last full hour. New meters only have values from the time they were created.
 - If someone changes the energy settings elsewhere while you edit, saving is refused and
   the panel reloads; your draft is kept and checked again.
+- **Groups exist only in Energy Flow Mapper.** Home Assistant's energy dashboard does not
+  know them; it only sees a sum meter as a normal device. Groups are display only and are
+  stored in `.storage/energy_flow_mapper.groups`; they are included in backups and in
+  exports.
+- **Sum meters act at once, too:** the helpers are created immediately (not on save) and
+  appear under Settings → Helpers; undoing the draft leaves them in place. They are Home
+  Assistant sum helpers with *ignore non-numeric* off. Mixed Wh and kWh members are
+  converted by Home Assistant; members with different state classes are refused, and so
+  are external statistics (a helper cannot sum them). A power or flow sum is created
+  only when every device in the sum has a power or flow sensor.
 - **Your draft survives leaving the panel:** the browser keeps it until you save or
   discard it. If the energy settings were changed in the meantime, it cannot be applied
   any more and is dropped with a message.
@@ -274,7 +298,8 @@ the sensors live.
   Energy Flow Mapper reads it fresh, writes it through the same checks as the energy
   settings page and always sends complete lists, so unrelated settings are kept.
 - Backups are stored in `.storage/energy_flow_mapper.backups` (see [Backups](#backups)),
-  the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers`.
+  the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers`, your
+  groups in `.storage/energy_flow_mapper.groups`.
 - The integration has no entities and no devices.
 - The card is served with the panel. Its small loader is added to every frontend page;
   the card itself only loads when a dashboard shows it. Its one command only reads the
@@ -286,6 +311,12 @@ the sensors live.
 <summary><b>Known limitations</b></summary>
 
 - A device can be included in **one** other device only (a Home Assistant rule).
+- Groups are shown by Energy Flow Mapper only; Home Assistant's energy dashboard sees a
+  sum meter as a normal device. Everything in a group has the same parent, and there are
+  no groups in the Gas tab.
+- A member meter that resets to 0 makes a sum meter drop, as with Home Assistant's own
+  sensor groups; the energy dashboard may count that as a reset.
+- A group used as the card's start point (`root: group:<id>`) opens expanded.
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.
 - Home Assistant has no gas devices, so the *Gas* tab has gas meters only. Gas

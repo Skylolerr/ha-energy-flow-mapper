@@ -20,6 +20,26 @@ and Home Assistant show when they offer the update.
 - **Your draft survives leaving the panel:** unsaved changes are kept in the browser and
   come back when you open the panel again. If the energy settings were changed in the
   meantime, the draft is dropped with a message.
+- **Groups:** bundle devices of the same parent into named groups in the Electricity and
+  Water tabs, and nest groups at any depth. Select blocks (Ctrl/Cmd+click, or *Select* on
+  a phone), then *Group*. A collapsed group is one block with the sum of its members; an
+  expanded group is a labelled frame. Drag devices and groups in and out, rename or
+  dissolve a group, or let *Suggest groups from areas* make a start (one group per
+  parent and area with at least two ungrouped children). Groups are part of the draft:
+  undo, check, one save, backup, restore, export and import (export format version 2;
+  version 1 files are still accepted). They are display only and change nothing in the
+  energy settings.
+- **Sum meters:** *Create sum meter* turns a group, or sensors you pick, into a real meter:
+  a Home Assistant sum helper (sensor group, *ignore non-numeric* off, so a member that
+  is briefly unavailable makes the sum unavailable instead of dropping). The members move
+  below the new meter in the draft. A power or flow sum is created too, only when every
+  device in the sum has a power or flow sensor. Mixed Wh and kWh members are converted by
+  Home Assistant; members with different state classes are refused. Undoing the draft
+  leaves the created helpers in place. This covers a sub panel that measures net of its
+  own solar (a gross meter = sub panel + solar).
+- **Groups on the dashboard card:** the card shows groups, collapsible by tapping, and
+  `root` also accepts a group (`group:<id>`) to show only that group; the card editor
+  lists the groups.
 - **Clearer when saving is not possible:** the bar at the bottom says how many problems
   prevent saving. The check before saving marks problems that are already in the saved
   settings, and *Show* takes you to the block.
@@ -28,6 +48,8 @@ and Home Assistant show when they offer the update.
 
 - **Gas is no longer shown in the electricity tab** or on the electricity card. It looked
   as if gas flowed into Home there, but it was never counted in the home consumption.
+- **Once after updating,** an unsaved draft that the browser kept from before the update
+  is dropped: the settings fingerprint now includes the groups.
 
 ## [0.8.0] - 2026-11-07
 
