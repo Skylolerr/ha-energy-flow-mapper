@@ -40,6 +40,8 @@ def _is_group(raw: object) -> bool:
     """Return whether `raw` has the fields of a group with the right types."""
     if not isinstance(raw, dict):
         return False
+    if "parent" not in raw or "group" not in raw:
+        return False
     members = raw.get("members")
     return (
         isinstance(raw.get("id"), str)

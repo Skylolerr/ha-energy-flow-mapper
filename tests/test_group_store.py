@@ -50,6 +50,8 @@ async def test_load_damaged_file(
         {**GROUP, "group": 3},
         {**GROUP, "members": "sensor.a"},
         {**GROUP, "members": [1]},
+        {k: v for k, v in GROUP.items() if k != "parent"},
+        {k: v for k, v in GROUP.items() if k != "group"},
     ]
     hass_storage[GROUPS_STORAGE_KEY] = {
         "version": 1,
@@ -70,6 +72,11 @@ async def test_load_damaged_file(
     other = GroupStore(hass)
     await other.async_load()
     assert other.groups() == empty_groups()
+
+    hass_storage[GROUPS_STORAGE_KEY]["data"] = {"groups": [GROUP]}
+    listed = GroupStore(hass)
+    await listed.async_load()
+    assert listed.groups() == empty_groups()
 
     hass_storage[GROUPS_STORAGE_KEY]["data"] = {"groups": None}
     third = GroupStore(hass)
