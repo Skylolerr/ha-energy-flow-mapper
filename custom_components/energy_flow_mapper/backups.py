@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any, TypedDict
+from copy import deepcopy
+from typing import Any, NotRequired, TypedDict
 from uuid import uuid4
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
-from .const import DEFAULT_MAX_BACKUPS, STORAGE_KEY, STORAGE_VERSION
+from .const import (
+    DEFAULT_MAX_BACKUPS,
+    STORAGE_KEY,
+    STORAGE_MINOR_VERSION,
+    STORAGE_VERSION,
+)
+from .groups import Groups
 
 
 class Backup(TypedDict):
@@ -21,6 +28,8 @@ class Backup(TypedDict):
     user_name: str | None
     summary: dict[str, int]
     data: dict[str, list[Any]]
+    # The groups before the change; missing in backups made before groups existed.
+    groups: NotRequired[Groups]
 
 
 class BackupData(TypedDict):
@@ -29,12 +38,27 @@ class BackupData(TypedDict):
     backups: list[Backup]
 
 
+class _BackupsStore(Store[BackupData]):
+    """Store with the migration hook for format changes."""
+
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Return the data unchanged: minor version 2 only adds an optional field."""
+        return old_data
+
+
 class BackupStore:
     """Keep the last `limit` backups in `.storage`."""
 
     def __init__(self, hass: HomeAssistant, limit: int = DEFAULT_MAX_BACKUPS) -> None:
         """Create the store; call async_load before use."""
-        self._store: Store[BackupData] = Store(hass, STORAGE_VERSION, STORAGE_KEY)
+        self._store: _BackupsStore = _BackupsStore(
+            hass, STORAGE_VERSION, STORAGE_KEY, minor_version=STORAGE_MINOR_VERSION
+        )
         self._limit = limit
         self._backups: list[Backup] = []
         # Backups dropped by the last async_add, returned by async_discard.
@@ -58,9 +82,13 @@ class BackupStore:
         return self._limit
 
     def entries(self) -> list[dict[str, Any]]:
-        """Return the backups without their content, newest first."""
+        """Return the backups without their content (data, groups), newest first."""
         return [
-            {key: value for key, value in backup.items() if key != "data"}
+            {
+                key: value
+                for key, value in backup.items()
+                if key not in ("data", "groups")
+            }
             for backup in reversed(self._backups)
         ]
 
@@ -74,8 +102,13 @@ class BackupStore:
         user_id: str | None,
         user_name: str | None,
         summary: dict[str, int],
+        groups: Groups | None = None,
     ) -> str:
-        """Store a backup immediately and drop the oldest ones beyond the limit."""
+        """Store a backup immediately and drop the oldest ones beyond the limit.
+
+        `groups` are the groups before the change; leave them out when the change
+        did not touch them.
+        """
         backup: Backup = {
             "id": uuid4().hex,
             "created": dt_util.utcnow().isoformat(),
@@ -84,6 +117,8 @@ class BackupStore:
             "summary": summary,
             "data": data,
         }
+        if groups is not None:
+            backup["groups"] = deepcopy(groups)
         backups = [*self._backups, backup]
         self._dropped = backups[: -self._limit]
         self._backups = backups[-self._limit :]

@@ -69,6 +69,24 @@
     },
     "home_exists": {
       "message": "Il y a déjà un compteur de la maison."
+    },
+    "unknown_group": {
+      "message": "{stat} n’est pas un groupe."
+    },
+    "group_parents_differ": {
+      "message": "{stat} n’est pas placé sous le même appareil que ce groupe."
+    },
+    "group_loop": {
+      "message": "Un groupe ne peut pas être placé dans lui-même ({stat})."
+    },
+    "group_name_empty": {
+      "message": "Un groupe doit avoir un nom."
+    },
+    "group_name_taken": {
+      "message": "Il existe déjà un groupe nommé {stat} ici."
+    },
+    "group_exists": {
+      "message": "Le groupe {stat} existe déjà."
     }
   },
   "issues": {

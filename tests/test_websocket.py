@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import timedelta
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
@@ -1959,3 +1959,218 @@ async def test_suggestion_for_a_free_meter(
         hass_ws_client, hass, type=f"{DOMAIN}/ignore_suggestion", **pair
     )
     assert response["result"] == {"ignored": [pair]}
+
+
+# --- Groups ---------------------------------------------------------------
+
+KITCHEN_GROUP = {
+    "type": "create_group",
+    "id": "g1",
+    "name": "Kitchen stuff",
+    "parent": "sensor.main_energy",
+    "members": ["sensor.kitchen_energy"],
+    "groups": [],
+}
+
+
+async def test_get_returns_cleaned_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """The stored groups are cleaned against the energy settings."""
+    await loaded_entry.runtime_data.groups.async_save(
+        {
+            "electricity": [
+                {
+                    "id": "g1",
+                    "name": "Kitchen stuff",
+                    "parent": "sensor.main_energy",
+                    "group": None,
+                    "members": ["sensor.kitchen_energy", "sensor.gone"],
+                },
+                {
+                    "id": "g2",
+                    "name": "Empty",
+                    "parent": None,
+                    "group": None,
+                    "members": ["sensor.gone"],
+                },
+            ],
+            "water": [],
+        }
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["groups"] == {
+        "electricity": [
+            {
+                "id": "g1",
+                "name": "Kitchen stuff",
+                "parent": "sensor.main_energy",
+                "group": None,
+                "members": ["sensor.kitchen_energy"],
+            }
+        ],
+        "water": [],
+    }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_hash_changes_when_only_groups_change(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A draft kept while groups changed elsewhere is a conflict."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[KITCHEN_GROUP],
+    )
+    assert response["success"], response
+    new_hash = await current_hash(hass_ws_client, hass)
+    assert new_hash != base_hash
+    assert response["result"]["hash"] == new_hash
+
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[],
+    )
+    assert response["error"]["translation_key"] == "conflict"
+
+
+async def test_validate_group_changes(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A draft with group changes is described and stores nothing."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[KITCHEN_GROUP],
+    )
+    result = response["result"]
+    assert result["valid"]
+    assert result["rejected"] is None
+    assert [(e["type"], e["stat"]) for e in result["diff"]] == [
+        ("group_created", "group:g1")
+    ]
+    assert loaded_entry.runtime_data.groups.groups()["electricity"] == []
+
+
+async def test_save_groups_with_device_change(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """Energy settings and groups are written together; one backup holds both."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[
+            KITCHEN_GROUP,
+            {"type": "rename", "stat": "sensor.garage_energy", "name": "Garage"},
+        ],
+    )
+    assert response["success"], response
+    result = response["result"]
+    prefs = await energy_access.async_get_prefs(hass)
+    assert device_list(prefs)["sensor.garage_energy"]["name"] == "Garage"
+    groups = loaded_entry.runtime_data.groups.groups()
+    assert [g["id"] for g in groups["electricity"]] == ["g1"]
+    assert result["hash"] == await current_hash(hass_ws_client, hass)
+
+    (stored,) = hass_storage[STORAGE_KEY]["data"]["backups"]
+    assert stored["id"] == result["backup_id"]
+    assert stored["data"] == {"device_consumption": ENERGY_PREFS["device_consumption"]}
+    assert stored["groups"] == {"electricity": [], "water": []}
+    assert stored["summary"] == {"renamed": 1, "group_created": 1}
+
+
+async def test_save_only_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """A group-only save leaves the energy settings of Home Assistant alone."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    with patch.object(energy_access, "async_write", AsyncMock()) as write:
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/save",
+            base_hash=base_hash,
+            changes=[KITCHEN_GROUP],
+        )
+    assert response["success"], response
+    write.assert_not_awaited()
+    result = response["result"]
+    assert result["hash"] != base_hash
+    assert result["hash"] == await current_hash(hass_ws_client, hass)
+    (stored,) = hass_storage[STORAGE_KEY]["data"]["backups"]
+    assert stored["id"] == result["backup_id"]
+    assert stored["data"] == {}
+    assert stored["groups"] == {"electricity": [], "water": []}
+    assert len(loaded_entry.runtime_data.groups.groups()["electricity"]) == 1
+
+
+async def test_save_rejected_by_ha_keeps_groups(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """If Home Assistant refuses the write, the groups are not saved."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    with patch.object(
+        energy_access, "async_write", AsyncMock(side_effect=HomeAssistantError("no"))
+    ):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/save",
+            base_hash=base_hash,
+            changes=[
+                KITCHEN_GROUP,
+                {"type": "rename", "stat": "sensor.garage_energy", "name": "Garage"},
+            ],
+        )
+    assert not response["success"]
+    assert loaded_entry.runtime_data.groups.groups()["electricity"] == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_group_change_error_is_translated(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A group rule violation answers with its translation key."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    members = ["sensor.kitchen_energy", "sensor.garage_energy"]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{**KITCHEN_GROUP, "members": members}],
+    )
+    assert response["error"]["translation_key"] == "group_parents_differ"
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[{"type": "create_group", "id": "g1"}],
+    )
+    assert response["error"]["code"] == "invalid_format"

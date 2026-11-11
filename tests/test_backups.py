@@ -120,3 +120,34 @@ async def test_custom_limit_and_trim_on_load(
     assert [entry["id"] for entry in smaller.entries()] == list(reversed(ids[4:]))
     # The trim is saved at once, not only with the next backup.
     assert len(hass_storage[STORAGE_KEY]["data"]["backups"]) == 5
+
+
+async def test_migration_keeps_old_backups(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A version 1.1 file loads as it is: its entries have no groups."""
+    old = {
+        "id": "old",
+        "created": "2026-10-23T10:00:00+00:00",
+        "user_id": None,
+        "user_name": None,
+        "summary": {"added": 1},
+        "data": {"device_consumption": []},
+    }
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 1,
+        "key": STORAGE_KEY,
+        "data": {"backups": [old]},
+    }
+    store = BackupStore(hass)
+    await store.async_load()
+    assert store.get("old") == old
+
+    with_groups = await store.async_add({}, None, None, {}, {"electricity": []})
+    entry = store.get(with_groups)
+    assert entry is not None
+    assert entry["groups"] == {"electricity": []}
+    assert "groups" not in store.entries()[0]
+    await store.async_discard(with_groups)
+    assert store.get("old") == old

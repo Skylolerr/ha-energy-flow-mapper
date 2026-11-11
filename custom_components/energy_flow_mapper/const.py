@@ -9,6 +9,8 @@ DOMAIN: Final = "energy_flow_mapper"
 LOGGER = logging.getLogger(__package__)
 
 STORAGE_VERSION: Final = 1
+# 2: backups may hold the groups of that moment (old entries stay as they are).
+STORAGE_MINOR_VERSION: Final = 2
 STORAGE_KEY: Final = f"{DOMAIN}.backups"
 # How many backups are kept; the user picks a number in the options.
 CONF_MAX_BACKUPS: Final = "max_backups"

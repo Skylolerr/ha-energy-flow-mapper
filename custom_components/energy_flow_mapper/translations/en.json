@@ -69,6 +69,24 @@
     },
     "home_exists": {
       "message": "There is already a home meter."
+    },
+    "unknown_group": {
+      "message": "{stat} is not a group."
+    },
+    "group_parents_differ": {
+      "message": "{stat} does not belong below the same device as this group."
+    },
+    "group_loop": {
+      "message": "A group cannot be placed inside itself ({stat})."
+    },
+    "group_name_empty": {
+      "message": "A group needs a name."
+    },
+    "group_name_taken": {
+      "message": "There is already a group called {stat} here."
+    },
+    "group_exists": {
+      "message": "The group {stat} already exists."
     }
   },
   "issues": {

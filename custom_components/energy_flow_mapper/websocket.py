@@ -49,6 +49,13 @@ from .energy_stats import (
     stale_stat,
     water_unit,
 )
+from .groups import (
+    Groups,
+    apply_all,
+    clean_groups,
+    diff_groups,
+    state_hash,
+)
 from .hierarchy import (
     DEVICE_KEYS,
     HOME,
@@ -66,7 +73,6 @@ from .hierarchy import (
     DeviceKind,
     Prefs,
     Severity,
-    apply_changes,
     build_tree,
     card_ha_issues,
     diff,
@@ -165,6 +171,52 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Required("stat"): str,
             }
         ),
+        "create_group": vol.Schema(
+            {
+                vol.Required("type"): "create_group",
+                vol.Required("id"): str,
+                vol.Required("name"): str,
+                vol.Required("parent"): _OPTIONAL_TEXT,
+                vol.Optional("group"): _OPTIONAL_TEXT,
+                vol.Required("members"): [str],
+                vol.Required("groups"): [str],
+                _KIND: _KINDS,
+            }
+        ),
+        "rename_group": vol.Schema(
+            {
+                vol.Required("type"): "rename_group",
+                vol.Required("id"): str,
+                vol.Required("name"): str,
+                _KIND: _KINDS,
+            }
+        ),
+        # Exactly one of `stat` and `group_id`; `apply_all` checks that.
+        "set_group": vol.Schema(
+            {
+                vol.Required("type"): "set_group",
+                vol.Optional("stat"): str,
+                vol.Optional("group_id"): str,
+                vol.Required("group"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
+            }
+        ),
+        "dissolve_group": vol.Schema(
+            {
+                vol.Required("type"): "dissolve_group",
+                vol.Required("id"): str,
+                _KIND: _KINDS,
+            }
+        ),
+        "move_group": vol.Schema(
+            {
+                vol.Required("type"): "move_group",
+                vol.Required("id"): str,
+                vol.Required("parent"): _OPTIONAL_TEXT,
+                vol.Optional("group"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
+            }
+        ),
     },
 )
 
@@ -210,12 +262,18 @@ def _issues(hass: HomeAssistant, prefs: Prefs) -> list[Any]:
     return validate(prefs, async_stat_units(hass, prefs), UNITS)
 
 
-async def _async_current(hass: HomeAssistant, base_hash: str) -> dict[str, Any]:
-    """Return the current preferences, or raise if they changed meanwhile."""
+async def _async_current(
+    hass: HomeAssistant, runtime: EnergyFlowMapperData, base_hash: str
+) -> tuple[dict[str, Any], Groups]:
+    """Return the current preferences and cleaned groups, or raise on a change.
+
+    The hash covers both: a draft is stale when either changed meanwhile.
+    """
     prefs = await energy_access.async_get_prefs(hass)
-    if prefs_hash(prefs) != base_hash:
+    groups = clean_groups(runtime.groups.groups(), prefs)
+    if state_hash(prefs, groups) != base_hash:
         raise _error("conflict")
-    return prefs
+    return prefs, groups
 
 
 def _refuse_home_without_support(update: Mapping[str, Any]) -> None:
@@ -226,7 +284,9 @@ def _refuse_home_without_support(update: Mapping[str, Any]) -> None:
         raise _error("home_not_supported")
 
 
-def _apply(prefs: Prefs, changes: list[dict[str, Any]]) -> dict[str, Any]:
+def _apply(
+    prefs: Prefs, groups: Groups, changes: list[dict[str, Any]]
+) -> tuple[dict[str, Any], Groups]:
     """Apply a draft; the home meter only where Home Assistant knows it."""
     if not energy_access.home_supported() and any(
         change["type"] == ChangeType.USE_AS_HOME_METER
@@ -235,7 +295,7 @@ def _apply(prefs: Prefs, changes: list[dict[str, Any]]) -> dict[str, Any]:
     ):
         raise _error("home_not_supported")
     try:
-        return apply_changes(prefs, changes)
+        return apply_all(prefs, groups, changes)
     except ChangeError as err:
         raise _error(err.code, stat=err.stat) from err
 
@@ -260,6 +320,7 @@ async def websocket_get(
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
+    groups = clean_groups(runtime.groups.groups(), prefs)
     external = await async_external_statistics(hass)
     stats = async_stats_info(hass, prefs, external)
     candidates, water, gas = (
@@ -275,7 +336,8 @@ async def websocket_get(
         msg["id"],
         {
             "prefs": prefs,
-            "hash": prefs_hash(prefs),
+            "groups": groups,
+            "hash": state_hash(prefs, groups),
             "stats": stats,
             "candidates": candidates,
             "water_candidates": water,
@@ -315,9 +377,9 @@ async def websocket_validate(
     Besides the hierarchy checks, the changed lists go through Home
     Assistant's own schemas; `rejected` holds its (English) message.
     """
-    _runtime(hass)
-    prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
-    new = _apply(prefs, msg[ATTR_CHANGES])
+    runtime = _runtime(hass)
+    prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
+    new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
     issues = _issues(hass, new)
     rejected = energy_access.schema_error(
         {key: new[key] for key in _changed_keys(prefs, new)}
@@ -328,7 +390,7 @@ async def websocket_validate(
             "valid": not has_errors(issues) and rejected is None,
             "issues": [issue.as_dict() for issue in issues],
             "rejected": rejected,
-            "diff": diff(prefs, new),
+            "diff": [*diff(prefs, new), *diff_groups(groups, new_groups)],
         },
     )
 
@@ -336,34 +398,49 @@ async def websocket_validate(
 async def _async_write_with_backup(
     connection: ActiveConnection,
     runtime: EnergyFlowMapperData,
-    old: Prefs,
-    update: dict[str, list[Any]],
+    before: tuple[Prefs, Groups],
+    after: tuple[dict[str, list[Any]], Groups],
     summary: dict[str, int],
 ) -> dict[str, Any]:
-    """Back up the old content of the updated keys, then write.
+    """Back up the old content of what changes, then write it.
 
-    The lists are checked before the backup is stored. Storing the backup
-    waits for the disk, so the preferences are compared with `old` again right
-    before the write; a change made elsewhere meanwhile is a conflict. Once
-    the write has started, the backup is kept even if it fails, because Home
-    Assistant may already use the new settings.
+    `before` are the current preferences and groups, `after` the changed lists
+    of the energy settings and the groups to store (equal to the old ones when
+    they stay as they are). The
+    lists are checked before the backup is stored. Storing the backup waits for
+    the disk, so the preferences are compared with `old` again right before the
+    write; a change made elsewhere meanwhile is a conflict. Once the write has
+    started, the backup is kept even if it fails, because Home Assistant may
+    already use the new settings. The groups are stored last, so a write that
+    Home Assistant refuses leaves them as they were. The result's hash covers
+    the new preferences and groups.
     """
+    old, old_groups = before
+    update, new_groups = after
     energy_access.validate(update)
+    groups_changed = new_groups != old_groups
     backup_id = await runtime.backups.async_add(
         {key: old[key] for key in update},
         connection.user.id,
         connection.user.name,
         summary,
+        old_groups if groups_changed else None,
     )
-    try:
-        await energy_access.async_write(
-            connection.hass, update, expected_hash=prefs_hash(old)
-        )
-    except energy_access.PrefsChangedError as err:
-        await runtime.backups.async_discard(backup_id)
-        raise _error("conflict") from err
+    if update:
+        try:
+            await energy_access.async_write(
+                connection.hass, update, expected_hash=prefs_hash(old)
+            )
+        except energy_access.PrefsChangedError as err:
+            await runtime.backups.async_discard(backup_id)
+            raise _error("conflict") from err
+    if groups_changed:
+        await runtime.groups.async_save(new_groups)
     prefs = await energy_access.async_get_prefs(connection.hass)
-    return {"hash": prefs_hash(prefs), ATTR_BACKUP_ID: backup_id}
+    return {
+        "hash": state_hash(prefs, clean_groups(new_groups, prefs)),
+        ATTR_BACKUP_ID: backup_id,
+    }
 
 
 @websocket_command(
@@ -381,8 +458,8 @@ async def websocket_save(
     """Validate, back up and write a draft in one step."""
     runtime = _runtime(hass)
     async with runtime.lock:
-        prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
-        new = _apply(prefs, msg[ATTR_CHANGES])
+        prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
+        new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
         issues = _issues(hass, new)
         if has_errors(issues):
             raise _error(
@@ -394,7 +471,7 @@ async def websocket_save(
                 ),
             )
         keys = _changed_keys(prefs, new)
-        if not keys:
+        if not keys and new_groups == groups:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}
             )
@@ -402,9 +479,9 @@ async def websocket_save(
         result = await _async_write_with_backup(
             connection,
             runtime,
-            prefs,
-            {key: new[key] for key in keys},
-            summarize(diff(prefs, new)),
+            (prefs, groups),
+            ({key: new[key] for key in keys}, new_groups),
+            summarize([*diff(prefs, new), *diff_groups(groups, new_groups)]),
         )
     connection.send_result(msg["id"], result)
 
@@ -438,7 +515,7 @@ async def websocket_restore(
         backup = runtime.backups.get(msg[ATTR_BACKUP_ID])
         if backup is None:
             raise _error("backup_not_found", backup_id=msg[ATTR_BACKUP_ID])
-        prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
+        prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
         update = {
             key: value
             for key, value in backup["data"].items()
@@ -451,7 +528,7 @@ async def websocket_restore(
             )
             return
         result = await _async_write_with_backup(
-            connection, runtime, prefs, update, {"restored": 1}
+            connection, runtime, (prefs, groups), (update, groups), {"restored": 1}
         )
     connection.send_result(msg["id"], result)
 
@@ -515,11 +592,10 @@ async def websocket_energy(
     untracked values and warnings follow the draft's trees. Warnings flag
     devices whose children used clearly more than they did.
     """
-    _runtime(hass)
+    runtime = _runtime(hass)
     if ATTR_CHANGES in msg:
-        prefs = _apply(
-            await _async_current(hass, msg[ATTR_BASE_HASH]), msg[ATTR_CHANGES]
-        )
+        current, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
+        prefs, _ = _apply(current, groups, msg[ATTR_CHANGES])
     else:
         prefs = await energy_access.async_get_prefs(hass)
     lists = {kind: prefs.get(key, []) for kind, key in DEVICE_KEYS.items()}
@@ -797,8 +873,8 @@ async def websocket_import_check(
     Answers like `validate`; `changed` is False when the file holds the
     current settings already.
     """
-    _runtime(hass)
-    prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
+    runtime = _runtime(hass)
+    prefs, _ = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
     new, update = _imported(prefs, msg[ATTR_DOCUMENT])
     # A file is not checked like a draft: its lists may be malformed, so
     # Home Assistant's schemas come first and the hierarchy only after them.
@@ -825,7 +901,7 @@ async def websocket_import(
     """Import an export document; the current content is backed up first."""
     runtime = _runtime(hass)
     async with runtime.lock:
-        prefs = await _async_current(hass, msg[ATTR_BASE_HASH])
+        prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
         new, update = _imported(prefs, msg[ATTR_DOCUMENT])
         energy_access.validate(update)
         issues = _issues(hass, new)
@@ -844,7 +920,7 @@ async def websocket_import(
             )
             return
         result = await _async_write_with_backup(
-            connection, runtime, prefs, update, {"imported": 1}
+            connection, runtime, (prefs, groups), (update, groups), {"imported": 1}
         )
     connection.send_result(msg["id"], result)
 

@@ -69,6 +69,24 @@
     },
     "home_exists": {
       "message": "Es gibt schon einen Hauszähler."
+    },
+    "unknown_group": {
+      "message": "{stat} ist keine Gruppe."
+    },
+    "group_parents_differ": {
+      "message": "{stat} gehört nicht unter dasselbe Gerät wie diese Gruppe."
+    },
+    "group_loop": {
+      "message": "Eine Gruppe kann nicht in sich selbst liegen ({stat})."
+    },
+    "group_name_empty": {
+      "message": "Eine Gruppe braucht einen Namen."
+    },
+    "group_name_taken": {
+      "message": "Hier gibt es schon eine Gruppe mit dem Namen {stat}."
+    },
+    "group_exists": {
+      "message": "Die Gruppe {stat} gibt es schon."
     }
   },
   "issues": {
