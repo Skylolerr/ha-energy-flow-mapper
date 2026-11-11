@@ -27,6 +27,15 @@ from .hierarchy import (
 # The kinds that can have groups (gas has no devices).
 GROUP_KINDS = (DeviceKind.ELECTRICITY, DeviceKind.WATER)
 
+# The characters JavaScript's `String.prototype.trim()` removes (white space and line
+# terminators), so a name is trimmed here exactly as the panel previews it. Python's
+# `str.strip()` differs: it also removes U+001C-U+001F and U+0085, but not U+FEFF.
+JS_TRIM = (
+    "\t\n\v\f\r \u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000\ufeff"
+)
+
 
 class Group(TypedDict):
     """A group of devices below one real parent.
@@ -215,7 +224,7 @@ def _check_name(
     groups: list[Group], name: str, parent: str | None, own_id: str | None
 ) -> str:
     """Return the stripped name; it must be set and unique below its parent."""
-    name = name.strip()
+    name = name.strip(JS_TRIM)
     if not name:
         raise ChangeError("group_name_empty", own_id or "")
     if any(

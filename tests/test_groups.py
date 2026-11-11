@@ -472,6 +472,22 @@ def test_remove_parent_keeps_groups_below_it() -> None:
     assert group["members"] == ["a", "b"]
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        ("\ufeffKitchen", "Kitchen"),
+        ("\u3000Kitchen\u2028", "Kitchen"),
+        ("\x1cB", "\x1cB"),
+        ("\x1c", "\x1c"),
+        ("B\x85", "B\x85"),
+    ],
+)
+def test_group_names_are_trimmed_like_the_panel(name: str, expected: str) -> None:
+    # Exactly the characters JavaScript's String.prototype.trim() removes.
+    _, result = run([create("g", ["a"], "p", name=name)])
+    assert result["electricity"][0]["name"] == expected
+
+
 def named(gid: str, name: str, members: list[str], parent: str | None) -> Group:
     """Return a group with its own name."""
     return {**grp(gid, members, parent), "name": name}

@@ -415,6 +415,21 @@ describe("applyGroupChanges", () => {
     ]);
   });
 
+  it("trims names like groups.py", () => {
+    // The same cases as test_group_names_are_trimmed_like_the_panel.
+    const char = (code: number) => String.fromCharCode(code);
+    const cases: [string, string][] = [
+      [`${char(0xfeff)}Kitchen`, "Kitchen"],
+      [`${char(0x3000)}Kitchen${char(0x2028)}`, "Kitchen"],
+      [`${char(0x1c)}B`, `${char(0x1c)}B`],
+      [char(0x1c), char(0x1c)],
+      [`B${char(0x85)}`, `B${char(0x85)}`],
+    ];
+    for (const [name, expected] of cases) {
+      expect(run([create("g", ["a"], "p", { name })])[0].name).toBe(expected);
+    }
+  });
+
   it("keeps the rest of a group when a member is removed", () => {
     expect(run([{ type: "remove", stat: "a" }], [grp("g", ["a", "b"], "p")])[0].members).toEqual([
       "b",
