@@ -80,6 +80,8 @@ async def async_create_integral(
     entry_id = result["result"].entry_id
     entities = er.async_entries_for_config_entry(er.async_get(hass), entry_id)
     if not entities:
+        # Do not leave the entry behind; a retry would meet it.
+        await hass.config_entries.async_remove(entry_id)
         raise _failed()
     entity_id = entities[0].entity_id
     if kind is DeviceKind.WATER:

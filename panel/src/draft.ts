@@ -1,7 +1,17 @@
 // Pure draft logic of the panel. It mirrors hierarchy.py so the tree can be
 // shown and edited before anything is sent; the backend checks again on save.
 
-import type { Change, ChildPair, Device, DeviceKind, HomeAssistant, Source, StatInfo, Tab } from "./types";
+import type {
+  Change,
+  ChildPair,
+  Device,
+  DeviceKind,
+  HomeAssistant,
+  Source,
+  StatInfo,
+  Tab,
+  UnassignRole,
+} from "./types";
 
 /** A grid connection without costs, as the energy settings page creates it. */
 export const NEW_GRID: Source = {
@@ -61,6 +71,8 @@ function setOptional(device: Device, key: string, value: unknown): void {
   }
 }
 
+type Of<T extends Change["type"]> = Extract<Change, { type: T }>;
+
 const GROUP_CHANGE_TYPES: ReadonlySet<string> = new Set([
   "create_group",
   "rename_group",
@@ -79,15 +91,38 @@ export function changeKind(change: Change): DeviceKind | null {
 
 /**
  * Apply the device changes of one list (`kind`) in order to a copy; changes
- * that do not fit are skipped.
+ * that do not fit are skipped. `sources` are the sources before the changes:
+ * `use_as_home_meter` is skipped while there is a home meter (`home_exists`
+ * in hierarchy.py), counting one assigned or removed earlier in `changes`.
  */
 export function applyChanges(
   devices: Device[],
   changes: Change[],
   kind: DeviceKind = "electricity",
+  sources: Source[] = [],
 ): Device[] {
+  return applyDraft(devices, sources, changes, kind).devices;
+}
+
+/**
+ * Apply the changes in order to copies of the devices of one list (`kind`)
+ * and of the sources, so each change sees both as they are at that point:
+ * a home meter made from a device takes the device's power sensor and name
+ * as the draft has them, and only while there is no home meter.
+ */
+export function applyDraft(
+  devices: Device[],
+  sources: Source[],
+  changes: Change[],
+  kind: DeviceKind = "electricity",
+): { devices: Device[]; sources: Source[] } {
   const result: Device[] = structuredClone(devices);
+  const current: Source[] = structuredClone(sources);
   for (const change of changes) {
+    if (change.type === "assign_source" || change.type === "unassign_source") {
+      applySourceChange(current, change);
+      continue;
+    }
     // Group changes do not touch the devices; groups.ts applies them.
     if (changeKind(change) !== kind || GROUP_CHANGE_TYPES.has(change.type)) {
       continue;
@@ -115,6 +150,18 @@ export function applyChanges(
     } else if (change.type === "rename") {
       setOptional(result[index], "name", change.name);
     } else if (change.type === "remove" || change.type === "use_as_home_meter") {
+      if (change.type === "use_as_home_meter") {
+        if (current.some((s) => s.type === "home")) {
+          continue;
+        }
+        const device = result[index];
+        current.push({
+          type: "home",
+          stat_energy_to: change.stat,
+          ...(device.stat_rate ? { stat_rate: device.stat_rate } : {}),
+          ...(device.name ? { name: device.name } : {}),
+        });
+      }
       const [removed] = result.splice(index, 1);
       for (const other of result) {
         if (other.included_in_stat === change.stat) {
@@ -123,7 +170,7 @@ export function applyChanges(
       }
     }
   }
-  return result;
+  return { devices: result, sources: current };
 }
 
 function parentMap(devices: Device[]): Map<string, string | null> {
@@ -397,92 +444,115 @@ const ENERGY_KEYS = ["stat_energy_from", "stat_energy_to"] as const;
 /** Source types the panel may change. */
 const EDITABLE_SOURCE_TYPES = ["grid", "solar", "battery", "gas", "water", "home"];
 
+/** A grid connection stays while one of these is set. */
+const GRID_KEEPS = ["stat_energy_from", "stat_energy_to", "stat_rate", "power_config"] as const;
+
+/** Whether `key` of an editable source has `role`; without a role every key has. */
+function hasRole(source: Source, key: (typeof ENERGY_KEYS)[number], role: UnassignRole | undefined): boolean {
+  if (role === undefined) {
+    return true;
+  }
+  if (source.type === "home") {
+    return role === "home";
+  }
+  const [from, to] = SOURCE_ROLES[source.type] ?? [null, null];
+  return (key === "stat_energy_from" ? from : to) === role;
+}
+
+/** An empty value as Python sees it: nothing, "", 0, or an empty object or list. */
+function isEmpty(value: unknown): boolean {
+  return !value || (typeof value === "object" && Object.keys(value).length === 0);
+}
+
 /**
- * Apply the source changes of a draft to a copy, like hierarchy.py: grid
+ * Apply one change of the sources (in place), like hierarchy.py: grid
  * import/export replace the meter given as `replace`, or else that of the
  * first grid connection (keeping its prices); a water or gas meter replaces
- * the one of its type given as `replace`, or else is added; solar and battery add a source; the
- * home meter replaces the one there is. A device used as home meter brings
- * its power sensor from `devices`. Changes that do not fit are skipped.
+ * the one of its type given as `replace`, or else is added; solar and battery
+ * add a source; the home meter replaces the one there is. Removing takes the
+ * source of `role`, or without one prefers a source other than the home
+ * meter; a grid connection loses each key holding the statistic and goes when
+ * nothing is left. Changes that do not fit are skipped.
+ */
+function applySourceChange(result: Source[], change: Of<"assign_source"> | Of<"unassign_source">): void {
+  if (change.type === "assign_source") {
+    if (change.role === "home") {
+      const home = result.find((s) => s.type === "home");
+      if (home) {
+        home.stat_energy_to = change.stat;
+      } else {
+        result.push({ type: "home", stat_energy_to: change.stat });
+      }
+    } else if (change.role === "import" || change.role === "export") {
+      const key = change.role === "import" ? "stat_energy_from" : "stat_energy_to";
+      const grids = result.filter((s) => s.type === "grid");
+      let grid = change.replace ? grids.find((s) => s[key] === change.replace) : grids[0];
+      if (grid === undefined) {
+        if (change.replace) {
+          return;
+        }
+        grid = structuredClone(NEW_GRID);
+        result.push(grid);
+      }
+      grid[key] = change.stat;
+    } else if (change.role === "production") {
+      result.push({
+        type: "solar",
+        stat_energy_from: change.stat,
+        config_entry_solar_forecast: null,
+      });
+    } else if (change.role === "battery" && change.stat_to) {
+      result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
+    } else if (change.role === "water" || change.role === "gas") {
+      const type = change.role;
+      let meter = change.replace
+        ? result.find((s) => s.type === type && s.stat_energy_from === change.replace)
+        : undefined;
+      if (meter === undefined) {
+        if (change.replace) {
+          return;
+        }
+        meter = { ...structuredClone(NEW_WATER), type };
+        result.push(meter);
+      }
+      meter.stat_energy_from = change.stat;
+    }
+    return;
+  }
+  const matches = result
+    .map((source, index) => ({
+      index,
+      keys: EDITABLE_SOURCE_TYPES.includes(source.type)
+        ? ENERGY_KEYS.filter((key) => source[key] === change.stat && hasRole(source, key, change.role))
+        : [],
+    }))
+    .filter((m) => m.keys.length > 0);
+  const match = matches.find((m) => result[m.index].type !== "home") ?? matches[0];
+  if (match === undefined) {
+    return;
+  }
+  const source = result[match.index];
+  if (source.type !== "grid") {
+    result.splice(match.index, 1);
+    return;
+  }
+  for (const key of match.keys) {
+    source[key] = null;
+  }
+  if (GRID_KEEPS.every((key) => isEmpty(source[key]))) {
+    result.splice(match.index, 1);
+  }
+}
+
+/**
+ * Apply the source changes of a draft to a copy (see `applySourceChange`).
+ * A device used as home meter brings its power sensor and name as the draft
+ * has them at that point, starting from the electricity devices `devices`;
+ * it is skipped for an unknown device or while there is a home meter, as
+ * hierarchy.py refuses it.
  */
 export function applySourceChanges(sources: Source[], changes: Change[], devices: Device[] = []): Source[] {
-  const result: Source[] = structuredClone(sources);
-  for (const change of changes) {
-    if (change.type === "use_as_home_meter") {
-      if (!result.some((s) => s.type === "home")) {
-        const device = devices.find((d) => d.stat_consumption === change.stat);
-        result.push({
-          type: "home",
-          stat_energy_to: change.stat,
-          ...(device?.stat_rate ? { stat_rate: device.stat_rate } : {}),
-          ...(device?.name ? { name: device.name } : {}),
-        });
-      }
-    } else if (change.type === "assign_source") {
-      if (change.role === "home") {
-        const home = result.find((s) => s.type === "home");
-        if (home) {
-          home.stat_energy_to = change.stat;
-        } else {
-          result.push({ type: "home", stat_energy_to: change.stat });
-        }
-      } else if (change.role === "import" || change.role === "export") {
-        const key = change.role === "import" ? "stat_energy_from" : "stat_energy_to";
-        const grids = result.filter((s) => s.type === "grid");
-        let grid = change.replace ? grids.find((s) => s[key] === change.replace) : grids[0];
-        if (grid === undefined) {
-          if (change.replace) {
-            continue;
-          }
-          grid = structuredClone(NEW_GRID);
-          result.push(grid);
-        }
-        grid[key] = change.stat;
-      } else if (change.role === "production") {
-        result.push({
-          type: "solar",
-          stat_energy_from: change.stat,
-          config_entry_solar_forecast: null,
-        });
-      } else if (change.role === "battery" && change.stat_to) {
-        result.push({ type: "battery", stat_energy_from: change.stat, stat_energy_to: change.stat_to });
-      } else if (change.role === "water" || change.role === "gas") {
-        const type = change.role;
-        let meter = change.replace
-          ? result.find((s) => s.type === type && s.stat_energy_from === change.replace)
-          : undefined;
-        if (meter === undefined) {
-          if (change.replace) {
-            continue;
-          }
-          meter = { ...structuredClone(NEW_WATER), type };
-          result.push(meter);
-        }
-        meter.stat_energy_from = change.stat;
-      }
-    } else if (change.type === "unassign_source") {
-      const index = result.findIndex(
-        (s) => EDITABLE_SOURCE_TYPES.includes(s.type) && ENERGY_KEYS.some((k) => s[k] === change.stat),
-      );
-      if (index === -1) {
-        continue;
-      }
-      const source = result[index];
-      if (source.type !== "grid") {
-        result.splice(index, 1);
-        continue;
-      }
-      for (const key of ENERGY_KEYS) {
-        if (source[key] === change.stat) {
-          source[key] = null;
-        }
-      }
-      if (!source.stat_energy_from && !source.stat_energy_to && !source.stat_rate && !source.power_config) {
-        result.splice(index, 1);
-      }
-    }
-  }
-  return result;
+  return applyDraft(devices, sources, changes, "electricity").sources;
 }
 
 /** Power of the whole home now in W, from the home meter's power sensor. */

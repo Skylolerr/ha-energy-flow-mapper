@@ -2,8 +2,8 @@
 // edited before anything is sent; the backend checks again on save. Like
 // `applyChanges` in draft.ts it skips changes that do not fit instead of throwing.
 
-import { applyChanges, changeKind, type TreeNode } from "./draft";
-import type { Change, Device, DeviceKind, Group, StatInfo } from "./types";
+import { applyChanges, applyDraft, applySourceChanges, changeKind, type TreeNode } from "./draft";
+import type { Change, Device, DeviceKind, Group, Source, StatInfo } from "./types";
 
 /** Prefix of the ids of group blocks (selection, layout), as in `group:<id>`. */
 export const GROUP_PREFIX = "group:";
@@ -108,26 +108,67 @@ function numberMoved(groups: Group[], moved: ReadonlySet<string>): void {
     if (!taken.has(group.name)) {
       continue;
     }
-    const base = group.name.replace(NUMBER, "");
-    let number = 2;
-    while (taken.has(`${base} (${number})`)) {
-      number++;
-    }
-    group.name = `${base} (${number})`;
+    group.name = firstName(group.name.replace(NUMBER, ""), taken);
   }
 }
 
+/** The first of "Base (2)", "Base (3)", ... that is not taken. */
+function firstName(base: string, taken: ReadonlySet<string>): string {
+  let number = 2;
+  while (taken.has(`${base} (${number})`)) {
+    number++;
+  }
+  return `${base} (${number})`;
+}
+
 /**
- * The groups fitted to the current devices (the six steps of `clean_groups`):
- * drop vanished devices, adopt a new common parent, drop members with another
+ * Give a group a number when an earlier one below its parent has its name (as
+ * `_number_duplicates`). Only a damaged store or an imported file has such
+ * names; the earlier group keeps its name.
+ */
+function numberDuplicates(groups: Group[]): void {
+  groups.forEach((group, index) => {
+    if (!groups.slice(0, index).some((g) => g.parent === group.parent && g.name === group.name)) {
+      return;
+    }
+    const taken = new Set(groups.filter((g) => g.parent === group.parent && g.id !== group.id).map((g) => g.name));
+    group.name = firstName(group.name.replace(NUMBER, ""), taken);
+  });
+}
+
+/**
+ * The groups with a known id once and a trimmed, non-empty name (as
+ * `_valid_entries`): a later group with an id seen before goes, and so does
+ * one whose name is empty after trimming (its members are no longer grouped).
+ */
+function validEntries(groups: Group[]): Group[] {
+  const seen = new Set<string>();
+  const kept: Group[] = [];
+  for (const group of groups) {
+    group.name = group.name.trim();
+    if (seen.has(group.id) || !group.name) {
+      continue;
+    }
+    seen.add(group.id);
+    kept.push(group);
+  }
+  return kept;
+}
+
+/**
+ * The groups fitted to the current devices (the steps of `clean_groups`):
+ * trim names and drop groups with a blank name or an id seen before, drop
+ * vanished devices, adopt a new common parent, drop members with another
  * parent, move misfit nested groups to the top, remove empty groups, number a
- * name a moved group (`movedBefore` or adopting here) finds taken. Never
- * mutates `groups`.
+ * name a moved group (`movedBefore` or adopting here) finds taken, then any
+ * other name taken below the same parent. Never mutates `groups`.
  */
 export function cleanGroups(groups: Group[], devices: Device[], movedBefore: ReadonlySet<string> = new Set()): Group[] {
-  const kept = structuredClone(groups);
   const parents = parentMap(devices);
   const moved = new Set(movedBefore);
+
+  // 0. Names are trimmed; groups with an id seen before or a blank name go.
+  const kept = validEntries(structuredClone(groups));
 
   // 1. Drop members whose device is gone; a device stays only in its first group.
   const seen = new Set<string>();
@@ -173,6 +214,9 @@ export function cleanGroups(groups: Group[], devices: Device[], movedBefore: Rea
 
   // 6. A moved group whose name is taken among the remaining groups gets a number.
   numberMoved(remaining, moved);
+
+  // 7. Any other name taken below the same parent gets a number too.
+  numberDuplicates(remaining);
   return remaining;
 }
 
@@ -207,7 +251,7 @@ function checkName(groups: Group[], name: string, parent: string | null, ownId: 
   if (!trimmed) {
     throw new Skip("group_name_empty");
   }
-  if (groups.some((g) => g.name === trimmed && g.parent === parent && g.id !== ownId)) {
+  if (groups.some((g) => g.name.trim() === trimmed && g.parent === parent && g.id !== ownId)) {
     throw new Skip("group_name_taken");
   }
   return trimmed;
@@ -402,10 +446,14 @@ function adoptRemovedParent(devices: Device[], groups: Group[], stat: string): S
   return moved;
 }
 
-/** A device that moves to another parent than its group's leaves the group. */
+/**
+ * A device that moves to another parent than its group's leaves the group.
+ * The parent is read like the move reads it: trimmed, and blank means Home.
+ */
 function leaveGroupOnMove(groups: Group[], stat: string, parent: string | null): void {
+  const target = parent?.trim() || null;
   for (const group of groups) {
-    if (group.members.includes(stat) && group.parent !== parent) {
+    if (group.members.includes(stat) && group.parent !== target) {
       takeOut(groups, stat);
       return;
     }
@@ -414,20 +462,31 @@ function leaveGroupOnMove(groups: Group[], stat: string, parent: string | null):
 
 /**
  * Apply the changes of one list (`kind`) strictly in order to copies of the
- * devices and groups: device changes with `applyChanges`, group changes here.
+ * devices and groups: device changes with `applyDraft`, group changes here.
  * After every change the groups are cleaned against the new devices; changes
- * that do not fit are skipped.
+ * that do not fit are skipped. `sources` are the sources before the changes;
+ * source changes only follow them, so `use_as_home_meter` is skipped while
+ * there is a home meter.
  */
 export function applyAllChanges(
   devicesBefore: Device[],
   groupsBefore: Group[],
   changes: Change[],
   kind: DeviceKind,
+  sourcesBefore: Source[] = [],
 ): { devices: Device[]; groups: Group[] } {
   let devices: Device[] = structuredClone(devicesBefore);
   let groups: Group[] = structuredClone(groupsBefore);
+  let sources: Source[] = structuredClone(sourcesBefore);
   for (const change of changes) {
+    if (change.type === "assign_source" || change.type === "unassign_source") {
+      sources = applySourceChanges(sources, [change]);
+      continue;
+    }
     if (changeKind(change) !== kind) {
+      continue;
+    }
+    if (change.type === "use_as_home_meter" && sources.some((s) => s.type === "home")) {
       continue;
     }
     let moved = new Set<string>();
@@ -451,7 +510,7 @@ export function applyAllChanges(
           leaveGroupOnMove(groups, change.stat, change.parent);
         }
       }
-      devices = applyChanges(devices, [change], kind);
+      ({ devices, sources } = applyDraft(devices, sources, [change], kind));
     }
     groups = cleanGroups(groups, devices, moved);
   }

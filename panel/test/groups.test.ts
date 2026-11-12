@@ -557,6 +557,83 @@ describe("applyGroupChanges", () => {
   });
 });
 
+describe("cleaning damaged groups like groups.py", () => {
+  const titled = (id: string, name: string, members: string[], parent: string | null = null, group: string | null = null): Group => ({
+    ...grp(id, members, parent, group),
+    name,
+  });
+
+  it("drops later groups with a known id and is a fixpoint", () => {
+    const devices = [dev("a"), dev("b")];
+    const cleaned = cleanGroups([grp("g", ["a"]), grp("g", ["b"], null, "x")], devices);
+    expect(cleaned).toEqual([grp("g", ["a"])]);
+    expect(cleanGroups(cleaned, devices)).toEqual(cleaned);
+  });
+
+  it("trims names like the backend and drops blank ones", () => {
+    const cleaned = cleanGroups(
+      [titled("g1", "  Kitchen　", ["a"]), titled("g2", " \t﻿", ["b"]), titled("g3", "Inner", ["c"], null, "g2")],
+      [dev("a"), dev("b"), dev("c")],
+    );
+    expect(cleaned.map((g) => [g.id, g.name, g.group])).toEqual([
+      ["g1", "Kitchen", null],
+      ["g3", "Inner", null],
+    ]);
+  });
+
+  it("numbers duplicate names below one parent; the earlier group keeps its name", () => {
+    const devices = [dev("p"), dev("a", "p"), dev("b", "p"), dev("c", "p"), dev("d", "p"), dev("e")];
+    const cleaned = cleanGroups(
+      [
+        titled("g1", "K", ["a"], "p"),
+        titled("g2", " K ", ["b"], "p"),
+        titled("g3", "K (2)", ["c"], "p"),
+        titled("g4", "K", ["d"], "p", "g1"),
+        titled("g5", "K", ["e"]),
+      ],
+      devices,
+    );
+    expect(cleaned.map((g) => g.name)).toEqual(["K", "K (3)", "K (2)", "K (4)", "K"]);
+    expect(cleanGroups(cleaned, devices)).toEqual(cleaned);
+  });
+
+  it("compares trimmed names when a name is checked", () => {
+    expect(run([create("n", ["b"], "p", { name: "Kitchen" })], [named("g", " Kitchen ", ["a"], "p")]).map((g) => g.id)).toEqual(["g"]);
+  });
+
+  it.each([[null], [""], [" "]])("keeps a device moved to Home with parent %j in its group", (parent) => {
+    const { devices, groups } = applyAllChanges(base(), [grp("g", ["e", "p"])], [{ type: "move", stat: "e", parent }], "electricity");
+    expect(groups[0].members).toEqual(["e", "p"]);
+    expect(devices).toContainEqual({ stat_consumption: "e" });
+  });
+});
+
+describe("home meter in the draft like groups.py", () => {
+  const HOME = { type: "home", stat_energy_to: "h" };
+
+  it("skips use_as_home_meter while there is a home meter", () => {
+    const stored = [grp("g", ["a", "b"], "p")];
+    const change: Change = { type: "use_as_home_meter", stat: "p" };
+    const kept = applyAllChanges(base(), stored, [change], "electricity", [HOME]);
+    expect(kept.devices).toEqual(base());
+    expect(kept.groups).toEqual(stored);
+    // A home meter assigned earlier in the draft counts too.
+    const assigned = applyAllChanges(base(), stored, [{ type: "assign_source", role: "home", stat: "h" }, change], "electricity");
+    expect(assigned.devices).toEqual(base());
+    expect(assigned.groups).toEqual(stored);
+    // One removed earlier does not.
+    const removed = applyAllChanges(
+      base(),
+      stored,
+      [{ type: "unassign_source", stat: "h", role: "home" }, change],
+      "electricity",
+      [HOME],
+    );
+    expect(removed.devices.map((d) => d.stat_consumption)).not.toContain("p");
+    expect(removed.groups[0].parent).toBeNull();
+  });
+});
+
 describe("displayTree", () => {
   it("builds the display tree with nested groups", () => {
     const devices = [

@@ -23,7 +23,7 @@ import {
   untracked,
   walk,
 } from "../src/draft";
-import type { ChildPair, Device, HomeAssistant } from "../src/types";
+import type { Change, ChildPair, Device, HomeAssistant } from "../src/types";
 
 function device(stat: string, parent?: string, extra: Partial<Device> = {}): Device {
   return {
@@ -525,5 +525,90 @@ describe("coverage", () => {
     expect(coverage(10, [2, null])).toBeNull();
     // A meter that went backwards (reset, mixed statistics) gives no share.
     expect(coverage(10, [5, -1])).toBeNull();
+  });
+});
+
+describe("removing a source like the backend", () => {
+  const grid = { ...NEW_GRID, stat_energy_from: "meter", number_energy_price: 0.3, power_config: { stat_rate: "p" } };
+  const home = { type: "home", stat_energy_to: "meter" };
+
+  it("removes only the home meter when it shares the grid import", () => {
+    expect(applySourceChanges([grid, home], [{ type: "unassign_source", stat: "meter", role: "home" }])).toEqual([grid]);
+    expect(applySourceChanges([grid, home], [{ type: "unassign_source", stat: "meter", role: "import" }])).toEqual([
+      { ...grid, stat_energy_from: null },
+      home,
+    ]);
+  });
+
+  it("prefers another source over the home meter without a role", () => {
+    const bare = { ...NEW_GRID, stat_energy_from: "meter" };
+    const once = applySourceChanges([home, bare], [{ type: "unassign_source", stat: "meter" }]);
+    expect(once).toEqual([home]);
+    expect(applySourceChanges(once, [{ type: "unassign_source", stat: "meter" }])).toEqual([]);
+  });
+
+  it("clears every key of a grid with the meter twice, or the key of the role", () => {
+    const both = { ...NEW_GRID, stat_energy_from: "x", stat_energy_to: "x" };
+    expect(applySourceChanges([both], [{ type: "unassign_source", stat: "x" }])).toEqual([]);
+    expect(applySourceChanges([both], [{ type: "unassign_source", stat: "x", role: "export" }])).toEqual([
+      { ...both, stat_energy_to: null },
+    ]);
+  });
+
+  it("matches only the role given", () => {
+    const sources = [
+      { type: "solar", stat_energy_from: "s" },
+      { type: "battery", stat_energy_from: "s", stat_energy_to: "s" },
+    ];
+    const types = (role: "production" | "discharge" | "charge" | "gas") =>
+      applySourceChanges(sources, [{ type: "unassign_source", stat: "s", role }]).map((s) => s.type);
+    expect(types("production")).toEqual(["battery"]);
+    expect(types("discharge")).toEqual(["solar"]);
+    expect(types("charge")).toEqual(["solar"]);
+    expect(types("gas")).toEqual(["solar", "battery"]);
+  });
+
+  it("treats an empty power configuration as nothing left", () => {
+    const exportOnly = { ...NEW_GRID, stat_energy_to: "exp", power_config: {} };
+    expect(applySourceChanges([exportOnly], [{ type: "unassign_source", stat: "exp" }])).toEqual([]);
+  });
+});
+
+describe("home meter from a device of the draft", () => {
+  it("takes the power sensor of a device added earlier", () => {
+    const changes: Change[] = [
+      { type: "add", stat: "d0", stat_rate: "r" },
+      { type: "use_as_home_meter", stat: "d0" },
+    ];
+    expect(applySourceChanges([], changes, [])).toEqual([{ type: "home", stat_energy_to: "d0", stat_rate: "r" }]);
+  });
+
+  it("takes the name a device got earlier", () => {
+    const changes: Change[] = [
+      { type: "rename", stat: "d0", name: "Main" },
+      { type: "use_as_home_meter", stat: "d0" },
+    ];
+    expect(applySourceChanges([], changes, [{ stat_consumption: "d0" }])).toEqual([
+      { type: "home", stat_energy_to: "d0", name: "Main" },
+    ]);
+  });
+
+  it("skips an unknown device", () => {
+    expect(applySourceChanges([], [{ type: "use_as_home_meter", stat: "new" }], [])).toEqual([]);
+  });
+
+  it("keeps the device when there is a home meter already", () => {
+    const devices = [{ stat_consumption: "p" }, { stat_consumption: "c", included_in_stat: "p" }];
+    const change: Change = { type: "use_as_home_meter", stat: "p" };
+    expect(applyChanges(devices, [change], "electricity", [{ type: "home", stat_energy_to: "h" }])).toEqual(devices);
+    // One assigned earlier in the draft counts too; one removed before does not.
+    expect(applyChanges(devices, [{ type: "assign_source", role: "home", stat: "h" }, change])).toEqual(devices);
+    const removed = applyChanges(
+      devices,
+      [{ type: "unassign_source", stat: "h", role: "home" }, change],
+      "electricity",
+      [{ type: "home", stat_energy_to: "h" }],
+    );
+    expect(removed).toEqual([{ stat_consumption: "c" }]);
   });
 });

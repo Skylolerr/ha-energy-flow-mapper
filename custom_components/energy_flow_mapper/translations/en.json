@@ -37,6 +37,9 @@
     "invalid_changes": {
       "message": "The changes cannot be saved: {issues}."
     },
+    "restore_invalid": {
+      "message": "This backup cannot be restored: together with the current energy settings it would cause errors ({issues})."
+    },
     "device_exists": {
       "message": "{stat} is already in the energy dashboard."
     },

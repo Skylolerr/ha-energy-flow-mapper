@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, patch
@@ -1048,6 +1049,7 @@ async def test_create_integral_without_entity(
         "async_entries_for_config_entry",
         lambda registry, entry_id: [],
     )
+    before = hass.config_entries.async_entries("integration")
     response = await send(
         hass_ws_client,
         hass,
@@ -1057,6 +1059,8 @@ async def test_create_integral_without_entity(
     )
     assert response["error"]["translation_key"] == "integral_failed"
     assert loaded_entry.runtime_data.helpers.entries() == []
+    # The helper entry is removed again, so a retry does not meet it.
+    assert hass.config_entries.async_entries("integration") == before
 
 
 @pytest.fixture
@@ -1661,6 +1665,66 @@ async def test_use_device_as_home_meter(
     assert response["error"]["translation_key"] == "home_exists"
 
 
+SHARED_HOME: dict[str, Any] = {
+    **ENERGY_PREFS,
+    "energy_sources": [
+        *ENERGY_PREFS["energy_sources"],
+        {"type": "home", "stat_energy_to": "sensor.grid_import"},
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [SHARED_HOME])
+@pytest.mark.usefixtures("loaded_entry", "home_supported")
+@pytest.mark.parametrize(
+    ("role", "left"),
+    [
+        ("home", ["grid", "solar", "battery"]),
+        ("import", ["grid", "solar", "battery", "home"]),
+        (None, ["grid", "solar", "battery", "home"]),
+    ],
+)
+async def test_unassign_home_meter_shared_with_the_grid(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    role: str | None,
+    left: list[str],
+) -> None:
+    """The role decides whether the home meter or the grid import goes."""
+    change = {"type": "unassign_source", "stat": "sensor.grid_import"}
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[change if role is None else change | {"role": role}],
+    )
+    assert response["success"], response
+    sources = (await energy_access.async_get_prefs(hass))["energy_sources"]
+    assert [s["type"] for s in sources] == left
+    grid = sources[0]
+    assert grid["number_energy_price"] == 0.3
+    assert grid["stat_energy_from"] == (
+        "sensor.grid_import" if role == "home" else None
+    )
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_unassign_with_unknown_role_is_refused(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash="x",
+        changes=[
+            {"type": "unassign_source", "stat": "sensor.grid_import", "role": "x"}
+        ],
+    )
+    assert response["error"]["code"] == "invalid_format"
+
+
 @pytest.mark.parametrize("energy_prefs", [with_home(ENERGY_PREFS)])
 @pytest.mark.usefixtures("loaded_entry")
 async def test_home_meter_without_value(
@@ -1668,18 +1732,62 @@ async def test_home_meter_without_value(
     hass_ws_client: WebSocketGenerator,
     energy_values: dict[str, Any],
 ) -> None:
-    """A home meter without 5-minute data is too late for today."""
+    """An entity home meter without a value is not late when its data is recent."""
     energy_values |= {"sensor.attic_energy": None, "sensor.garage_energy": 1.0}
+    for period in ("today", "week"):
+        response = await send(
+            hass_ws_client, hass, type=f"{DOMAIN}/energy", period=period
+        )
+        assert response["result"]["home"] == {
+            "value": None,
+            "basis": None,
+            "stale": None,
+            "untracked": None,
+        }
+
+
+EXTERNAL_HOME = {
+    **ENERGY_PREFS,
+    "energy_sources": [
+        *ENERGY_PREFS["energy_sources"],
+        {"type": "home", "stat_energy_to": "utility:home"},
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [EXTERNAL_HOME])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_external_home_meter_without_value(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+) -> None:
+    """An external home meter has no 5-minute data: too late for today."""
+    energy_values["utility:home"] = None
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="today")
-    assert response["result"]["home"] == {
-        "value": None,
-        "basis": None,
-        "stale": "sensor.attic_energy",
-        "untracked": None,
-    }
+    assert response["result"]["home"]["stale"] == "utility:home"
     # In a longer period it is late only if its statistics end too early.
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="week")
     assert response["result"]["home"]["stale"] is None
+
+
+@pytest.mark.parametrize("energy_prefs", [with_home(ENERGY_PREFS)])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_home_meter_without_any_data_is_stale(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    energy_values: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A home meter whose statistics have no data at all is late for today."""
+    energy_values["sensor.attic_energy"] = None
+
+    async def none(hass: HomeAssistant, stats: list[str]) -> dict[str, Any]:
+        return dict.fromkeys(stats)
+
+    monkeypatch.setattr(websocket_module, "async_last_ends", none)
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/energy", period="today")
+    assert response["result"]["home"]["stale"] == "sensor.attic_energy"
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -2596,3 +2704,163 @@ async def test_v2_import_stores_groups_the_view_hides(
     stored = loaded_entry.runtime_data.groups.groups()["electricity"]
     assert stored == [group]
     assert response["result"]["hash"] == await current_hash(hass_ws_client, hass)
+
+
+async def test_restore_refused_when_it_leaves_errors(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A restore that leaves errors is refused and writes nothing.
+
+    A backup holds only the lists changed then; mixed with today's others they
+    may not fit (here a sensor both device and source).
+    """
+    removed = await save_changes(
+        hass_ws_client, hass, [{"type": "remove", "stat": "sensor.garage_energy"}]
+    )
+    await save_changes(
+        hass_ws_client,
+        hass,
+        [
+            {
+                "type": "assign_source",
+                "role": "production",
+                "stat": "sensor.garage_energy",
+            }
+        ],
+    )
+    before = await energy_access.async_get_prefs(hass)
+    backups = len(loaded_entry.runtime_data.backups.entries())
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=removed["backup_id"],
+        base_hash=await current_hash(hass_ws_client, hass),
+    )
+    assert response["error"]["translation_key"] == "restore_invalid"
+    assert "source_and_device (sensor.garage_energy)" in str(
+        response["error"]["translation_placeholders"]
+    )
+    assert await energy_access.async_get_prefs(hass) == before
+    assert len(loaded_entry.runtime_data.backups.entries()) == backups
+
+
+SOLAR_ALSO_DEVICE = deepcopy(ENERGY_PREFS)
+SOLAR_ALSO_DEVICE["device_consumption"].append(
+    {"stat_consumption": "sensor.solar_energy"}
+)
+
+
+@pytest.mark.parametrize("energy_prefs", [SOLAR_ALSO_DEVICE])
+async def test_undo_of_the_last_save_brings_back_an_earlier_error(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Undoing the last save restores exactly the state before it, errors and all.
+
+    The backups are the safety net: the settings the user had (which Home
+    Assistant accepts) must always come back.
+    """
+    fixed = await save_changes(
+        hass_ws_client, hass, [{"type": "remove", "stat": "sensor.solar_energy"}]
+    )
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=fixed["backup_id"],
+        base_hash=await current_hash(hass_ws_client, hass),
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert {"stat_consumption": "sensor.solar_energy"} in prefs["device_consumption"]
+
+
+async def test_restore_ignores_errors_that_are_already_there(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """An older backup is refused only for errors the restore would add."""
+    renamed = await save_changes(
+        hass_ws_client,
+        hass,
+        [{"type": "rename", "stat": "sensor.kitchen_energy", "name": "Kitchen"}],
+    )
+    await save_changes(
+        hass_ws_client,
+        hass,
+        [{"type": "rename", "stat": "sensor.coffee_energy", "name": "Coffee"}],
+    )
+    # Home Assistant's own settings page accepts a meter used twice.
+    prefs = await energy_access.async_get_prefs(hass)
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *prefs["energy_sources"],
+                {"type": "solar", "stat_energy_from": "sensor.solar_energy"},
+            ]
+        },
+    )
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/restore",
+        backup_id=renamed["backup_id"],
+        base_hash=await current_hash(hass_ws_client, hass),
+    )
+    assert response["success"], response
+
+
+async def test_save_drops_ghost_groups_of_removed_devices(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A device removed outside the mapper does not bring its group back later."""
+    await save_changes(
+        hass_ws_client,
+        hass,
+        [
+            {
+                "type": "create_group",
+                "id": "g1",
+                "name": "Outside",
+                "parent": None,
+                "members": ["sensor.garage_energy"],
+                "groups": [],
+            }
+        ],
+    )
+    # Removed in Home Assistant's own energy settings.
+    prefs = await energy_access.async_get_prefs(hass)
+    without = [
+        d
+        for d in prefs["device_consumption"]
+        if d["stat_consumption"] != "sensor.garage_energy"
+    ]
+    await energy_access.async_write(hass, {"device_consumption": without})
+    # Any save that writes stores the cleaned groups.
+    await save_changes(
+        hass_ws_client,
+        hass,
+        [{"type": "rename", "stat": "sensor.main_energy", "name": "Main 2"}],
+    )
+    assert loaded_entry.runtime_data.groups.groups()["electricity"] == []
+    # Added again later in Home Assistant's settings: no group comes back.
+    prefs = await energy_access.async_get_prefs(hass)
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption": [
+                *prefs["device_consumption"],
+                {"stat_consumption": "sensor.garage_energy"},
+            ]
+        },
+    )
+    get = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert get["result"]["groups"]["electricity"] == []

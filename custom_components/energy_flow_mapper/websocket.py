@@ -66,6 +66,7 @@ from .hierarchy import (
     NAME,
     PARENT,
     RATE,
+    SOURCE_ROLE_NAMES,
     SOURCE_ROLES,
     STAT,
     AssignRole,
@@ -165,6 +166,9 @@ CHANGE_SCHEMA = cv.key_value_schemas(
             {
                 vol.Required("type"): ChangeType.UNASSIGN_SOURCE.value,
                 vol.Required("stat"): str,
+                # The role the panel removes; a home meter may share the grid
+                # import's statistic. Without it, a non-home source is preferred.
+                vol.Optional("role"): vol.In(list(SOURCE_ROLE_NAMES)),
             }
         ),
         ChangeType.USE_AS_HOME_METER.value: vol.Schema(
@@ -293,7 +297,10 @@ def _apply(
     """Apply a draft; the home meter only where Home Assistant knows it."""
     if not energy_access.home_supported() and any(
         change["type"] == ChangeType.USE_AS_HOME_METER
-        or change.get("role") == AssignRole.HOME
+        or (
+            change["type"] == ChangeType.ASSIGN_SOURCE
+            and change.get("role") == AssignRole.HOME
+        )
         for change in changes
     ):
         raise _error("home_not_supported")
@@ -301,6 +308,19 @@ def _apply(
         return apply_all(prefs, groups, changes)
     except ChangeError as err:
         raise _error(err.code, stat=err.stat) from err
+
+
+def _refuse_errors(issues: list[Any], key: str = "invalid_changes") -> None:
+    """Refuse a result with errors (translation `key`), naming every error."""
+    if has_errors(issues):
+        raise _error(
+            key,
+            issues=", ".join(
+                f"{issue.code.value} ({issue.stat})"
+                for issue in issues
+                if issue.severity is Severity.ERROR
+            ),
+        )
 
 
 def _changed_keys(old: Prefs, new: Prefs) -> list[str]:
@@ -465,15 +485,7 @@ async def websocket_save(
         prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
         new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
         issues = _issues(hass, new)
-        if has_errors(issues):
-            raise _error(
-                "invalid_changes",
-                issues=", ".join(
-                    f"{issue.code.value} ({issue.stat})"
-                    for issue in issues
-                    if issue.severity is Severity.ERROR
-                ),
-            )
+        _refuse_errors(issues)
         keys = _changed_keys(prefs, new)
         if not keys and new_groups == groups:
             connection.send_result(
@@ -486,7 +498,11 @@ async def websocket_save(
             (prefs, groups),
             (
                 {key: new[key] for key in keys},
-                new_groups if new_groups != groups else None,
+                # Also when only the stored groups differ, so groups of devices
+                # removed outside the mapper do not come back with the device.
+                new_groups
+                if new_groups != groups or new_groups != runtime.groups.groups()
+                else None,
             ),
             summarize([*diff(prefs, new), *diff_groups(groups, new_groups)]),
         )
@@ -529,6 +545,29 @@ async def websocket_restore(
             if prefs.get(key) != value
         }
         _refuse_home_without_support(update)
+        # A backup holds only the lists changed then; together with today's
+        # others they may not fit (a sensor both source and device). Home
+        # Assistant's schemas first, as the hierarchy needs well-formed lists.
+        # Restoring only groups is not held up by the energy settings. The
+        # newest backup is undo of the last save: exactly the state before it,
+        # errors included, so it always comes back. Older ones are refused
+        # only for errors the restore adds, not for ones already there.
+        if update:
+            energy_access.validate(update)
+            if not runtime.backups.is_newest(msg[ATTR_BACKUP_ID]):
+                present = {
+                    (issue.code, issue.stat, issue.kind)
+                    for issue in _issues(hass, prefs)
+                    if issue.severity is Severity.ERROR
+                }
+                _refuse_errors(
+                    [
+                        issue
+                        for issue in _issues(hass, dict(prefs) | update)
+                        if (issue.code, issue.stat, issue.kind) not in present
+                    ],
+                    "restore_invalid",
+                )
         # Groups are restored as stored; a backup from before groups existed
         # (or one that did not touch them) leaves the groups alone.
         restored = backup.get("groups")
@@ -747,14 +786,22 @@ async def _async_home(
     The caller adds `untracked`, what no top-level device covers.
 
     `stale` names the first meter behind it whose statistics end too long
-    before `end`; then there is no value, untracked value or warning. A home
-    meter without 5-minute statistics (an external one) is too late for today.
+    before `end`; then there is no value, untracked value or warning. An
+    external home meter has no 5-minute statistics, so without a value it is
+    too late for today; an entity home meter without a value only when its
+    statistics end too early, like in other periods.
     """
     value, basis = home_consumption(sources, energy)
     stats = home_stats(sources)
     meter = any(source.get("type") == "home" for source in sources)
     stale = None
-    if meter and stats and value is None and period == "today":
+    if (
+        meter
+        and stats
+        and value is None
+        and period == "today"
+        and not valid_entity_id(stats[0])
+    ):
         stale = stats[0]
     elif value is not None or meter:
         stale = stale_stat(stats, await async_last_ends(hass, stats), end)
@@ -1009,15 +1056,7 @@ async def websocket_import(
         energy_access.validate(update)
         groups_changed = _imported_groups_change(runtime, new, imported_groups)
         issues = _issues(hass, new)
-        if has_errors(issues):
-            raise _error(
-                "invalid_changes",
-                issues=", ".join(
-                    f"{issue.code.value} ({issue.stat})"
-                    for issue in issues
-                    if issue.severity is Severity.ERROR
-                ),
-            )
+        _refuse_errors(issues)
         if not update and not groups_changed:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}

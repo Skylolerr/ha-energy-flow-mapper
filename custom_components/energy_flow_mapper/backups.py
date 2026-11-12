@@ -96,6 +96,10 @@ class BackupStore:
         """Return a backup by ID."""
         return next((b for b in self._backups if b["id"] == backup_id), None)
 
+    def is_newest(self, backup_id: str) -> bool:
+        """Return whether the backup is the newest one (the last save's)."""
+        return bool(self._backups) and self._backups[-1]["id"] == backup_id
+
     async def async_add(
         self,
         data: dict[str, list[Any]],

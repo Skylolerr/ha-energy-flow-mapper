@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from custom_components.energy_flow_mapper.groups import clean_groups
 from custom_components.energy_flow_mapper.transfer import (
     EXPORT_FORMAT,
     EXPORT_VERSION,
@@ -224,3 +225,38 @@ def test_duplicate_group_ids_are_refused() -> None:
         "water": [GROUPS["electricity"][0]],
     }
     parse_import(document)
+
+
+def test_imported_group_names_are_cleaned_like_stored_ones() -> None:
+    """A file with a name twice or a blank name shows numbered and ungrouped."""
+
+    def group(gid: str, name: str, member: str) -> dict[str, Any]:
+        return {
+            "id": gid,
+            "name": name,
+            "parent": None,
+            "group": None,
+            "members": [member],
+        }
+
+    document = {
+        "format": EXPORT_FORMAT,
+        "version": 2,
+        "data": {
+            "groups": {
+                "electricity": [
+                    group("1", "Kitchen", "sensor.a"),
+                    group("2", "Kitchen ", "sensor.b"),
+                    group("3", "   ", "sensor.c"),
+                ]
+            }
+        },
+    }
+    _, groups = parse_import(document)
+    assert groups is not None
+    devices = [{"stat_consumption": s} for s in ("sensor.a", "sensor.b", "sensor.c")]
+    cleaned = clean_groups(groups, {"device_consumption": devices})
+    assert [(g["id"], g["name"]) for g in cleaned["electricity"]] == [
+        ("1", "Kitchen"),
+        ("2", "Kitchen (2)"),
+    ]

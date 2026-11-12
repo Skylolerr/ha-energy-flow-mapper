@@ -52,6 +52,11 @@ SOURCE_ROLES: dict[str, dict[str, str]] = {
     "home": {TO: "home"},
 }
 
+# Every source role, as the panel names them (`unassign_source` takes one).
+SOURCE_ROLE_NAMES: tuple[str, ...] = tuple(
+    dict.fromkeys(role for roles in SOURCE_ROLES.values() for role in roles.values())
+)
+
 # Source types the panel may change.
 EDITABLE_SOURCE_TYPES = ("grid", "solar", "battery", "gas", "water", "home")
 
@@ -534,26 +539,58 @@ def _assign_home(
         home[NAME] = name
 
 
-def _unassign_source(sources: list[dict[str, Any]], stat: str) -> None:
+def _role_matches(source: Mapping[str, Any], key: str, role: str | None) -> bool:
+    """Return whether `key` of an editable source has the given role.
+
+    Without a role every energy key matches. The home meter counts as `home`
+    with either key, as the panel shows it.
+    """
+    if role is None:
+        return True
+    kind = source.get("type", "")
+    if kind == "home":
+        return role == AssignRole.HOME
+    return SOURCE_ROLES.get(kind, {}).get(key) == role
+
+
+def _unassign_source(
+    sources: list[dict[str, Any]], stat: str, role: str | None = None
+) -> None:
     """Remove a statistic from the sources.
 
-    A grid connection only loses that meter (it is removed once nothing is
-    left); solar, battery, gas and water sources are removed as a whole.
+    With `role` (a role of `SOURCE_ROLES`) only a source key of that role
+    matches; without it, a source other than the home meter is preferred,
+    because the home meter may share the grid import's statistic. A grid
+    connection only loses that meter, every key holding it without a role (it is
+    removed once nothing is left); solar, battery, gas, water and home sources
+    are removed as a whole.
     """
-    for index, source in enumerate(sources):
-        if source.get("type") not in EDITABLE_SOURCE_TYPES:
-            continue
-        for key in SOURCE_ENERGY_KEYS:
-            if source.get(key) != stat:
-                continue
-            if source.get("type") != "grid":
-                del sources[index]
-                return
-            source[key] = None
-            if not any(source.get(k) for k in (FROM, TO, RATE, "power_config")):
-                del sources[index]
-            return
-    raise ChangeError("unknown_source", stat)
+    matches = [
+        (
+            index,
+            [
+                key
+                for key in SOURCE_ENERGY_KEYS
+                if source.get(key) == stat and _role_matches(source, key, role)
+            ],
+        )
+        for index, source in enumerate(sources)
+        if source.get("type") in EDITABLE_SOURCE_TYPES
+    ]
+    matches = [(index, keys) for index, keys in matches if keys]
+    if not matches:
+        raise ChangeError("unknown_source", stat)
+    index, keys = next(
+        (m for m in matches if sources[m[0]].get("type") != "home"), matches[0]
+    )
+    source = sources[index]
+    if source.get("type") != "grid":
+        del sources[index]
+        return
+    for key in keys:
+        source[key] = None
+    if not any(source.get(k) for k in (FROM, TO, RATE, "power_config")):
+        del sources[index]
 
 
 def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -607,7 +644,7 @@ def _apply_source_change(
     if kind == ChangeType.ASSIGN_SOURCE:
         _assign_source(sources, change)
     elif kind == ChangeType.UNASSIGN_SOURCE:
-        _unassign_source(sources, change["stat"])
+        _unassign_source(sources, change["stat"], change.get("role"))
     elif kind == ChangeType.USE_AS_HOME_METER:
         _use_as_home_meter(prefs, sources, change["stat"])
     else:

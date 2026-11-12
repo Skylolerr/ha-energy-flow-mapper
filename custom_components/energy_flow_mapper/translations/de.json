@@ -37,6 +37,9 @@
     "invalid_changes": {
       "message": "Die Änderungen können nicht gespeichert werden: {issues}."
     },
+    "restore_invalid": {
+      "message": "Diese Sicherung kann nicht wiederhergestellt werden: Zusammen mit den aktuellen Energie-Einstellungen gäbe es Fehler ({issues})."
+    },
     "device_exists": {
       "message": "{stat} ist bereits im Energie-Dashboard."
     },

@@ -1209,6 +1209,107 @@ def test_home_meter_may_share_the_grid_import() -> None:
     assert codes(validate(data)) == []
 
 
+SHARED_METER = prefs(
+    energy_sources=[
+        deepcopy(GRID_WITH_PRICES) | {"stat_energy_from": "sensor.meter"},
+        {"type": "home", "stat_energy_to": "sensor.meter"},
+    ]
+)
+
+
+def test_unassign_home_meter_that_is_the_grid_import() -> None:
+    """With the role, only the home meter goes; the grid keeps its prices."""
+    new = apply_changes(
+        SHARED_METER,
+        [{"type": "unassign_source", "stat": "sensor.meter", "role": "home"}],
+    )
+    assert new["energy_sources"] == [
+        GRID_WITH_PRICES | {"stat_energy_from": "sensor.meter"}
+    ]
+
+
+def test_unassign_grid_import_that_is_the_home_meter() -> None:
+    """With the role, only the grid import goes; the home meter stays."""
+    new = apply_changes(
+        SHARED_METER,
+        [{"type": "unassign_source", "stat": "sensor.meter", "role": "import"}],
+    )
+    assert new["energy_sources"] == [
+        GRID_WITH_PRICES | {"stat_energy_from": None},
+        {"type": "home", "stat_energy_to": "sensor.meter"},
+    ]
+
+
+def test_unassign_without_role_prefers_other_sources() -> None:
+    """Old clients without a role: a shared meter leaves the grid, not Home."""
+    shared = prefs(
+        energy_sources=[
+            {"type": "home", "stat_energy_to": "sensor.meter"},
+            NEW_GRID | {"stat_energy_from": "sensor.meter"},
+        ]
+    )
+    new = apply_changes(shared, [{"type": "unassign_source", "stat": "sensor.meter"}])
+    assert new["energy_sources"] == [{"type": "home", "stat_energy_to": "sensor.meter"}]
+    # Once only the home meter has it, it goes.
+    again = apply_changes(new, [{"type": "unassign_source", "stat": "sensor.meter"}])
+    assert again["energy_sources"] == []
+
+
+def test_unassign_grid_with_the_same_meter_twice() -> None:
+    """Without a role every key with the meter is cleared; with one only its key."""
+    grid = NEW_GRID | {"stat_energy_from": "sensor.x", "stat_energy_to": "sensor.x"}
+    data = prefs(energy_sources=[deepcopy(grid)])
+    new = apply_changes(data, [{"type": "unassign_source", "stat": "sensor.x"}])
+    assert new["energy_sources"] == []
+    new = apply_changes(
+        data, [{"type": "unassign_source", "stat": "sensor.x", "role": "export"}]
+    )
+    assert new["energy_sources"] == [grid | {"stat_energy_to": None}]
+
+
+@pytest.mark.parametrize(
+    ("role", "left"),
+    [
+        ("production", ["battery"]),
+        ("discharge", ["solar"]),
+        ("charge", ["solar"]),
+        ("gas", ["solar", "battery"]),
+    ],
+)
+def test_unassign_with_role_matches_only_that_role(role: str, left: list[str]) -> None:
+    """A role picks the source by its role; another role of the stat is no match."""
+    data = prefs(
+        energy_sources=[
+            {"type": "solar", "stat_energy_from": "sensor.s"},
+            {
+                "type": "battery",
+                "stat_energy_from": "sensor.s",
+                "stat_energy_to": "sensor.s",
+            },
+        ]
+    )
+    if role == "gas":
+        with pytest.raises(ChangeError) as err:
+            apply_changes(
+                data, [{"type": "unassign_source", "stat": "sensor.s", "role": role}]
+            )
+        assert err.value.code == "unknown_source"
+        return
+    new = apply_changes(
+        data, [{"type": "unassign_source", "stat": "sensor.s", "role": role}]
+    )
+    assert [s["type"] for s in new["energy_sources"]] == left
+
+
+def test_unassign_grid_with_empty_power_config() -> None:
+    """An empty power configuration is nothing left: the grid goes."""
+    data = prefs(
+        energy_sources=[NEW_GRID | {"stat_energy_to": "sensor.exp", "power_config": {}}]
+    )
+    new = apply_changes(data, [{"type": "unassign_source", "stat": "sensor.exp"}])
+    assert new["energy_sources"] == []
+
+
 def test_use_as_home_meter_keeps_the_name() -> None:
     """A name set for the device stays as the home meter's name."""
     new = apply_changes(prefs(), [{"type": "use_as_home_meter", "stat": "sensor.main"}])

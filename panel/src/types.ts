@@ -183,7 +183,9 @@ export type Change =
        * connection is used, and a water or gas meter is added. */
       replace?: string | null;
     }
-  | { type: "unassign_source"; stat: string }
+  /** Remove a statistic from the sources; with `role` only from a source of
+   * that role (the home meter may share the grid import's statistic). */
+  | { type: "unassign_source"; stat: string; role?: UnassignRole }
   /** Turn an electricity device into the home meter (HA 2026.11 and newer). */
   | { type: "use_as_home_meter"; stat: string }
   | {
@@ -206,6 +208,9 @@ export type Change =
 
 /** Source roles a free sensor can be assigned to. */
 export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "gas" | "home";
+
+/** The role of one source statistic, as `SOURCE_ROLES` in hierarchy.py names it. */
+export type UnassignRole = "import" | "export" | "production" | "discharge" | "charge" | "gas" | "water" | "home";
 
 export interface DiffEntry {
   type:

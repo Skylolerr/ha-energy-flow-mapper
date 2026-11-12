@@ -134,11 +134,53 @@ def _number_moved(groups: list[Group], moved: set[str]) -> None:
         done.add(group["id"])
         if group["name"] not in taken:
             continue
-        base = _NUMBER.sub("", group["name"])
-        number = 2
-        while f"{base} ({number})" in taken:
-            number += 1
-        group["name"] = f"{base} ({number})"
+        group["name"] = _first_name(_NUMBER.sub("", group["name"]), taken)
+
+
+def _first_name(base: str, taken: set[str]) -> str:
+    """Return the first of "Base (2)", "Base (3)", ... that is not taken."""
+    number = 2
+    while f"{base} ({number})" in taken:
+        number += 1
+    return f"{base} ({number})"
+
+
+def _number_duplicates(groups: list[Group]) -> None:
+    """Give a group a number when an earlier one below its parent has its name.
+
+    Only a damaged store or an imported file has such names. The earlier group
+    keeps its name; a later one gets the first free number, counted from its
+    base name, as in `_number_moved`.
+    """
+    for index, group in enumerate(groups):
+        if not any(
+            g["parent"] == group["parent"] and g["name"] == group["name"]
+            for g in groups[:index]
+        ):
+            continue
+        taken = {
+            g["name"]
+            for g in groups
+            if g["parent"] == group["parent"] and g["id"] != group["id"]
+        }
+        group["name"] = _first_name(_NUMBER.sub("", group["name"]), taken)
+
+
+def _valid_entries(groups: list[Group]) -> list[Group]:
+    """Return the groups with a known id once and a trimmed, non-empty name.
+
+    A later group with an id already seen is dropped; so is a group whose name is
+    empty after trimming (its members are no longer grouped).
+    """
+    seen: set[str] = set()
+    kept: list[Group] = []
+    for group in groups:
+        group["name"] = group["name"].strip(JS_TRIM)
+        if group["id"] in seen or not group["name"]:
+            continue
+        seen.add(group["id"])
+        kept.append(group)
+    return kept
 
 
 def _clean_kind(
@@ -152,6 +194,9 @@ def _clean_kind(
     they and the groups adopting a parent here are numbered at the end if needed.
     """
     moved = set(moved or ())
+    # 0. Names are trimmed; groups with an id seen before or a blank name go.
+    groups = _valid_entries(groups)
+
     # 1. Drop members whose device is gone; a device stays only in its first group.
     seen: set[str] = set()
     for group in groups:
@@ -192,6 +237,9 @@ def _clean_kind(
 
     # 6. A moved group whose name is taken among the remaining groups gets a number.
     _number_moved(kept_groups, moved)
+
+    # 7. Any other name taken below the same parent gets a number too.
+    _number_duplicates(kept_groups)
     return kept_groups
 
 
@@ -255,7 +303,7 @@ def _check_name(
     if not name:
         raise ChangeError("group_name_empty", own_id or "")
     if any(
-        g["name"] == name and g["parent"] == parent and g["id"] != own_id
+        g["name"].strip(JS_TRIM) == name and g["parent"] == parent and g["id"] != own_id
         for g in groups
     ):
         raise ChangeError("group_name_taken", name)
@@ -444,13 +492,17 @@ def _adopt_removed_parent(
 
 
 def _leave_group_on_move(groups: Groups, change: Mapping[str, Any]) -> None:
-    """Take a device out of its group when it moves to another parent."""
+    """Take a device out of its group when it moves to another parent.
+
+    The parent is read like the move reads it: trimmed, and blank means Home.
+    """
     kind = DeviceKind(change.get("kind", DeviceKind.ELECTRICITY))
     kind_groups = groups.get(kind.value, [])
+    parent = change.get("parent")
+    if isinstance(parent, str):
+        parent = parent.strip(JS_TRIM) or None
     for group in kind_groups:
-        if change["stat"] in group["members"] and group["parent"] != change.get(
-            "parent"
-        ):
+        if change["stat"] in group["members"] and group["parent"] != parent:
             _take_out(kind_groups, change["stat"])
             return
 

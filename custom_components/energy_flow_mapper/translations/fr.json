@@ -37,6 +37,9 @@
     "invalid_changes": {
       "message": "Les modifications ne peuvent pas être enregistrées : {issues}."
     },
+    "restore_invalid": {
+      "message": "Cette sauvegarde ne peut pas être restaurée : avec les réglages d’énergie actuels, elle causerait des erreurs ({issues})."
+    },
     "device_exists": {
       "message": "{stat} est déjà dans le tableau de bord énergie."
     },

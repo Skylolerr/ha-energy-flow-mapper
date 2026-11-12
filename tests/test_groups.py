@@ -176,6 +176,74 @@ def test_clean_water_groups_use_water_devices() -> None:
     assert clean_groups(stored, prefs(dev("tap")))["water"] == []
 
 
+def titled(gid: str, name: str, members: list[str], **extra: Any) -> Group:
+    """Return a group with its own name."""
+    return grp(gid, members, **extra) | {"name": name}
+
+
+def test_clean_drops_later_groups_with_a_known_id() -> None:
+    """A damaged store with one id twice keeps the first; clean is a fixpoint."""
+    stored = electricity(grp("g", ["a"]), grp("g", ["b"], group="x"))
+    p = prefs(dev("a"), dev("b"))
+    cleaned = clean_groups(stored, p)
+    assert cleaned["electricity"] == [grp("g", ["a"])]
+    assert clean_groups(cleaned, p) == cleaned
+
+
+def test_clean_trims_names_and_drops_blank_ones() -> None:
+    """Names are trimmed like the panel does; a blank one ungroups its members."""
+    stored = electricity(
+        titled("g1", "  Kitchen　", ["a"]),
+        titled("g2", " 	﻿", ["b"]),
+        titled("g3", "Inner", ["c"], group="g2"),
+    )
+    p = prefs(dev("a"), dev("b"), dev("c"))
+    cleaned = clean_groups(stored, p)["electricity"]
+    assert [(g["id"], g["name"], g["group"]) for g in cleaned] == [
+        ("g1", "Kitchen", None),
+        ("g3", "Inner", None),
+    ]
+
+
+def test_clean_numbers_duplicate_names_below_one_parent() -> None:
+    """The earlier group keeps its name; later ones get the first free number."""
+    stored = electricity(
+        titled("g1", "K", ["a"], parent="p"),
+        titled("g2", " K ", ["b"], parent="p"),
+        titled("g3", "K (2)", ["c"], parent="p"),
+        titled("g4", "K", ["d"], parent="p", group="g1"),
+        titled("g5", "K", ["e"]),
+    )
+    p = prefs(
+        dev("p"), dev("a", "p"), dev("b", "p"), dev("c", "p"), dev("d", "p"), dev("e")
+    )
+    cleaned = clean_groups(stored, p)
+    assert [g["name"] for g in cleaned["electricity"]] == [
+        "K",
+        "K (3)",
+        "K (2)",
+        "K (4)",
+        "K",
+    ]
+    assert clean_groups(cleaned, p) == cleaned
+
+
+def test_name_check_compares_trimmed_names() -> None:
+    """A stored name that is not trimmed still takes its name."""
+    stored = electricity(titled("g", " Kitchen ", ["a"], parent="p"))
+    change = {
+        "type": "create_group",
+        "id": "n",
+        "name": "Kitchen",
+        "parent": "p",
+        "members": ["b"],
+        "groups": [],
+    }
+    with pytest.raises(ChangeError) as err:
+        apply_all(base(), stored, [change])
+    assert err.value.code == "group_name_taken"
+
+
 def test_all_devices_includes_nested_groups() -> None:
     items = [
         grp("outer", ["a"]),
@@ -743,6 +811,18 @@ def test_move_single_member_leaves_its_group() -> None:
         d for d in new_prefs["device_consumption"] if d["stat_consumption"] == "a"
     )
     assert moved["included_in_stat"] == "e"
+
+
+@pytest.mark.parametrize("parent", [None, "", " "])
+def test_move_to_home_with_a_blank_parent_stays_in_group(parent: str | None) -> None:
+    """A blank parent means Home, like the move itself reads it."""
+    stored = electricity(grp("g", ["e", "p"]))
+    new_prefs, result = run([{"type": "move", "stat": "e", "parent": parent}], stored)
+    assert result["electricity"][0]["members"] == ["e", "p"]
+    moved = next(
+        d for d in new_prefs["device_consumption"] if d["stat_consumption"] == "e"
+    )
+    assert "included_in_stat" not in moved
 
 
 def test_move_within_the_same_parent_stays_in_group() -> None:
