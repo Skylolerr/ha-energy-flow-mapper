@@ -35,7 +35,12 @@ body:
         - Saving / backups
         - Sources
         - Free sensors / meters for power sensors
+        - Groups
+        - Sum meters
         - Energy per period / warnings
+        - Water tab
+        - Gas tab
+        - Dashboard card
         - Phone layout
         - Translations
         - Other

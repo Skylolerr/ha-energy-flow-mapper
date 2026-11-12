@@ -49,7 +49,8 @@ git archive --format=zip -o "$ZIP" "${COMMIT}:custom_components/energy_flow_mapp
 zip_has() {
   python -c "import sys, zipfile; sys.exit(sys.argv[2] not in zipfile.ZipFile(sys.argv[1]).namelist())" "$ZIP" "$1"
 }
-for file in manifest.json frontend/energy-flow-mapper-panel.js; do
+for file in manifest.json frontend/energy-flow-mapper-panel.js frontend/energy-flow-mapper-card.js \
+  frontend/energy-flow-mapper-card-view.js; do
   zip_has "$file" || fail "the ZIP has no ${file}"
 done
 awk "/^## \[${VERSION}\]/{found=1; next} /^## \[/{found=0} found && !/^\[/" CHANGELOG.md >"$NOTES"

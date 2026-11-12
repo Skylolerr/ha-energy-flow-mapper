@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Deploy Energy Flow Mapper to your own Home Assistant instance for testing.
 #
-# Usage: scripts/deploy.sh [--no-restart | --reload]
+# Usage: scripts/deploy.sh [--reload]
 #
-#   (default)     with HA_TOKEN: check the config and restart Home Assistant
-#   --reload      with HA_TOKEN: only reload the Energy Flow Mapper entry;
-#                 enough for panel-only changes (Python changes need a restart)
-#   --no-restart  only copy the files
+#   (default)     only copy the files; never restarts or reloads anything.
+#                 Restart Home Assistant yourself afterwards.
+#   --reload      also reload the Energy Flow Mapper entry (needs HA_TOKEN);
+#                 only with the instance owner's OK. Enough for panel-only
+#                 changes; Python changes need a restart, done by hand.
+#   --no-restart  accepted for compatibility; the same as the default.
 #
 # Reads HA_HOST, HA_USER, HA_CONFIG_PATH (and optionally HA_SSH_PORT, HA_URL,
 # HA_TOKEN) from .env in the repository root. Requires an SSH add-on on Home
@@ -15,14 +17,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ENV_FILE="${ROOT}/.env"
-MODE=restart
+MODE=none
 
 for arg in "$@"; do
   case "$arg" in
     --no-restart) MODE=none ;;
     --reload) MODE=reload ;;
     -h | --help)
-      sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
       exit 0
       ;;
     *)
@@ -72,12 +74,12 @@ else
 fi
 
 if [[ "$MODE" == none ]]; then
-  echo "==> Done (restart skipped)"
+  echo "==> Done. Files copied; restart Home Assistant yourself to load them."
   exit 0
 fi
 if [[ -z "${HA_TOKEN:-}" ]]; then
-  echo "==> Done. Set HA_TOKEN in .env to restart or reload automatically;"
-  echo "    restart Home Assistant (or reload the integration) now."
+  echo "==> Done. Set HA_TOKEN in .env to reload automatically;"
+  echo "    reload the integration (or restart Home Assistant) yourself now."
   exit 0
 fi
 
@@ -88,29 +90,14 @@ api() {
     "${HA_URL%/}/api/$1"
 }
 
-if [[ "$MODE" == reload ]]; then
-  echo "==> Reloading Energy Flow Mapper"
-  entries="$(api "config/config_entries/entry?domain=energy_flow_mapper" GET |
-    grep -o '"entry_id":"[^"]*"' | cut -d'"' -f4)"
-  if [[ -z "$entries" ]]; then
-    echo "    Energy Flow Mapper is not set up yet, nothing to reload."
-  fi
-  for entry in $entries; do
-    api "config/config_entries/entry/${entry}/reload" >/dev/null
-    echo "    reloaded ${entry}"
-  done
-  echo "==> Done. Reload the browser page to get the new panel."
-  exit 0
+echo "==> Reloading Energy Flow Mapper"
+entries="$(api "config/config_entries/entry?domain=energy_flow_mapper" GET |
+  grep -o '"entry_id":"[^"]*"' | cut -d'"' -f4)"
+if [[ -z "$entries" ]]; then
+  echo "    Energy Flow Mapper is not set up yet, nothing to reload."
 fi
-
-echo "==> Checking configuration"
-check="$(api config/core/check_config)"
-if [[ ! "$check" =~ \"result\"[[:space:]]*:[[:space:]]*\"valid\" ]]; then
-  echo "Configuration check failed, not restarting:" >&2
-  echo "$check" >&2
-  exit 1
-fi
-
-echo "==> Restarting Home Assistant"
-api services/homeassistant/restart >/dev/null || true
-echo "==> Done"
+for entry in $entries; do
+  api "config/config_entries/entry/${entry}/reload" >/dev/null
+  echo "    reloaded ${entry}"
+done
+echo "==> Done. Reload the browser page to get the new panel."
