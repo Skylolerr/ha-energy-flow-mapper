@@ -11,6 +11,58 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### 📦 Changed
+
+- **More room for the diagram on phones:** the diagram now fills the screen below the
+  tabs and the search. The tools sit behind "Tools ▾" and the help text behind "?".
+- **Select mode** shows in the bar at the bottom as long as it is on, with "Done" to leave
+  it, also before the first block is picked.
+- **Discard asks first** when the draft has more than one change.
+- **Sum meter:** the dialog warns when an entity with that name already exists.
+
+### 🐛 Fixed
+
+- **Device names like Home Assistant (2026.11):** a device without its own name no longer
+  gets the device it talks through in front of its name, such as the Zigbee stick
+  ("Home Assistant Connect ZBT-2 Plug Aquarium"). As in Home Assistant's energy dashboard,
+  only a child device without its own area gets its parent device in front.
+- **Removing the home meter could remove the grid:** when the home meter and the grid
+  import are the same sensor, "Remove as source" on one no longer removes the other (and
+  with it the grid's prices).
+- **Restoring an older backup could block saving:** a backup only holds the lists that
+  changed back then. If restoring it would now add errors (for example a sensor that is
+  both a source and a device), nothing is written and the panel says why. Undoing the
+  last save always brings back the settings you had.
+- **Groups of devices removed outside the mapper came back** when the device was added
+  again later. Saving now also tidies the stored groups.
+- **Group names:** duplicate or blank names from a damaged store or an import file are
+  cleaned up (blank ones dropped, repeated ones numbered), and names are compared without
+  surrounding spaces.
+- **A new energy source type** that a future Home Assistant adds no longer leaves the
+  panel blank.
+- **Bottom bar on phones:** in the companion app on Android with on-screen navigation
+  buttons, the bar with the selection or the unsaved changes sat behind the buttons. It
+  now keeps clear of them, only where the phone has them. Messages no longer cover its
+  buttons or swallow taps, the selection count is no longer cut off, and a disabled
+  "Group" says why.
+- **Dialogs on phones** fit the screen, long names without spaces wrap, messages show
+  inside an open dialog instead of behind it, and "Checking …" can be cancelled.
+- **Save as image** no longer cuts off the line below small diagrams, such as the gas tab.
+- **Home meter "not current enough" for Today** is only shown when its data really is too
+  old, not whenever it has no value.
+- **A meter helper that failed half way** is removed again, so creating it can be tried
+  again.
+- **Draft preview:** using a device added or renamed in the draft as the home meter keeps
+  its power sensor and name, as the save does.
+- **Dashboard card:** emptying the title in the editor hides the header, as the label
+  says. A failed refresh keeps the last diagram with a small hint. A card hidden by a
+  visibility condition starts at Home and loads fresh values when it is shown. The start
+  field is called "Start at", and groups with the same name show their parent.
+- **German:** "Strg+Klick" instead of "Ctrl+Klick".
+- **Development:** `scripts/deploy.sh` only copies the files by default and never restarts
+  Home Assistant. The release script also checks the card files in the ZIP. The bug report
+  form lists groups, sum meters, the water and gas tabs and the dashboard card.
+
 ## [0.9.0] - 2026-11-11
 
 > **Highlight:** bring order to big trees – fold devices into groups, turn any group into a
