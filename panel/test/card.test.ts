@@ -99,6 +99,7 @@ beforeAll(async () => {
 afterEach(() => {
   document.body.innerHTML = "";
   vi.useRealTimers();
+  vi.restoreAllMocks();
 });
 
 describe("card configuration", () => {
@@ -199,6 +200,15 @@ describe("card loader", () => {
 });
 
 describe("card", () => {
+  it("names a source of a role it has no text for by that role, not by a key", async () => {
+    const mock = mockHass(() =>
+      data({ sources: [{ type: "heat", role: "heat" as never, stat: "sensor.heat", name: "Heat" }] }),
+    );
+    const el = await view({ period: "now" }, mock);
+    const label = el.shadowRoot!.querySelector('.block.source[data-role="heat"] .node-name')!.textContent;
+    expect(label).toBe("heat");
+  });
+
   it("shows sources, Home, devices with energy and untracked, and the warning", async () => {
     const mock = mockHass();
     const el = await view({ period: "week" }, mock);
@@ -455,6 +465,88 @@ describe("card", () => {
     }
   });
 
+  it("keeps the last diagram when a refresh fails, with a hint", async () => {
+    let fail = false;
+    const mock = mockHass((msg) => (fail ? { translation_key: "not_loaded" } : msg.period ? data(periodValues()) : data()));
+    const el = await view({ period: "week" }, mock);
+    expect(block(el, "sensor.server")).not.toBeNull();
+    fail = true;
+    await el._load();
+    await settle(el);
+    expect(block(el, "sensor.server")!.textContent).toContain("12.5 kWh");
+    const hint = el.shadowRoot!.querySelector<HTMLElement>(".message.stale")!;
+    expect(hint.textContent).toContain("Could not refresh");
+    expect(hint.title).toBe("Energy Flow Mapper is not loaded.");
+    expect(el.shadowRoot!.querySelector(".message.error")).toBeNull();
+    // The next good answer removes the hint.
+    fail = false;
+    await el._load();
+    await settle(el);
+    expect(el.shadowRoot!.querySelector(".message.stale")).toBeNull();
+  });
+
+  it("does not load twice when it is laid out without a width at first", async () => {
+    let watch: (entries: { contentRect: { width: number } }[]) => void = () => undefined;
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: typeof watch) {
+        watch = callback;
+      }
+      observe(): void {}
+      disconnect(): void {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      const mock = mockHass();
+      const el = await view({ period: "week" }, mock);
+      // A preview or a container laid out late reports 0 first, then its width.
+      watch([{ contentRect: { width: 0 } }]);
+      watch([{ contentRect: { width: 400 } }]);
+      await settle(el);
+      expect(mock.calls.length).toBe(1);
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+
+  it("centres and loads again when a hidden card is shown", async () => {
+    let watch: (entries: { contentRect: { width: number } }[]) => void = () => undefined;
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      constructor(callback: typeof watch) {
+        watch = callback;
+      }
+      observe(): void {}
+      disconnect(): void {}
+    } as unknown as typeof ResizeObserver;
+    try {
+      const mock = mockHass();
+      const el = await view({ period: "week" }, mock);
+      // The first size report of a visible card loads nothing again.
+      watch([{ contentRect: { width: 400 } }]);
+      await settle(el);
+      expect(mock.calls.length).toBe(1);
+      // Hidden by a visibility condition: it stays connected with no width,
+      // here for a minute.
+      const now = Date.now();
+      vi.spyOn(Date, "now").mockReturnValue(now);
+      watch([{ contentRect: { width: 0 } }]);
+      const diagram = el.shadowRoot!.querySelector<HTMLElement>(".diagram")!;
+      Object.defineProperty(diagram, "scrollWidth", { value: 900, configurable: true });
+      Object.defineProperty(diagram, "clientWidth", { value: 0, configurable: true });
+      el.requestUpdate();
+      await settle(el);
+      // Shown again: wide, so it starts at Home in the middle, with fresh values.
+      vi.spyOn(Date, "now").mockReturnValue(now + 60_000);
+      Object.defineProperty(diagram, "clientWidth", { value: 300, configurable: true });
+      watch([{ contentRect: { width: 400 } }]);
+      await settle(el);
+      expect(mock.calls.length).toBe(2);
+      expect(diagram.scrollLeft).toBe(300);
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+
   it("shows water in litres and m³, and flow now", async () => {
     const water: CardData = {
       kind: "water",
@@ -579,7 +671,7 @@ describe("card editor", () => {
       "Title (empty: no title)",
       "Show",
       "Period",
-      "Start at device",
+      "Start at",
       "Orientation",
       "Show sources",
       "Show untracked consumption",
@@ -598,6 +690,23 @@ describe("card editor", () => {
     ]);
   });
 
+  it("names the parent of groups with the same name", async () => {
+    const groups = [
+      ...GROUPS,
+      { id: "k1", name: "Kitchen", parent: "sensor.server", group: null, members: [] },
+      { id: "k2", name: "Kitchen", parent: null, group: null, members: [] },
+      { id: "k3", name: "Kitchen", parent: "sensor.server", group: "g1", members: [] },
+    ];
+    const el = await editor({ kind: "electricity" }, mockHass(() => data({ groups })));
+    const root = el.schema()[3].selector as { select: { options: { value: string; label: string }[] } };
+    expect(root.select.options.slice(-4)).toEqual([
+      { value: "group:g1", label: "Group: Racks" },
+      { value: "group:k1", label: "Group: Kitchen (in Server & co)" },
+      { value: "group:k2", label: "Group: Kitchen (in Home)" },
+      { value: "group:k3", label: "Group: Kitchen (in Racks)" },
+    ]);
+  });
+
   it("offers the coverage only for electricity", async () => {
     const el = await editor({ kind: "water" });
     expect(el.schema().map((f) => f.name)).not.toContain("show_coverage");
@@ -608,10 +717,12 @@ describe("card editor", () => {
     const changes: Record<string, unknown>[] = [];
     el.addEventListener("config-changed", (e) => changes.push((e as CustomEvent).detail.config));
     const form = el.shadowRoot!.querySelector("ha-form")!;
-    form.dispatchEvent(new CustomEvent("value-changed", { detail: { value: { period: "week", title: "" } } }));
+    // Home Assistant's text field reports an emptied field as undefined.
+    form.dispatchEvent(new CustomEvent("value-changed", { detail: { value: { period: "week", title: undefined } } }));
     // An empty title is kept (it hides the header); defaults stay out.
     expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}`, period: "week", root: "sensor.server", title: "" });
-    el._valueChanged({ period: "today", root: "", title: null });
+    // The default title, as the field shows it, stays out of the YAML.
+    el._valueChanged({ period: "today", root: "", title: "Energy flow" });
     expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}` });
     el._valueChanged({ show_untracked: false });
     expect(changes.at(-1)).toMatchObject({ show_untracked: false });
@@ -624,6 +735,31 @@ describe("card editor", () => {
     expect(changes.at(-1)).not.toHaveProperty("root");
     await settle(el);
     expect(el._config?.kind).toBe("water");
+  });
+
+  it("shows the header's title in the field; emptying it hides the header", async () => {
+    const el = await editor({ kind: "electricity" });
+    const changes: Record<string, unknown>[] = [];
+    el.addEventListener("config-changed", (e) => changes.push((e as CustomEvent).detail.config));
+    const form = () => el.shadowRoot!.querySelector("ha-form") as HTMLElement & { data: Record<string, unknown> };
+    // A new card shows the default header, so the field shows it too.
+    expect(form().data.title).toBe("Energy flow");
+    // Another field changes: the form sends the shown default back; it stays out.
+    form().dispatchEvent(new CustomEvent("value-changed", { detail: { value: { ...form().data, period: "week" } } }));
+    expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}`, period: "week" });
+    await settle(el);
+    // Another list: the default follows it.
+    form().dispatchEvent(new CustomEvent("value-changed", { detail: { value: { ...form().data, kind: "water" } } }));
+    expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}`, period: "week", kind: "water" });
+    await settle(el);
+    expect(form().data.title).toBe("Water flow");
+    // Emptied, the field stays empty and the card has no header.
+    form().dispatchEvent(new CustomEvent("value-changed", { detail: { value: { ...form().data, title: undefined } } }));
+    expect(changes.at(-1)).toEqual({ type: `custom:${CARD_TAG}`, period: "week", kind: "water", title: "" });
+    await settle(el);
+    expect(form().data.title).toBe("");
+    const card = await view(changes.at(-1) as Partial<CardConfig>);
+    expect(card.shadowRoot!.querySelector(".header")).toBeNull();
   });
 
   it("keeps working without devices or configuration", async () => {

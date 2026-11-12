@@ -36,6 +36,7 @@ import {
   formatPower,
   formatVolume,
   haIssueText,
+  hasKey,
   localize,
   type StringKey,
 } from "./localize";
@@ -44,6 +45,8 @@ import type { Device, DeviceKind, Group, HaIssue, HomeAssistant, HomeResult, Iss
 const DOMAIN = "energy_flow_mapper";
 /** How often the card reads the tree and the period values again. */
 export const CARD_REFRESH_MS = 60_000;
+/** A card shown again after at least this long without a width loads fresh values. */
+const SHOWN_RELOAD_MS = 5_000;
 /** Space around the diagram, in px of the diagram. */
 const PAD = 8;
 /** Horizontal padding of the card around the diagram, in px. */
@@ -91,6 +94,11 @@ function isEntity(stat: string): boolean {
   return /^[a-z0-9_]+\.[a-z0-9_]+$/.test(stat);
 }
 
+/** The header a card shows when it has no title of its own. */
+function defaultTitle(hass: HomeAssistant | undefined, kind: DeviceKind | undefined): string {
+  return localize(hass, kind === "water" ? "diagram_water" : "diagram");
+}
+
 /** Every node of a display tree, parents before children. */
 function walkDisplay(nodes: DisplayNode[]): DisplayNode[] {
   return nodes.flatMap((n) => [n, ...walkDisplay(n.children)]);
@@ -131,6 +139,10 @@ export class EnergyFlowMapperCardView extends LitElement {
   private _haTexts = false;
   private _timer: ReturnType<typeof setInterval> | undefined;
   private _resizeObserver?: ResizeObserver;
+  /** Whether the card has no width (hidden by a visibility condition). */
+  private _hidden = false;
+  /** When the card lost its width (Date.now()). */
+  private _hiddenSince = 0;
 
   constructor() {
     super();
@@ -152,13 +164,36 @@ export class EnergyFlowMapperCardView extends LitElement {
     }
     this._timer = setInterval(() => void this._load(), CARD_REFRESH_MS);
     if (typeof ResizeObserver !== "undefined") {
-      this._resizeObserver ??= new ResizeObserver((entries) => {
-        const width = entries[0]?.contentRect.width;
-        if (width) {
-          this._width = width;
-        }
-      });
+      this._resizeObserver ??= new ResizeObserver((entries) => this._resized(entries[0]?.contentRect.width ?? 0));
       this._resizeObserver.observe(this);
+    }
+  }
+
+  /**
+   * A card hidden by a visibility condition stays connected with no width.
+   * Shown again, it starts at Home and loads again, like a card that comes back.
+   */
+  private _resized(width: number): void {
+    if (!width) {
+      if (!this._hidden) {
+        this._hidden = true;
+        this._hiddenSince = Date.now();
+      }
+      return;
+    }
+    this._width = width;
+    if (this._hidden) {
+      this._hidden = false;
+      this._centred = false;
+      // A card laid out without a width for a moment (a preview, a late
+      // container) has fresh values already; one that was hidden has not.
+      if (this._loaded !== null && Date.now() - this._hiddenSince >= SHOWN_RELOAD_MS) {
+        void this._load();
+      }
+    }
+    // Not centred yet (hidden, or not laid out): try again with a width.
+    if (!this._centred) {
+      this.requestUpdate();
     }
   }
 
@@ -177,6 +212,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     if (key !== this._loaded) {
       this._loaded = key;
       this._data = null;
+      this._error = null;
       this._centred = false;
       this._collapsed = new Set();
       this._seenGroups = new Set();
@@ -197,11 +233,12 @@ export class EnergyFlowMapperCardView extends LitElement {
 
   /**
    * A diagram wider than the card starts where Home is: scrolled to the middle,
-   * or at the left when it runs from left to right.
+   * or at the left when it runs from left to right. A hidden card (no width)
+   * waits until it is shown.
    */
   protected override updated(): void {
     const diagram = this.shadowRoot?.querySelector<HTMLElement>(".diagram");
-    if (!this._centred && diagram) {
+    if (!this._centred && diagram && diagram.clientWidth > 0) {
       diagram.scrollLeft = this._orientation === "vertical" ? 0 : (diagram.scrollWidth - diagram.clientWidth) / 2;
       this._centred = true;
     }
@@ -234,6 +271,7 @@ export class EnergyFlowMapperCardView extends LitElement {
         this._error = null;
       }
     } catch (err) {
+      // With data already there, the card keeps it and only shows a hint.
       if (request === this._request) {
         this._error = errorText(this.hass, err);
       }
@@ -272,7 +310,7 @@ export class EnergyFlowMapperCardView extends LitElement {
 
   /** The header text; an empty title hides the whole header. */
   private _title(): string {
-    return this.config?.title ?? this._t(this.config?.kind === "water" ? "diagram_water" : "diagram");
+    return this.config?.title ?? defaultTitle(this.hass, this.config?.kind);
   }
 
   protected override render(): TemplateResult {
@@ -289,18 +327,26 @@ export class EnergyFlowMapperCardView extends LitElement {
   }
 
   private _renderBody(): TemplateResult {
-    if (this._error) {
+    if (this._error && !this._data) {
       return html`<p class="message error">${this._error}</p>`;
     }
     if (!this._data || !this.config) {
       return html`<p class="message">${this._t("loading")}</p>`;
     }
+    // A failed refresh keeps the last diagram; a small hint says so.
+    return this._error
+      ? html`<p class="message stale" title=${this._error}>${this._t("card_stale")}</p>${this._renderTree()}`
+      : this._renderTree();
+  }
+
+  private _renderTree(): TemplateResult {
+    const config = this.config!;
     const devices = this._devices();
     let roots = buildTree(devices);
-    const groups = this._data.groups ?? [];
+    const groups = this._data?.groups ?? [];
     this._startCollapsed(groups);
     let display = displayTree(roots, groups);
-    const root = this.config.root;
+    const root = config.root;
     if (root?.startsWith(GROUP_PREFIX)) {
       const node = walkDisplay(display).find((n) => n.type === "group" && groupBlockId(n.group.id) === root);
       if (!node) {
@@ -488,7 +534,7 @@ export class EnergyFlowMapperCardView extends LitElement {
           data-role=${role}
         >
           <div class="block-text">
-            <span class="node-name">${this._t(`role_${role}` as StringKey)}</span>
+            <span class="node-name">${hasKey(`role_${role}`) ? this._t(`role_${role}` as StringKey) : role}</span>
             <span class="sub">${block.source?.name ?? block.stat}</span>
           </div>
           ${block.stat && this._haTitles(block.stat).length
@@ -680,6 +726,10 @@ export class EnergyFlowMapperCardView extends LitElement {
     .error {
       color: var(--error-color);
     }
+    .message.stale {
+      margin: 0 0 8px;
+      font-size: 13px;
+    }
     .diagram {
       overflow-x: auto;
       overflow-y: hidden;
@@ -820,9 +870,9 @@ export class EnergyFlowMapperCardEditor extends LitElement {
 
   declare hass?: HomeAssistant;
   declare _config: CardConfig | null;
-  /** Devices of the chosen list, for "Start at device". */
+  /** Devices of the chosen list, for "Start at". */
   declare _devices: CardDevice[];
-  /** Groups of the chosen list, for "Start at device". */
+  /** Groups of the chosen list, for "Start at". */
   declare _groups: Group[];
 
   private _kindLoaded: DeviceKind | null = null;
@@ -881,10 +931,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
             options: [
               { value: "", label: this._t("card_root_all") },
               ...this._devices.map((d) => ({ value: d.stat, label: d.name })),
-              ...this._groups.map((g) => ({
-                value: groupBlockId(g.id),
-                label: this._t("card_root_group", { name: g.name }),
-              })),
+              ...this._groups.map((g) => ({ value: groupBlockId(g.id), label: this._groupLabel(g) })),
             ],
           },
         },
@@ -898,6 +945,19 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       // Coverage is measured against the home consumption: electricity only.
       ...(this._config?.kind === "water" ? [] : [{ name: "show_coverage", selector: { boolean: {} } }]),
     ];
+  }
+
+  /** "Group: Kitchen"; with its parent when another group has the same name. */
+  private _groupLabel(group: Group): string {
+    if (this._groups.filter((g) => g.name === group.name).length < 2) {
+      return this._t("card_root_group", { name: group.name });
+    }
+    const parent = group.group
+      ? this._groups.find((g) => g.id === group.group)?.name
+      : group.parent
+        ? this._devices.find((d) => d.stat === group.parent)?.name
+        : this._t("home");
+    return this._t("card_root_group_in", { name: group.name, parent: parent ?? group.parent ?? "" });
   }
 
   computeLabel = (field: FormSchema): string => {
@@ -923,13 +983,19 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     if (value.kind !== undefined && value.kind !== this._config.kind) {
       delete next.root;
     }
-    // Default values stay out of the YAML; an empty title is kept, it hides
-    // the header.
+    // Default values stay out of the YAML.
     if (!next.root) {
       delete next.root;
     }
-    if (next.title === null || next.title === undefined) {
-      delete next.title;
+    // The field shows the header. The default title stays the default (also
+    // for another list); an emptied field, which Home Assistant reports as
+    // undefined, keeps an empty title: that hides the header.
+    if ("title" in value) {
+      if (value.title === undefined || value.title === null || value.title === "") {
+        next.title = "";
+      } else if (value.title === defaultTitle(this.hass, this._config.kind)) {
+        delete next.title;
+      }
     }
     const defaults: Record<string, unknown> = {
       kind: "electricity",
@@ -954,7 +1020,11 @@ export class EnergyFlowMapperCardEditor extends LitElement {
     }
     return html`<ha-form
       .hass=${this.hass}
-      .data=${{ ...this._config, root: this._config.root ?? "" }}
+      .data=${{
+        ...this._config,
+        root: this._config.root ?? "",
+        title: this._config.title ?? defaultTitle(this.hass, this._config.kind),
+      }}
       .schema=${this.schema()}
       .computeLabel=${this.computeLabel}
       @value-changed=${(e: CustomEvent<{ value: Record<string, unknown> }>) => this._valueChanged(e.detail.value)}
