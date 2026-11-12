@@ -2625,6 +2625,11 @@ describe("groups", () => {
     return root(el).querySelector<HTMLElement>(`.block.group[data-group="${id}"]`)!;
   }
 
+  /** Tap the ⋮ of a group: its actions. */
+  function groupActions(el: EnergyFlowMapperPanel, id: string): void {
+    group(el, id).querySelector<HTMLButtonElement>('button[aria-label^="Actions for group"]')!.click();
+  }
+
   function frame(el: EnergyFlowMapperPanel, id: string): HTMLElement | null {
     return root(el).querySelector<HTMLElement>(`.frame[data-group="${id}"]`);
   }
@@ -2669,8 +2674,13 @@ describe("groups", () => {
     el.setPeriod("week");
     await settle(el);
     expect(group(el, "g1").textContent).toContain("1.5 kWh");
-    // Tapping the block opens the actions of the group.
-    group(el, "g1").click();
+    // Tapping the block opens the group (the whole block, not just the arrow) …
+    group(el, "g1").querySelector<HTMLElement>(".block-text")!.click();
+    await settle(el);
+    expect(el._collapsed.has("group:g1")).toBe(false);
+    expect(root(el).querySelector("dialog[open]")).toBeNull();
+    // … and only ⋮ opens its actions.
+    groupActions(el, "g1");
     await settle(el);
     expect(root(el).querySelector("dialog")!.textContent).toContain("Media");
   });
@@ -3098,7 +3108,7 @@ describe("groups", () => {
 
   it("renames and dissolves a group", async () => {
     const el = await mount(groupMock());
-    group(el, "g1").click();
+    groupActions(el, "g1");
     await settle(el);
     expect(dialogEl(el).querySelector("h2")!.textContent).toContain("Media");
     expect(dialogEl(el).textContent).toContain("Dissolve group");
@@ -3114,7 +3124,7 @@ describe("groups", () => {
     expect(el._changes).toEqual([{ type: "rename_group", id: "g1", name: "Audio" }]);
     expect(group(el, "g1").textContent).toContain("Audio");
     // Dissolving: the amp shows again, the group is gone.
-    group(el, "g1").click();
+    groupActions(el, "g1");
     await settle(el);
     dialogButton(el, "Dissolve group").click();
     await settle(el);
@@ -3149,7 +3159,7 @@ describe("groups", () => {
       stat_rate: "sensor.media_power",
     };
     const el = await mount(mock);
-    group(el, "g1").click();
+    groupActions(el, "g1");
     await settle(el);
     dialogButton(el, "Create sum meter").click();
     await settle(el);

@@ -2774,9 +2774,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * A group: collapsed, a dashed block with its name, devices and value
-   * (tapping it opens its actions); expanded, the header of its frame
-   * «▾ name · value», which a tap collapses again.
+   * A group: collapsed, a dashed block with its name, devices and value;
+   * expanded, the header of its frame «▾ name · value». A tap opens or closes
+   * it, ⋮ opens its actions.
    */
   private _renderGroupBlock(block: Block, value: number | null): TemplateResult {
     const group = block.group!;
@@ -2801,10 +2801,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       @dragleave=${handlers.leave}
       @drop=${handlers.drop}
       @click=${(e: MouseEvent) => {
+        // A tap opens or closes the group (the whole block is easy to hit on a
+        // phone); its actions are behind ⋮, as with devices.
         if (this._selecting(e)) {
           this._toggleMulti(id);
-        } else if (collapsed) {
-          this._dialog = { kind: "group", id: group.id };
         } else {
           this._toggle(id);
         }

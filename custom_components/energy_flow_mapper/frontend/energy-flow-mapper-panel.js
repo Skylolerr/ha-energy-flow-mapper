@@ -293,7 +293,7 @@ const $=globalThis,x=e=>e,k=$.trustedTypes,S=k?k.createPolicy("lit-html",{create
       @dragover=${o.over}
       @dragleave=${o.leave}
       @drop=${o.drop}
-      @click=${e=>{this._selecting(e)?this._toggleMulti(r):n?this._dialog={kind:"group",id:s.id}:this._toggle(r)}}
+      @click=${e=>{this._selecting(e)?this._toggleMulti(r):this._toggle(r)}}
     >
       <button
         class="icon toggle"

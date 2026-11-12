@@ -210,9 +210,10 @@ the sensors live.
 | Group devices | Ctrl/Cmd+click several blocks (on a phone: *Select*, then tap them) → *Group* → name |
 | Add a device to a group | Drag its block onto the group |
 | Take a device out of a group | Drag it out of the frame onto its parent |
-| Rename or dissolve a group | Tap the group → *Rename* or *Dissolve group* (members stay) |
+| Open or close a group | Tap it |
+| Rename or dissolve a group | ⋮ on the group → *Rename* or *Dissolve group* (members stay) |
 | Group devices by area | *Suggest groups from areas* in the toolbar |
-| Create a sum meter | Tap a group → *Create sum meter*, or ⋮ on a device to pick sensors freely |
+| Create a sum meter | ⋮ on a group → *Create sum meter*, or ⋮ on a device to pick sensors freely |
 | Show one group on a dashboard | Card option `root: group:<id>`, or pick the group in the card editor |
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
 | Take back a change of the draft | *Undo change* in the bar at the bottom, or Ctrl+Z |

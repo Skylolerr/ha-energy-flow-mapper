@@ -17,6 +17,8 @@ and Home Assistant show when they offer the update.
   tabs and the search. The tools sit behind "Tools ▾" and the help text behind "?".
 - **Select mode** shows in the bar at the bottom as long as it is on, with "Done" to leave
   it, also before the first block is picked.
+- **Tap a group to open it:** the whole block opens or closes a group, not just the small
+  arrow; its actions (rename, dissolve, sum meter) are behind ⋮, as with devices.
 - **Discard asks first** when the draft has more than one change.
 - **Sum meter:** the dialog warns when an entity with that name already exists.
 
