@@ -120,6 +120,36 @@ def _entity_name(entry: er.RegistryEntry | None, device_name: str | None) -> str
     return entry.original_name
 
 
+def _energy_device_name(
+    hass: HomeAssistant,
+    entry: er.RegistryEntry,
+    device: Any,
+    device_name: str | None,
+) -> str | None:
+    """Return the name Home Assistant's energy dashboard gives a device.
+
+    The dashboard names a device without its own name with the name parts
+    "parent device" and "device", following the context: the device unless the
+    entity has its own area and name, the parent device (`parent_device_id`,
+    never `via_device_id`) only for a child device without an area. None when
+    neither applies; the entity's name stays then.
+    """
+    follows_device = str(entry.next_name_part) == "device"
+    own_name = entry.name if entry.name is not None else entry.original_name
+    parts: list[str] = []
+    if (
+        follows_device
+        and str(getattr(device, "next_name_part", None)) == "parent_device"
+    ):
+        parent = dr.async_get(hass).async_get(getattr(device, "parent_device_id", ""))
+        parts.append(
+            getattr(parent, "name_by_user", None) or getattr(parent, "name", None) or ""
+        )
+    if follows_device or not own_name:
+        parts.append(device_name or "")
+    return " ".join(part for part in parts if part) or None
+
+
 @callback
 def names_by_device() -> bool:
     """Return True if Home Assistant names energy devices after their device.
@@ -186,11 +216,11 @@ def async_stat_info(
         state.attributes.get(ATTR_FRIENDLY_NAME) if state is not None else None
     )
     info["energy_name"] = info["name"]
-    if device is not None and info["device_name"] and names_by_device():
-        via_id = getattr(device, "via_device_id", None)
-        via = dr.async_get(hass).async_get(via_id) if via_id else None
-        parent = (via.name_by_user or via.name) if via is not None else None
-        info["energy_name"] = " ".join(n for n in (parent, info["device_name"]) if n)
+    if entry is not None and device is not None and names_by_device():
+        info["energy_name"] = (
+            _energy_device_name(hass, entry, device, info["device_name"])
+            or info["name"]
+        )
 
     area_id = (entry.area_id if entry else None) or (device.area_id if device else None)
     area = ar.async_get(hass).async_get_area(area_id) if area_id else None

@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
@@ -380,26 +381,31 @@ async def test_names_follow_home_assistant_naming(hass: HomeAssistant) -> None:
 async def test_energy_name_like_home_assistant(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """From 2026.11, devices are named after their device, as in HA."""
+    """From 2026.11, devices are named after their device, as in HA.
+
+    Home Assistant's energy dashboard names a device without its own name with
+    the name parts parent device and device: the device always (unless the
+    entity has its own area and name), the parent device (`parent_device_id`)
+    only for a child device without an area. `via_device` (a Zigbee stick, a
+    hub the device talks through) never counts.
+    """
     devices = dr.async_get(hass)
     printer = async_stat_info(hass, "sensor.printer_energy")
     device = devices.async_get(printer["device_id"])
     assert device is not None
     entry = MockConfigEntry(domain="test")
     entry.add_to_hass(hass)
-    hub = devices.async_get_or_create(
-        config_entry_id=entry.entry_id, identifiers={("test", "hub")}, name="Office hub"
+    stick = devices.async_get_or_create(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "stick")},
+        name="Home Assistant Connect ZBT-2",
     )
-    devices.async_update_device(device.id, via_device_id=hub.id)
+    devices.async_update_device(device.id, via_device_id=stick.id)
     monkeypatch.setattr(candidates_module, "names_by_device", lambda: False)
     assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == (
         "Printer energy"
     )
     monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
-    assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == (
-        "Office hub Printer"
-    )
-    devices.async_update_device(device.id, via_device_id=None)
     assert async_stat_info(hass, "sensor.printer_energy")["energy_name"] == "Printer"
     # Without a device, and for external statistics, the statistic's name stays.
     assert (
@@ -407,6 +413,55 @@ async def test_energy_name_like_home_assistant(
         == (async_stat_info(hass, "sensor.kitchen_energy")["name"])
     )
     assert async_stat_info(hass, "portal:energy_import")["energy_name"] is None
+
+
+async def test_energy_name_of_a_child_device(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A child device without an area gets its parent device in front, as in HA."""
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    devices = dr.async_get(hass)
+    strip = devices.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "strip")}, name="Strip"
+    )
+    outlet = devices.async_get_or_create_child(
+        config_entry_id=entry.entry_id,
+        identifiers={("test", "outlet_1")},
+        parent_device_id=strip.id,
+        name="Outlet 1",
+    )
+    _meter(hass, "sensor.outlet_1_energy", device_id=outlet.id)
+    assert async_stat_info(hass, "sensor.outlet_1_energy")["energy_name"] == (
+        "Strip Outlet 1"
+    )
+    # With its own area the child device stands for itself.
+    areas = ar.async_get(hass)
+    office = areas.async_create("Office")
+    devices.async_update_child_device(outlet.id, area_id=office.id)
+    assert async_stat_info(hass, "sensor.outlet_1_energy")["energy_name"] == "Outlet 1"
+
+
+async def test_energy_name_of_an_entity_with_its_own_area(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An entity with its own area and name keeps its name, as in HA."""
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    plug = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "plug")}, name="Plug"
+    )
+    _meter(hass, "sensor.plug_energy", device_id=plug.id)
+    registry = er.async_get(hass)
+    office = ar.async_get(hass).async_create("Office")
+    registry.async_update_entity(
+        "sensor.plug_energy", area_id=office.id, name="Desk lamp"
+    )
+    info = async_stat_info(hass, "sensor.plug_energy")
+    assert info["energy_name"] == info["name"]
+    assert "Desk lamp" in info["energy_name"]
 
 
 def test_names_by_device_from_2026_11(monkeypatch: pytest.MonkeyPatch) -> None:
