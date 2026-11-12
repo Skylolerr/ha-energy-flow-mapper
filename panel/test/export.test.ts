@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { anonymize, diagramSvg, escapeXml, exportScale, FOOTER_H, MAX_CANVAS, type ExportBlock } from "../src/export";
+import { anonymize, diagramSize, diagramSvg, escapeXml, exportScale, FOOTER_H, MAX_CANVAS, type ExportBlock } from "../src/export";
 import type { Block, Layout } from "../src/layout";
 
 const theme = {
@@ -50,6 +50,15 @@ describe("diagramSvg", () => {
     expect(svg).toContain("2 kWh · Kids room Anna");
     expect(svg).toContain("Energy Flow Mapper · Electricity · 7 days · 06.11.2026 18:30");
     expect(svg).not.toContain("foreignObject");
+  });
+
+  it("is as wide as its footer on a small diagram, and says how big it is", () => {
+    const small: Layout = { ...LAYOUT, blocks: [LAYOUT.blocks[1]], width: 268, height: 120 };
+    const size = diagramSize(small, options.footer);
+    expect(size.width).toBeGreaterThan(268);
+    expect(size.height).toBe(120 + FOOTER_H);
+    expect(diagramSvg(small, [blocks()[1]], [], options)).toContain(`width="${size.width}" height="${size.height}"`);
+    expect(diagramSize(LAYOUT, "x")).toEqual({ width: 844, height: 216 + FOOTER_H });
   });
 
   it("escapes markup in names", () => {

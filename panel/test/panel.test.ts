@@ -884,6 +884,38 @@ describe("narrow screens", () => {
     await settle(el);
     expect(root(el).querySelector("dialog")!.textContent).toContain("sensor.sonos_power");
   });
+
+  it("keeps the footer and toast clear of the phone's navigation bar", () => {
+    // Home Assistant sets --safe-area-inset-bottom: 0 in a browser, the height of
+    // the on-screen buttons or gesture bar in the companion app.
+    const css = EnergyFlowMapperPanel.styles.cssText.replace(/\s+/g, " ");
+    expect(css).toMatch(
+      /\.footer \{[^}]*padding-bottom: calc\(12px \+ var\(--safe-area-inset-bottom, 0px\)\)/,
+    );
+    // Without a footer the toast keeps the inset free; over the footer, whose
+    // height includes the inset, it sits on the footer's measured height.
+    expect(css).toMatch(
+      /\.toast \{[^}]*bottom: calc\(16px \+ var\(--safe-area-inset-bottom, 0px\)\)/,
+    );
+    expect(css).toMatch(/\.toast\.over-footer \{[^}]*bottom: calc\(var\(--efm-footer-height, 0px\) \+ 12px\)/);
+  });
+
+  it("fits a phone panel into the room Home Assistant leaves between the system bars", () => {
+    // Home Assistant pads its custom-panel container by the safe-area insets, so a
+    // phone panel that is as tall as the screen made the page scroll by the
+    // navigation bar and reserved it twice below the footer.
+    const css = EnergyFlowMapperPanel.styles.cssText.replace(/\s+/g, " ");
+    expect(css).toMatch(
+      /:host\(\[narrow\]\) \{[^}]*height: calc\(100dvh - var\(--safe-area-inset-top, 0px\) - var\(--safe-area-inset-bottom, 0px\)\)/,
+    );
+    const narrowFooter = /:host\(\[narrow\]\) \.footer \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(narrowFooter).not.toContain("safe-area");
+    expect(css).not.toMatch(/\.content\.narrow:not\(\.above-footer\) \{[^}]*safe-area/);
+    // The toast is fixed to the screen: on a phone it adds the navigation bar below the footer.
+    expect(css).toMatch(
+      /:host\(\[narrow\]\) \.toast\.over-footer \{[^}]*bottom: calc\(var\(--efm-footer-height, 0px\) \+ var\(--safe-area-inset-bottom, 0px\) \+ 12px\)/,
+    );
+  });
 });
 
 describe("texts", () => {
@@ -1308,7 +1340,7 @@ describe("sources", () => {
     expect(text(el)).not.toContain("last meter");
     buttonWith(el, "Remove as source").click();
     await settle(el);
-    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.import" });
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.import", role: "import" });
     expect(root(el).querySelector('.block.placeholder[data-role="import"]')).not.toBeNull();
 
     // The export meter is now the last one: removing it removes the connection.
@@ -1683,7 +1715,7 @@ describe("water", () => {
     await settle(el);
     buttonWith(el, "Remove as source").click();
     await settle(el);
-    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.tap" });
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.tap", role: "water" });
     // Without a water meter the placeholder offers one; dropping adds it.
     const placeholder = root(el).querySelector<HTMLElement>('.block.placeholder[data-role="water"]')!;
     expect(placeholder.textContent!.trim()).toBe("+ Water");
@@ -1840,7 +1872,7 @@ describe("gas", () => {
     await settle(el);
     buttonWith(el, "Remove as source").click();
     await settle(el);
-    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.boiler_gas" });
+    expect(el._changes.at(-1)).toEqual({ type: "unassign_source", stat: "sensor.boiler_gas", role: "gas" });
     expect(gas()).toEqual([]);
   });
 
@@ -2057,6 +2089,31 @@ describe("home meter", () => {
       home,
     });
   }
+
+  it("does not warn about the grid when the home meter shares the grid's last meter", async () => {
+    const shared = [
+      { type: "grid", stat_energy_from: "sensor.main", stat_energy_to: null },
+      { type: "home", stat_energy_to: "sensor.main" },
+    ];
+    const el = await mount(homeMock(true, shared));
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="home"]')!.click();
+    await settle(el);
+    // Removing the home meter keeps the grid (role "home"), so no warning here …
+    expect(root(el).querySelector("dialog")!.textContent).not.toContain("last meter of this grid connection");
+    // … but removing the grid import does remove the connection.
+    const grid = await mount(homeMock(true, shared));
+    root(grid).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
+    await settle(grid);
+    expect(root(grid).querySelector("dialog")!.textContent).toContain("last meter of this grid connection");
+  });
+
+  it("previews a second home meter like the backend: skipped", async () => {
+    const el = await mount(homeMock(true, WITH_HOME));
+    el._changes = [{ type: "use_as_home_meter", stat: "sensor.tv" }];
+    await settle(el);
+    // The backend refuses it with home_exists; the preview must keep the device.
+    expect(el.draftOf("electricity").map((d) => d.stat_consumption)).toContain("sensor.tv");
+  });
 
   it("offers a placeholder only where Home Assistant knows the home meter", async () => {
     const off = await mount(homeMock(false));
@@ -2789,7 +2846,8 @@ describe("groups", () => {
     buttonWith(el, "Clear selection").click();
     await settle(el);
     expect(el._multi.size).toBe(0);
-    expect(root(el).querySelector(".footer")).toBeNull();
+    // Still in select mode: the bar stays, with a way out.
+    expect(root(el).querySelector(".footer")!.textContent).toContain("0 selected");
     // Leaving the mode drops the selection, and taps select for the details again.
     node(el, "sensor.nas").click();
     buttonWith(el, "Select").click();
@@ -3364,5 +3422,318 @@ describe("groups", () => {
     expect(el._changes).toHaveLength(2);
     el._undoChange();
     expect(el._changes).toEqual([]);
+  });
+});
+
+describe("robustness and phone fixes", () => {
+  function css(): string {
+    return EnergyFlowMapperPanel.styles.cssText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ");
+  }
+
+  /** The declarations of every rule whose selector list contains `selector` exactly. */
+  function rules(selector: string): string {
+    const found: string[] = [];
+    for (const match of css().matchAll(/([^{}]+)\{([^}]*)\}/g)) {
+      const selectors = match[1].split(",").map((s) => s.trim());
+      if (selectors.includes(selector)) {
+        found.push(match[2]);
+      }
+    }
+    return found.join(";");
+  }
+
+  function deferred<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+
+  it("shows a source of a type the panel does not know instead of a blank panel", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "heat", stat_energy_from: "sensor.heat" });
+    snap.stats["sensor.heat"] = info("sensor.heat", "Heat meter");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    expect(text(el)).toContain("Heat meter");
+    expect(text(el)).toContain("heat");
+    el._view = "list";
+    await settle(el);
+    expect(text(el)).toContain("Heat meter");
+  });
+
+  it("gives the image canvas the size of the picture, footer included", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "gas", stat_energy_from: "sensor.gas" });
+    snap.stats["sensor.gas"] = info("sensor.gas", "Gas meter", { unit: "m³", device_class: "gas" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el.setTab("gas");
+    await settle(el);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:image");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    const toPng = vi.fn(async (_svg: string, _w: number, _h: number) => new Blob(["png"]));
+    el._toPng = toPng;
+    await el._saveImage(false);
+    const [svg, width, height] = toPng.mock.calls[0];
+    expect(width).toBe(Number(/ width="(\d+)"/.exec(svg)![1]));
+    expect(height).toBe(Number(/ height="(\d+)"/.exec(svg)![1]));
+    expect(width).toBeGreaterThan(el.diagramLayout().width);
+    vi.restoreAllMocks();
+  });
+
+  it("lets the selection count wrap instead of pushing it off the screen", () => {
+    expect(rules(".footer .selection")).not.toContain("nowrap");
+    expect(rules(".footer .selection")).toContain("flex-wrap: wrap");
+    expect(rules(".footer .selection")).toContain("min-width: 0");
+  });
+
+  it("keeps the toast above the footer and lets taps through", async () => {
+    expect(rules(".toast")).toContain("pointer-events: none");
+    expect(rules(".toast.over-footer")).toContain("bottom: calc(var(--efm-footer-height, 0px) + 12px)");
+    const el = await mount(mockHass(), true);
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    await settle(el);
+    const footer = root(el).querySelector<HTMLElement>(".footer")!;
+    Object.defineProperty(footer, "offsetHeight", { configurable: true, value: 108 });
+    el._measureFooter();
+    expect(el.style.getPropertyValue("--efm-footer-height")).toBe("108px");
+    el._undoChange();
+    await settle(el);
+    expect(root(el).querySelector(".toast")!.classList.contains("over-footer")).toBe(false);
+    expect(el.style.getPropertyValue("--efm-footer-height")).toBe("0px");
+  });
+
+  it("fits dialogs into a phone screen", () => {
+    expect(rules("dialog")).toContain("box-sizing: border-box");
+    expect(rules("dialog")).toContain("width: min(480px, calc(100vw - 32px))");
+  });
+
+  it("wraps long names without spaces in dialogs and headers", () => {
+    for (const selector of ["dialog h2", ".targets button", ".card-header h2", "dialog .node-name"]) {
+      expect(rules(selector), selector).toContain("overflow-wrap: anywhere");
+    }
+  });
+
+  it("shows a message inside an open dialog, where the backdrop does not hide it", async () => {
+    const el = await mount(mockHass());
+    await el._openBackups(false);
+    await settle(el);
+    await el._readImport(new File(["not json"], "notes.txt"));
+    await settle(el);
+    expect(root(el).querySelector("dialog .toast")!.textContent).toContain("could not be read");
+    expect(root(el).querySelectorAll(".toast")).toHaveLength(1);
+    el._dialog = null;
+    await settle(el);
+    expect(root(el).querySelector("dialog .toast")).toBeNull();
+    expect(root(el).querySelector(".toast")!.textContent).toContain("could not be read");
+  });
+
+  it("can cancel the check before saving; a late result is ignored", async () => {
+    const mock = mockHass();
+    const el = await mount(mock);
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    await settle(el);
+    const pending = deferred<ValidateResult>();
+    mock.responses["energy_flow_mapper/validate"] = () => pending.promise;
+    const opening = el._openConfirm();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Checking");
+    root(el).querySelector<HTMLButtonElement>("dialog button.cancel")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    pending.resolve({ valid: true, issues: [], diff: [] });
+    await opening;
+    await settle(el);
+    expect(el._dialog).toBeNull();
+  });
+
+  it("can cancel the check of an import file; a late result is ignored", async () => {
+    const mock = mockHass();
+    const el = await mount(mock);
+    const pending = deferred<unknown>();
+    mock.responses["energy_flow_mapper/import_check"] = pending.promise;
+    const reading = el._readImport(new File([JSON.stringify({ format: "energy_flow_mapper" })], "a.json"));
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("Checking");
+    root(el).querySelector<HTMLButtonElement>("dialog button.cancel")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    // Another dialog opened meanwhile is not replaced by the late result.
+    el._dialog = { kind: "menu" };
+    pending.resolve({ valid: true, changed: true, issues: [], diff: [] });
+    await reading;
+    await settle(el);
+    expect(el._dialog).toEqual({ kind: "menu" });
+  });
+
+  it("says visibly why the selection cannot be grouped", async () => {
+    const el = await mount(mockHass(), true);
+    el._multi = new Set(["sensor.sonos", "sensor.tv"]);
+    await settle(el);
+    expect(root(el).querySelector<HTMLButtonElement>(".group-selection")!.disabled).toBe(true);
+    expect(root(el).querySelector(".selection .group-hint")!.textContent).toContain(
+      "Only devices with the same parent",
+    );
+    el._multi = new Set(["sensor.server", "sensor.tv"]);
+    await settle(el);
+    expect(root(el).querySelector(".selection .group-hint")).toBeNull();
+  });
+
+  it("asks before discarding a draft of several changes", async () => {
+    const el = await mount(mockHass());
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    el._change({ type: "rename", stat: "sensor.sonos", name: "Amp" });
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>(".footer button.discard")!.click();
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("All 2 changes of the draft will be lost");
+    root(el).querySelector<HTMLButtonElement>("dialog button.cancel")!.click();
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+    root(el).querySelector<HTMLButtonElement>(".footer button.discard")!.click();
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>("dialog button.danger")!.click();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    expect(el._dialog).toBeNull();
+  });
+
+  it("discards a single change right away", async () => {
+    const el = await mount(mockHass());
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>(".footer button.discard")!.click();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    expect(el._dialog).toBeNull();
+  });
+
+  it("counts like the footer when deciding to ask before discarding", async () => {
+    const mock = mockHass();
+    // Two renames of one device are one change in the footer ("1 change").
+    mock.responses["energy_flow_mapper/validate"] = {
+      valid: true,
+      issues: [],
+      diff: [{ type: "renamed", stat: "sensor.tv", name: "Telly 2" }],
+    };
+    const el = await mount(mock);
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly 2" });
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>(".footer button.discard")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    expect(el._changes).toEqual([]);
+  });
+
+  it("warns when the sum meter's name is already an entity's name", async () => {
+    const mock = mockHass();
+    mock.hass.states["sensor.tv_energy_2"] = {
+      entity_id: "sensor.tv_energy_2",
+      state: "1",
+      attributes: { friendly_name: "tv energy" },
+    };
+    const el = await mount(mock);
+    el._openSum({ origin: "sensor.tv" });
+    await settle(el);
+    expect(el._renameValue).toBe("TV Energy");
+    expect(root(el).querySelector("dialog .sum-name-exists")!.textContent).toContain("TV Energy");
+    el._renameValue = "Telly Energy";
+    await settle(el);
+    expect(root(el).querySelector("dialog .sum-name-exists")).toBeNull();
+  });
+
+  it("uses Strg in German shortcut texts", async () => {
+    const { de } = await import("../src/translations/de");
+    expect(de.select_mode_hint).toContain("Strg+Klick");
+    expect(Object.values(de).join(" ")).not.toContain("Ctrl");
+  });
+
+  describe("phone layout", () => {
+    it("sizes the diagram to the room the screen has left", () => {
+      expect(rules(":host([narrow])")).toContain("height: calc(100dvh -");
+      expect(rules(".narrow .viewport")).toContain("flex: 1 1 0");
+      expect(rules(".narrow .viewport")).not.toContain("100vh");
+      // Desktop keeps its size.
+      expect(rules(".viewport")).toContain("height: calc(100vh - 365px)");
+    });
+
+    it("reflects narrow as an attribute", async () => {
+      const el = await mount(mockHass(), true);
+      expect(el.hasAttribute("narrow")).toBe(true);
+    });
+
+    it("folds the tools and the help text away on a phone", async () => {
+      const el = await mount(mockHass(), true);
+      expect(root(el).querySelector(".toolbar")).toBeNull();
+      expect(text(el)).not.toContain("Drag a device onto another one");
+      root(el).querySelector<HTMLButtonElement>("button.tools-toggle")!.click();
+      await settle(el);
+      expect(root(el).querySelector(".toolbar")!.textContent).toContain("Save as image");
+      expect(root(el).querySelector("button.tools-toggle")!.getAttribute("aria-expanded")).toBe("true");
+      root(el).querySelector<HTMLButtonElement>("button.help-toggle")!.click();
+      await settle(el);
+      expect(text(el)).toContain("Drag a device onto another one");
+    });
+
+    it("shows select mode in the footer, so it can be left with the tools folded", async () => {
+      const el = await mount(mockHass(), true);
+      root(el).querySelector<HTMLButtonElement>("button.tools-toggle")!.click();
+      await settle(el);
+      root(el).querySelector<HTMLButtonElement>("button.select-mode")!.click();
+      await settle(el);
+      root(el).querySelector<HTMLButtonElement>("button.tools-toggle")!.click();
+      await settle(el);
+      expect(root(el).querySelector(".toolbar")).toBeNull();
+      // Nothing selected yet: the footer still says select mode is on.
+      const footer = root(el).querySelector(".footer")!;
+      expect(footer.textContent).toContain("0 selected");
+      footer.querySelector<HTMLButtonElement>("button.select-done")!.click();
+      await settle(el);
+      expect(el._selectMode).toBe(false);
+      expect(root(el).querySelector(".footer")).toBeNull();
+    });
+
+    it("measures the footer only when it changes, not on every update", async () => {
+      const observed: Element[] = [];
+      const original = globalThis.ResizeObserver;
+      globalThis.ResizeObserver = class {
+        observe(target: Element) {
+          observed.push(target);
+        }
+        disconnect() {}
+        unobserve() {}
+      } as unknown as typeof ResizeObserver;
+      try {
+        const mock = mockHass();
+        const el = await mount(mock, true);
+        el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+        await settle(el);
+        const measure = vi.spyOn(el, "_measureFooter");
+        // State pushes from Home Assistant re-render the panel many times a minute.
+        for (let i = 0; i < 3; i++) {
+          el.hass = { ...mock.hass };
+          await settle(el);
+        }
+        expect(measure).not.toHaveBeenCalled();
+        // The footer going away is measured (its height is 0 then).
+        root(el).querySelector<HTMLButtonElement>(".footer button.discard")!.click();
+        await settle(el);
+        expect(measure).toHaveBeenCalled();
+      } finally {
+        globalThis.ResizeObserver = original;
+      }
+    });
+
+    it("keeps tools and help open on a wide screen", async () => {
+      const el = await mount(mockHass());
+      expect(root(el).querySelector(".toolbar")!.textContent).toContain("Save as image");
+      expect(text(el)).toContain("Drag a device onto another one");
+      expect(root(el).querySelector("button.tools-toggle")).toBeNull();
+    });
   });
 });

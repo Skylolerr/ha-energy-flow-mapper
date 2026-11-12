@@ -16,7 +16,7 @@ import {
   type TreeNode,
   untracked,
 } from "./draft";
-import { anonymize, diagramSvg, type ExportBlock, type ExportEdge, FOOTER_H, svgToPng } from "./export";
+import { anonymize, diagramSize, diagramSvg, type ExportBlock, type ExportEdge, svgToPng } from "./export";
 import {
   applyAllChanges,
   areaGroups,
@@ -152,7 +152,9 @@ type Dialog =
    */
   | { kind: "sum"; group: string | null; origin: string | null; added: string[]; picking: boolean }
   /** The name of a new group made from the selected blocks. */
-  | { kind: "group_name" };
+  | { kind: "group_name" }
+  /** Discard a draft of several changes? */
+  | { kind: "discard" };
 
 type SumDialog = Extract<Dialog, { kind: "sum" }>;
 
@@ -282,7 +284,8 @@ function navigate(path: string): void {
 export class EnergyFlowMapperPanel extends LitElement {
   static override properties = {
     hass: { attribute: false },
-    narrow: { type: Boolean },
+    // Reflected: the phone layout sizes the host to the screen (:host([narrow])).
+    narrow: { type: Boolean, reflect: true },
     _snapshot: { state: true },
     _loadError: { state: true },
     _changes: { state: true },
@@ -308,6 +311,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _findIndex: { state: true },
     _multi: { state: true },
     _selectMode: { state: true },
+    _toolsOpen: { state: true },
+    _helpOpen: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -363,6 +368,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _multi: Set<string>;
   /** Touch mode in which a tap selects a block for grouping (like Ctrl+click). */
   declare _selectMode: boolean;
+  /** On a phone the diagram's tools and its help text are folded away until opened. */
+  declare _toolsOpen: boolean;
+  declare _helpOpen: boolean;
 
   private _loading = false;
   /** Whether the kept draft was looked at; until then nothing is stored. */
@@ -375,6 +383,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   _autoFit = true;
   private _resizeObserver?: ResizeObserver;
   private _observed: Element | null = null;
+  private _footerObserver?: ResizeObserver;
+  private _observedFooter: Element | null = null;
   private _pointers = new Map<number, { x: number; y: number }>();
   /** Pointer type of the last press, to tell touch drags from mouse drags. */
   _pointerType = "mouse";
@@ -407,6 +417,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._findIndex = 0;
     this._multi = new Set();
     this._selectMode = false;
+    this._toolsOpen = false;
+    this._helpOpen = false;
   }
 
   /** Ctrl+Z (Cmd+Z) takes back the last change of the draft, outside text fields. */
@@ -659,7 +671,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     const prefs = this._snapshot?.prefs;
     const devices = kind === "water" ? prefs?.device_consumption_water : prefs?.device_consumption;
-    const value = applyAllChanges(devices ?? [], this._snapshot?.groups?.[kind] ?? [], this._changes, kind);
+    const value = applyAllChanges(
+      devices ?? [],
+      this._snapshot?.groups?.[kind] ?? [],
+      this._changes,
+      kind,
+      prefs?.energy_sources ?? [],
+    );
     this._draftMemo.set(kind, { key, value });
     return value;
   }
@@ -1003,6 +1021,25 @@ export class EnergyFlowMapperPanel extends LitElement {
     void this._loadEnergy();
   }
 
+  /** The number of changes the footer shows: the checked diff, else the draft's changes. */
+  private _changeCount(): number {
+    return this._validation?.diff.length ?? this._changes.length;
+  }
+
+  /**
+   * Discard from the footer: a draft of one change goes right away, a bigger
+   * one only after confirming, since it is kept across visits and cannot be
+   * brought back.
+   */
+  _askDiscard(): void {
+    // Count what the footer shows, so the question never says "all 1 changes".
+    if (this._changeCount() > 1) {
+      this._dialog = { kind: "discard" };
+    } else {
+      this._discard();
+    }
+  }
+
   _discard(): void {
     this._changes = [];
     this._validation = null;
@@ -1010,9 +1047,11 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   async _openConfirm(): Promise<void> {
-    this._dialog = { kind: "confirm", result: null };
+    const opened: Dialog = { kind: "confirm", result: null };
+    this._dialog = opened;
     const result = await this._validate();
-    if (this._dialog?.kind === "confirm") {
+    // Cancelled while checking (or another dialog opened): the late result is ignored.
+    if (this._dialog === opened) {
       this._dialog = result ? { kind: "confirm", result } : null;
     }
   }
@@ -1123,17 +1162,22 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._showToast(this._t("import_invalid_file"));
       return;
     }
-    this._dialog = { kind: "import", file: file.name, document, result: null };
+    const opened: Dialog = { kind: "import", file: file.name, document, result: null };
+    this._dialog = opened;
     try {
       const result = await this.hass.callWS<ImportCheckResult>({
         type: `${DOMAIN}/import_check`,
         base_hash: this._snapshot.hash,
         document,
       });
-      if (this._dialog?.kind === "import") {
-        this._dialog = { ...this._dialog, result };
+      // Cancelled while checking (or another dialog opened): the late result is ignored.
+      if (this._dialog === opened) {
+        this._dialog = { ...opened, result };
       }
     } catch (err) {
+      if (this._dialog !== opened) {
+        return;
+      }
       this._dialog = null;
       await this._handleError(err);
     }
@@ -1176,6 +1220,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     clearTimeout(this._toastTimer);
     this._resizeObserver?.disconnect();
     this._observed = null;
+    this._footerObserver?.disconnect();
+    this._observedFooter = null;
   }
 
   /** Keep the diagram fitted while its viewport changes size (window, layout). */
@@ -1196,6 +1242,39 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._resizeObserver.observe(viewport);
     }
     this._observed = viewport;
+  }
+
+  /**
+   * Tell the toast how tall the footer is (it wraps on phones; on a wide screen it
+   * includes the navigation bar, on a phone the panel ends above it), so the toast
+   * sits above it instead of on its buttons.
+   */
+  _measureFooter(): void {
+    const footer = this.renderRoot.querySelector<HTMLElement>(".footer");
+    this.style.setProperty("--efm-footer-height", `${footer?.offsetHeight ?? 0}px`);
+  }
+
+  /**
+   * Measure the footer when it appears, goes or is replaced, and watch its size
+   * from then on: not on every update, as Home Assistant re-renders the panel
+   * with each state push and reading its height forces a layout.
+   */
+  private _observeFooter(): void {
+    const footer = this.renderRoot.querySelector(".footer");
+    if (typeof ResizeObserver === "undefined") {
+      this._measureFooter();
+      return;
+    }
+    if (footer === this._observedFooter) {
+      return;
+    }
+    this._measureFooter();
+    this._footerObserver ??= new ResizeObserver(() => this._measureFooter());
+    this._footerObserver.disconnect();
+    if (footer) {
+      this._footerObserver.observe(footer);
+    }
+    this._observedFooter = footer;
   }
 
   // --- drag and drop --------------------------------------------------------
@@ -1532,6 +1611,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     return null;
   }
 
+  /**
+   * Whether an entity already has this friendly name: a new helper of that name
+   * would be a second one with the same name (only a hint, it is allowed).
+   */
+  private _entityNamed(name: string): boolean {
+    const wanted = name.trim().toLowerCase();
+    return (
+      wanted !== "" &&
+      Object.values(this.hass?.states ?? {}).some(
+        (state) => String(state.attributes.friendly_name ?? "").trim().toLowerCase() === wanted,
+      )
+    );
+  }
+
   /** The state classes of the sensors; a sum needs them all equal. */
   private _sumStateClasses(stats: string[]): Set<string> {
     return new Set(stats.map((stat) => String(this.hass?.states[stat]?.attributes.state_class)));
@@ -1654,6 +1747,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._fitted = this.fit();
     }
     this._observeViewport();
+    this._observeFooter();
     if (!changed.has("_dialog")) {
       return;
     }
@@ -1714,8 +1808,17 @@ export class EnergyFlowMapperPanel extends LitElement {
             </div>`}
       </div>
       ${this._renderBody()} ${this._renderFooter()} ${this._renderDialog()}
-      ${this._toast ? html`<div class="toast" role="status">${this._toast}</div>` : nothing}
+      ${this._toast && !this._dialog ? this._renderToast() : nothing}
     `;
+  }
+
+  /**
+   * The message of the moment. While a dialog is open it is shown inside the
+   * dialog: a modal dialog sits in the top layer, above everything else.
+   */
+  private _renderToast(): TemplateResult {
+    const overFooter = !this._dialog && (this._changes.length > 0 || this._multi.size > 0);
+    return html`<div class="toast ${overFooter ? "over-footer" : ""}" role="status">${this._toast}</div>`;
   }
 
   private _renderBody(): TemplateResult {
@@ -1739,7 +1842,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           </button>`,
         )}
       </div>
-      <div class="content ${this.narrow ? "narrow" : ""}">
+      <div
+        class="content ${this.narrow ? "narrow" : ""} ${this._changes.length || this._multi.size || this._selectMode ? "above-footer" : ""}"
+      >
         ${this.narrow ? nothing : html`<aside class="column free">${this._renderCandidates()}</aside>`}
         <main class="column main">
           ${this._view === "list"
@@ -1915,8 +2020,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       group: this._cssColor(GROUP_COLOR),
     };
     const svg = diagramSvg(result, items, edges, { theme, footer });
+    // The picture may be wider than the diagram (a long footer): the canvas takes its size.
+    const size = diagramSize(result, footer);
     try {
-      const png = await this._toPng(svg, result.width, result.height + FOOTER_H);
+      const png = await this._toPng(svg, size.width, size.height);
       downloadBlob(`energy-flow-mapper-${this._tab}-${fileStamp(now).slice(0, 10)}.png`, png);
       this._close();
     } catch {
@@ -2179,7 +2286,38 @@ export class EnergyFlowMapperPanel extends LitElement {
               </button>`,
             )}
           </div>
-          <div class="toolbar">
+          ${this._renderToolbar()}
+        </div>
+        ${this._renderHint()} ${this._renderFind()}
+        <div
+          class="viewport ${this._dragged ? "dragging" : ""}"
+          @wheel=${(e: WheelEvent) => this._onWheel(e)}
+          @pointerdown=${(e: PointerEvent) => this._onPointerDown(e)}
+          @pointermove=${(e: PointerEvent) => this._onPointerMove(e)}
+          @pointerup=${(e: PointerEvent) => this._onPointerUp(e)}
+          @pointercancel=${(e: PointerEvent) => this._onPointerUp(e)}
+        >
+          <div
+            class="canvas"
+            style="width:${result.width}px;height:${result.height}px;transform:translate(${x}px, ${y}px) scale(${k})"
+          >
+            <svg class="edges" width=${result.width} height=${result.height} aria-hidden="true">
+              ${result.edges.map((edge) => this._renderEdge(edge, blocks, maxPower))}
+            </svg>
+            ${result.frames.map((frame) => this._renderFrame(frame))}
+            ${result.blocks.map((block) => this._renderBlock(block, devices, measured, rest, flows))}
+          </div>
+        </div>
+      </section>
+    `;
+  }
+
+  /** The diagram's tools; on a phone only once opened, so the diagram keeps the room. */
+  private _renderToolbar(): TemplateResult | typeof nothing {
+    if (this.narrow && !this._toolsOpen) {
+      return nothing;
+    }
+    return html`<div class="toolbar">
             ${this._suggestions().length >= 2
               ? html`<button class="apply-all" @click=${() => this._applyAllSuggestions()}>
                   ${icon("lightbulb")} ${this._t("suggestion_apply_all")}
@@ -2243,41 +2381,52 @@ export class EnergyFlowMapperPanel extends LitElement {
             <button class="export-image" @click=${() => (this._dialog = { kind: "export", hideNames: false })}>
               ${this._t("export_image")}
             </button>
-          </div>
-        </div>
-        <p class="hint">
-          ${this._ignored.some((p) => p.kind === this._tab)
-            ? html`<button class="link" @click=${() => void this._clearIgnored()}>
-                ${this._t("suggestion_show_ignored")}
-              </button>`
-            : nothing}
-          ${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}
-          ${this._energyLoading()
-            ? html`<span class="loading">${this._t("energy_loading")}</span>`
-            : nothing}
-        </p>
-        ${this._renderFind()}
-        <div
-          class="viewport ${this._dragged ? "dragging" : ""}"
-          @wheel=${(e: WheelEvent) => this._onWheel(e)}
-          @pointerdown=${(e: PointerEvent) => this._onPointerDown(e)}
-          @pointermove=${(e: PointerEvent) => this._onPointerMove(e)}
-          @pointerup=${(e: PointerEvent) => this._onPointerUp(e)}
-          @pointercancel=${(e: PointerEvent) => this._onPointerUp(e)}
-        >
-          <div
-            class="canvas"
-            style="width:${result.width}px;height:${result.height}px;transform:translate(${x}px, ${y}px) scale(${k})"
-          >
-            <svg class="edges" width=${result.width} height=${result.height} aria-hidden="true">
-              ${result.edges.map((edge) => this._renderEdge(edge, blocks, maxPower))}
-            </svg>
-            ${result.frames.map((frame) => this._renderFrame(frame))}
-            ${result.blocks.map((block) => this._renderBlock(block, devices, measured, rest, flows))}
-          </div>
-        </div>
-      </section>
-    `;
+          </div>`;
+  }
+
+  /**
+   * How to use the diagram, the link to ignored suggestions and the loading
+   * note. On a phone the help text shows only once asked for.
+   */
+  private _renderHint(): TemplateResult | typeof nothing {
+    const ignored = this._ignored.some((p) => p.kind === this._tab);
+    const help = !this.narrow || this._helpOpen;
+    const loading = this._energyLoading();
+    if (!ignored && !help && !loading) {
+      return nothing;
+    }
+    return html`<p class="hint">
+      ${ignored
+        ? html`<button class="link" @click=${() => void this._clearIgnored()}>
+            ${this._t("suggestion_show_ignored")}
+          </button>`
+        : nothing}
+      ${help ? html`${this._t("devices_hint")} ${this._t("sources_hint")} ${this._t("zoom_hint")}` : nothing}
+      ${loading ? html`<span class="loading">${this._t("energy_loading")}</span>` : nothing}
+    </p>`;
+  }
+
+  /** On a phone: open and close the tools and the help text, next to the search. */
+  private _renderPhoneToggles(): TemplateResult | typeof nothing {
+    if (!this.narrow) {
+      return nothing;
+    }
+    return html`<button
+        class="tools-toggle ${this._toolsOpen ? "active" : ""}"
+        aria-expanded=${String(this._toolsOpen)}
+        @click=${() => (this._toolsOpen = !this._toolsOpen)}
+      >
+        ${this._t("tools")} ${this._toolsOpen ? "▴" : "▾"}
+      </button>
+      <button
+        class="help-toggle icon ${this._helpOpen ? "active" : ""}"
+        aria-expanded=${String(this._helpOpen)}
+        aria-label=${this._t("help")}
+        title=${this._t("help")}
+        @click=${() => (this._helpOpen = !this._helpOpen)}
+      >
+        ?
+      </button>`;
   }
 
   private _renderFind(): TemplateResult {
@@ -2310,6 +2459,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               ? html`<button class="find-next" @click=${() => this.nextMatch()}>${this._t("find_next")}</button>`
               : nothing}`
         : nothing}
+      ${this._renderPhoneToggles()}
     </div>`;
   }
 
@@ -2441,10 +2591,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "source":
       case "placeholder": {
         const role = block.role ?? "import";
-        const label =
-          role === "consumption"
-            ? this._t(`role_${block.source?.type ?? "gas"}` as StringKey)
-            : this._t(`role_${role}` as StringKey);
+        // A source type the panel does not know (a newer HA) shows its raw type.
+        const label = this._roleLabel(role === "consumption" ? (block.source?.type ?? "gas") : role);
         const assign = assignRole(role);
         const key = assign ? `${SOURCE_TARGET}${assign}:${block.id}` : null;
         const haStats = block.stat
@@ -2801,11 +2949,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               ${rows.map(
                 (row) => html`<div class="source">
                   <span class="source-role"
-                    >${this._t(
-                      row.role === "consumption"
-                        ? (`role_${row.type}` as StringKey)
-                        : (`role_${row.role}` as StringKey),
-                    )}</span
+                    >${this._roleLabel(row.role === "consumption" ? row.type : row.role)}</span
                   >
                   <span class="source-name">${row.name || this._name(row.stat)}</span>
                 </div>`,
@@ -3067,8 +3211,19 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** «N selected · Group · Clear selection» while blocks are selected for grouping. */
   private _renderSelection(): TemplateResult | typeof nothing {
     const selected = this._multi.size;
-    if (selected === 0) {
+    if (selected === 0 && !this._selectMode) {
       return nothing;
+    }
+    // In select mode the bar shows even before the first tap, with a way out:
+    // on a phone the "Select" toggle may be folded away with the tools.
+    const done = this._selectMode
+      ? html`<button class="select-done" @click=${() => this.setSelectMode(false)}>${this._t("select_done")}</button>`
+      : nothing;
+    if (selected === 0) {
+      return html`<div class="selection">
+        <span>${this._t("selected_count", { count: formatNumber(this.hass, 0) })}</span>
+        ${done}
+      </div>`;
     }
     const groupable = canGroup(this.draft, this._groups, [...this._multi]);
     return html`<div class="selection">
@@ -3085,11 +3240,13 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${this._t("group_selection")}
       </button>
       <button class="clear-selection" @click=${() => (this._multi = new Set())}>${this._t("clear_selection")}</button>
+      ${done}
+      ${groupable ? nothing : html`<span class="group-hint">${this._t("group_parents_hint")}</span>`}
     </div>`;
   }
 
   private _renderFooter(): TemplateResult | typeof nothing {
-    if (this._changes.length === 0 && this._multi.size === 0) {
+    if (this._changes.length === 0 && this._multi.size === 0 && !this._selectMode) {
       return nothing;
     }
     return html`<div class="footer">${this._renderSelection()} ${this._changes.length ? this._renderDraftBar() : nothing}</div>`;
@@ -3097,7 +3254,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** The draft's changes, what blocks saving, and undo, discard and save. */
   private _renderDraftBar(): TemplateResult {
-    const count = this._validation?.diff.length ?? this._changes.length;
+    const count = this._changeCount();
     const errors = this._validation?.issues.filter((i) => i.severity === "error").length ?? 0;
     return html`
       <span class="count"
@@ -3113,10 +3270,15 @@ export class EnergyFlowMapperPanel extends LitElement {
               : this._t("blocked_other", { count: formatNumber(this.hass, errors) })}</span
           >`
         : nothing}
-      <button class="undo-change" title=${this._t("undo_change_hint")} @click=${() => this._undoChange()}>
-        ${icon("undo")} ${this._t("undo_change")}
+      <button
+        class="undo-change"
+        title=${this._t("undo_change_hint")}
+        aria-label=${this._t("undo_change")}
+        @click=${() => this._undoChange()}
+      >
+        ${icon("undo")} <span class="label">${this._t("undo_change")}</span>
       </button>
-      <button @click=${() => this._discard()}>${this._t("discard")}</button>
+      <button class="discard" @click=${() => this._askDiscard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
     `;
   }
@@ -3303,6 +3465,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       }}
     >
       ${this._dialog ? this._renderDialogContent(this._dialog) : nothing}
+      ${this._dialog && this._toast ? this._renderToast() : nothing}
     </dialog>`;
   }
 
@@ -3351,6 +3514,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           @input=${(e: Event) => (this._renameValue = (e.target as HTMLInputElement).value)}
         />
       </label>
+      ${this._entityNamed(name)
+        ? html`<p class="hint warning sum-name-exists">${this._t("sum_name_exists", { name })}</p>`
+        : nothing}
       <h3>${this._t("sum_members")}</h3>
       ${dialog.group !== null ? html`<p class="hint">${this._t("sum_fixed_hint")}</p>` : nothing}
       <ul class="sum-members">
@@ -3523,7 +3689,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         const result = dialog.result;
         if (result === null) {
           return html`<h2>${this._t("confirm_title")}</h2>
-            <p>${this._t("checking")}</p>`;
+            <p>${this._t("checking")}</p>
+            <div class="dialog-actions">
+              <button class="cancel" @click=${() => this._close()}>${this._t("cancel")}</button>
+            </div>`;
         }
         return html`<h2>${this._t("confirm_title")}</h2>
           ${this._renderCheck(result)}
@@ -3593,7 +3762,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         const title = html`<h2>${this._t("import_title", { file: dialog.file })}</h2>`;
         if (result === null) {
           return html`${title}
-            <p>${this._t("checking")}</p>`;
+            <p>${this._t("checking")}</p>
+            <div class="dialog-actions">
+              <button class="cancel" @click=${() => this._close()}>${this._t("cancel")}</button>
+            </div>`;
         }
         return html`${title}
           ${result.changed ? this._renderCheck(result) : html`<p>${this._t("import_unchanged")}</p>`}
@@ -3612,14 +3784,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "source": {
         const assign = assignRole(dialog.role);
         const replaces = assign === "import" || assign === "export" || assign === "water" || assign === "gas";
-        const source = this.draftSources.find(
-          (s) => s.stat_energy_from === dialog.stat || s.stat_energy_to === dialog.stat,
-        );
+        // Warn when removing this meter (in this role) removes a grid connection:
+        // ask the same logic the save uses, so a home meter that is also the grid
+        // import does not warn about the grid.
+        const grids = (sources: Source[]) => sources.filter((s) => s.type === "grid").length;
         const lastMeter =
-          source?.type === "grid" &&
-          !(source.stat_energy_from && source.stat_energy_to) &&
-          !source.stat_rate &&
-          !source.power_config;
+          !!dialog.stat &&
+          grids(
+            applySourceChanges(this.draftSources, [
+              {
+                type: "unassign_source",
+                stat: dialog.stat,
+                role: dialog.role as Extract<Change, { type: "unassign_source" }>["role"],
+              },
+            ]),
+          ) < grids(this.draftSources);
         return html`<h2>${dialog.label}</h2>
           ${dialog.stat ? html`<p>${this._name(dialog.stat)}</p>` : nothing}
           ${dialog.stat ? this._renderHaIssues(dialog.stat) : nothing}
@@ -3638,7 +3817,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                   class="danger"
                   @click=${() => {
                     this._close();
-                    this._change({ type: "unassign_source", stat: dialog.stat! });
+                    this._change({ type: "unassign_source", stat: dialog.stat!, role: dialog.role as Extract<Change, { type: "unassign_source" }>["role"] });
                   }}
                 >
                   ${this._t("source_remove")}
@@ -3827,6 +4006,21 @@ export class EnergyFlowMapperPanel extends LitElement {
             </button>
           </div>`;
       }
+      case "discard":
+        return html`<h2>${this._t("discard_title")}</h2>
+          <p>${this._t("discard_confirm", { count: formatNumber(this.hass, this._changeCount()) })}</p>
+          <div class="dialog-actions">
+            <button class="cancel" @click=${() => this._close()}>${this._t("cancel")}</button>
+            <button
+              class="danger"
+              @click=${() => {
+                this._close();
+                this._discard();
+              }}
+            >
+              ${this._t("discard")}
+            </button>
+          </div>`;
       case "details":
         return html`${this._renderDetails()}
           <div class="dialog-actions">
@@ -3852,6 +4046,15 @@ export class EnergyFlowMapperPanel extends LitElement {
       font-family: var(--paper-font-body1_-_font-family, Roboto, sans-serif);
       box-sizing: border-box;
       container: panel / inline-size;
+    }
+    /* A phone: the panel is exactly as tall as the room between the system bars,
+       so the diagram gets what header, tabs, search and footer leave, without
+       scrolling the page. Home Assistant pads its custom-panel container by the
+       safe-area insets (0 in a browser), so the panel leaves them out. */
+    :host([narrow]) {
+      height: calc(100vh - var(--safe-area-inset-top, 0px) - var(--safe-area-inset-bottom, 0px));
+      height: calc(100dvh - var(--safe-area-inset-top, 0px) - var(--safe-area-inset-bottom, 0px));
+      min-height: 0;
     }
     .header {
       display: flex;
@@ -3976,9 +4179,37 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .content.narrow {
       grid-template-columns: 1fr;
+      grid-template-rows: minmax(0, 1fr);
       grid-template-areas: "main";
+      align-items: stretch;
+      min-height: 0;
       padding: 8px;
       gap: 8px;
+    }
+    .narrow .diagram-card {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      flex: 1 1 auto;
+      padding-top: 8px;
+    }
+    /* The tab already names the diagram. */
+    .narrow .diagram-card .card-header h2 {
+      display: none;
+    }
+    /* The periods share one line, also with longer words (French). */
+    .narrow .periods {
+      margin-left: 0;
+      flex: 1 1 100%;
+    }
+    .narrow .periods button {
+      flex: 1 1 auto;
+      padding: 4px 6px;
+      font-size: 14px;
+      white-space: nowrap;
+    }
+    :host([narrow]) .tabs {
+      padding: 4px 8px 0;
     }
     .column {
       display: flex;
@@ -4002,6 +4233,15 @@ export class EnergyFlowMapperPanel extends LitElement {
       margin: 0;
       font-size: 18px;
       font-weight: 500;
+    }
+    /* Long names without spaces (a statistic id) wrap instead of overflowing. */
+    dialog h2,
+    dialog p,
+    dialog .node-name,
+    .card-header h2,
+    .targets button {
+      overflow-wrap: anywhere;
+      min-width: 0;
     }
     h3 {
       font-size: 15px;
@@ -4280,8 +4520,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       );
       background-size: 20px 20px;
     }
+    /* A phone: the diagram takes the height left over (see :host([narrow])). */
     .narrow .viewport {
-      height: calc(100vh - 290px);
+      flex: 1 1 0;
+      height: auto;
+      min-height: 200px;
     }
     .canvas {
       position: absolute;
@@ -4460,6 +4703,25 @@ export class EnergyFlowMapperPanel extends LitElement {
       flex: 0 1 260px;
       min-width: 0;
     }
+    .narrow .find input {
+      flex: 1 1 auto;
+      margin: 0;
+    }
+    .find .tools-toggle.active,
+    .find .help-toggle.active {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+      color: var(--text-primary-color, #fff);
+    }
+    .find .help-toggle {
+      border: 1px solid var(--divider-color);
+      min-width: 32px;
+      align-self: stretch;
+    }
+    .find .tools-toggle {
+      white-space: nowrap;
+      align-self: stretch;
+    }
     .find-count {
       color: var(--secondary-text-color);
       font-size: 13px;
@@ -4473,6 +4735,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       justify-content: flex-end;
       gap: 8px;
       padding: 12px 16px;
+      /* In the companion app the page runs under the phone's navigation bar; Home
+         Assistant sets this inset to its height there and to 0 in a browser. */
+      padding-bottom: calc(12px + var(--safe-area-inset-bottom, 0px));
       background: var(--card-background-color, var(--primary-background-color));
       border-top: 1px solid var(--divider-color);
       z-index: 2;
@@ -4484,11 +4749,36 @@ export class EnergyFlowMapperPanel extends LitElement {
     .footer .selection {
       flex: 1;
     }
+    /* The count stays on screen: on a phone the buttons wrap below it. */
     .footer .selection {
       display: flex;
+      flex: 1 1 auto;
+      flex-wrap: wrap;
       align-items: center;
       gap: 8px;
-      white-space: nowrap;
+      min-width: 0;
+    }
+    /* Why Group is disabled, visible without hovering (touch). */
+    .footer .group-hint {
+      flex-basis: 100%;
+      color: var(--secondary-text-color);
+      font-size: 13px;
+    }
+    /* A phone: compact, so the draft bar usually fits on one line. The panel
+       already ends above the navigation bar (see :host([narrow])). */
+    :host([narrow]) .footer {
+      gap: 6px;
+      padding: 8px;
+    }
+    :host([narrow]) .footer button {
+      padding: 6px 10px;
+    }
+    :host([narrow]) .footer .count {
+      font-size: 14px;
+    }
+    /* On a phone «Undo change» is its icon (the label stays for screen readers). */
+    :host([narrow]) .undo-change .label {
+      display: none;
     }
     .footer .blocked {
       display: inline-flex;
@@ -4511,6 +4801,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       overflow-wrap: anywhere;
     }
     dialog {
+      box-sizing: border-box;
       border: none;
       border-radius: 16px;
       padding: 20px;
@@ -4563,17 +4854,30 @@ export class EnergyFlowMapperPanel extends LitElement {
       padding-left: 18px;
       list-style: disc;
     }
+    /* Only a message: taps go through to the buttons below it. */
     .toast {
       position: fixed;
       left: 50%;
-      bottom: 80px;
+      bottom: calc(16px + var(--safe-area-inset-bottom, 0px));
       transform: translateX(-50%);
+      box-sizing: border-box;
+      width: max-content;
       max-width: calc(100vw - 32px);
       padding: 10px 16px;
       border-radius: 8px;
       background: var(--primary-text-color);
       color: var(--primary-background-color);
       z-index: 3;
+      pointer-events: none;
+    }
+    /* Above the footer, whose measured height includes the navigation bar. */
+    .toast.over-footer {
+      bottom: calc(var(--efm-footer-height, 0px) + 12px);
+    }
+    /* On a phone the footer ends above the navigation bar, which the toast,
+       fixed to the screen, has to add. */
+    :host([narrow]) .toast.over-footer {
+      bottom: calc(var(--efm-footer-height, 0px) + var(--safe-area-inset-bottom, 0px) + 12px);
     }
   `;
 }

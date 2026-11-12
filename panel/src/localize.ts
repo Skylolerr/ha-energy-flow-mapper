@@ -23,12 +23,18 @@ function translations(tag: string): Translations {
   return LANGUAGES[tag] ?? LANGUAGES[tag.split("-")[0]] ?? en;
 }
 
+/**
+ * The text of `key` in the user's language. A key missing there falls back to
+ * English, and a key no language has (one built at runtime) is shown as is,
+ * so a missing text never breaks rendering.
+ */
 export function localize(
   hass: HomeAssistant | undefined,
   key: StringKey,
   placeholders: Record<string, string> = {},
 ): string {
-  return translations(language(hass))[key].replace(
+  const text: string | undefined = translations(language(hass))[key] ?? en[key];
+  return (text ?? key).replace(
     /\{(\w+)\}/g,
     (match, name: string) => (name in placeholders ? placeholders[name] : match),
   );

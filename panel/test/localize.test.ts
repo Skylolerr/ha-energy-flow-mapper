@@ -47,6 +47,19 @@ describe("localize", () => {
     expect(localize(hass("en"), "move_title")).toBe("Move {name} to …");
   });
 
+  it("never throws for a key it does not have", () => {
+    // A key built at runtime (role_<type> of an unknown source type) is shown as is.
+    expect(localize(hass("de"), "role_heat" as keyof typeof en)).toBe("role_heat");
+    // A key missing in one language falls back to English.
+    const saved = de.home;
+    delete (de as Partial<typeof de>).home;
+    try {
+      expect(localize(hass("de"), "home")).toBe("Home");
+    } finally {
+      de.home = saved;
+    }
+  });
+
   it("knows its keys", () => {
     expect(hasKey("issue_cycle")).toBe(true);
     expect(hasKey("issue_unknown")).toBe(false);

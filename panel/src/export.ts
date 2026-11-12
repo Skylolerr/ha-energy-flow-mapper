@@ -111,12 +111,21 @@ function edgeSvg(edge: ExportEdge): string {
   );
 }
 
+/**
+ * The size of the picture: the diagram with the footer line below it. A small
+ * diagram (one water device) is wider than its blocks so the footer fits;
+ * about 7 px per character at 12 px.
+ */
+export function diagramSize(layout: Layout, footer: string): { width: number; height: number } {
+  return {
+    width: Math.max(layout.width, Math.ceil(48 + footer.length * 7)),
+    height: layout.height + FOOTER_H,
+  };
+}
+
 /** The whole diagram as a standalone SVG, with the footer line below it. */
 export function diagramSvg(layout: Layout, blocks: ExportBlock[], edges: ExportEdge[], options: ExportOptions): string {
-  // A small diagram (one water device) is wider than its blocks so the
-  // footer fits; about 7 px per character at 12 px.
-  const width = Math.max(layout.width, Math.ceil(48 + options.footer.length * 7));
-  const height = layout.height + FOOTER_H;
+  const { width, height } = diagramSize(layout, options.footer);
   return [
     `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
     `<rect width="100%" height="100%" fill="${options.theme.background}"/>`,
