@@ -11,6 +11,12 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-12
+
+> **Highlight:** made for phones – the diagram fills the screen, the bottom bar keeps clear of
+> on-screen navigation buttons and a tap opens a group. Plus fixes for the home meter, backups,
+> groups and device names.
+
 ### 📦 Changed
 
 - **More room for the diagram on phones:** the diagram now fills the screen below the
@@ -64,6 +70,8 @@ and Home Assistant show when they offer the update.
 - **Development:** `scripts/deploy.sh` only copies the files by default and never restarts
   Home Assistant. The release script also checks the card files in the ZIP. The bug report
   form lists groups, sum meters, the water and gas tabs and the dashboard card.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.1 · minimum 2026.10.0*
 
 ## [0.9.0] - 2026-11-11
 
