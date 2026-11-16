@@ -246,9 +246,26 @@ describe("card", () => {
     expect(el.shadowRoot!.querySelector(".block.source .value")).toBeNull();
   });
 
-  it("keeps a source's role on one line", () => {
+  it("puts a source's value in front of its name, and hides a late home meter's part value", async () => {
+    const mock = mockHass(() =>
+      data({
+        ...periodValues(),
+        sources: [
+          { type: "grid", role: "import", stat: "sensor.import", name: "Grid" },
+          { type: "home", role: "home", stat: "sensor.main", name: "Main" },
+        ],
+        energy: { "sensor.import": 3, "sensor.main": 2.1 },
+        home: { value: null, basis: null, stale: "sensor.main", untracked: null },
+      }),
+    );
+    const el = await view({ period: "today" }, mock);
+    const sub = (role: string) =>
+      el.shadowRoot!.querySelector(`.block.source[data-role="${role}"] .sub`)!.textContent!.replace(/\s+/g, " ").trim();
+    expect(sub("import")).toBe("3 kWh · Grid");
+    expect(sub("home")).toBe("Main");
+    // The role is no longer forced onto one line.
     const css = (customElements.get(CARD_VIEW_TAG) as unknown as { styles: { cssText: string } }).styles.cssText.replace(/\s+/g, " ");
-    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*white-space: nowrap/);
+    expect(css).not.toMatch(/\.block\.source \.node-name \{/);
   });
 
   it("shows the energy of the period on its sources", async () => {

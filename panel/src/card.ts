@@ -309,19 +309,25 @@ export class EnergyFlowMapperCardView extends LitElement {
     return new Map(devices.map((d) => [d.stat_consumption, energy[d.stat_consumption] ?? null]));
   }
 
-  /** A source's power now (Home Assistant's power sensor) or its energy in the period. */
-  private _renderSourceValue(block: Block): TemplateResult | typeof nothing {
+  /**
+   * The line below a source's role: its power now (Home Assistant's power
+   * sensor) or its energy in the period first, as with devices, then its name.
+   * A home meter whose data is late shows no part value (Home names it).
+   */
+  private _renderSourceSub(block: Block): TemplateResult {
     const role = block.role;
-    if (!block.stat || role === undefined || role === "battery" || role === "consumption") {
-      return nothing;
+    const name = block.source?.name ?? block.stat;
+    let value: number | null = null;
+    if (block.stat && role !== undefined && role !== "battery" && role !== "consumption") {
+      if (this.config?.period === "now") {
+        value = this.hass ? sourceNow(this.hass, block.source?.stat_rate, role) : null;
+      } else if (this._data?.home?.stale !== block.stat) {
+        value = this._data?.energy?.[block.stat] ?? null;
+      }
     }
-    const value =
-      this.config?.period === "now"
-        ? this.hass
-          ? sourceNow(this.hass, block.source?.stat_rate, role)
-          : null
-        : (this._data?.energy?.[block.stat] ?? null);
-    return value === null ? nothing : html`<span class="sub value">${this._format(value)}</span>`;
+    return html`<span class="sub"
+      >${value === null ? nothing : html`<span class="value">${this._format(value)}</span> · `}${name}</span
+    >`;
   }
 
   _format(value: number): string {
@@ -566,9 +572,8 @@ export class EnergyFlowMapperCardView extends LitElement {
           data-role=${role}
         >
           <div class="block-text">
-            <span class="node-name" title=${label}>${label}</span>
-            <span class="sub">${block.source?.name ?? block.stat}</span>
-            ${this._renderSourceValue(block)}
+            <span class="node-name">${label}</span>
+            ${this._renderSourceSub(block)}
           </div>
           ${block.stat && this._haTitles(block.stat).length
             ? html`<span class="badge" title=${this._haTitles(block.stat).join("\n")}>!</span>`
@@ -861,13 +866,6 @@ export class EnergyFlowMapperCardView extends LitElement {
       border: 1px solid var(--source-color);
       border-left: 5px solid var(--source-color);
       background: color-mix(in srgb, var(--source-color) 14%, var(--block-bg));
-    }
-    /* The role on one line: name and value below it always fit the block. */
-    .block.source .node-name {
-      display: block;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
     .block.untracked {
       border: 2px dashed var(--block-border);
