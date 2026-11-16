@@ -11,6 +11,12 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Values on the sources:** grid import and export, solar, battery, the home meter and water
+  now show their power now (from the power sensor in Home Assistant's energy settings) or their
+  energy in the selected period, in the panel and on the dashboard card.
+
 ## [0.9.1] - 2026-11-12
 
 > **Highlight:** made for phones – the diagram fills the screen, the bottom bar keeps clear of

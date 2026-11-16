@@ -95,7 +95,8 @@ solar, battery or water meter, and which meters are not used yet.
 - **Drag and drop** (or the ⋮ menu on phones) – include a device in another one, move it to
   the top level, rename or remove it.
 - **Sources** – drop a sensor onto grid import, grid export, solar, battery, water or gas.
-  Prices and compensations of an existing source stay as they are.
+  Prices and compensations of an existing source stay as they are. Each source shows its
+  power now (from the power sensor in the energy settings) or its energy in the period.
 - **Free sensors** – energy and water meters and external statistics (for example from
   your supplier's portal) that are not in the dashboard yet, added with one drag.
 - **Meters for power and flow sensors** – "Create meter" turns a power sensor (a UPS, PoE
