@@ -1270,6 +1270,101 @@ describe("drag feedback", () => {
 });
 
 describe("sources", () => {
+  function withPower(): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources = [
+      {
+        type: "grid",
+        stat_energy_from: "sensor.import",
+        stat_energy_to: "sensor.export",
+        stat_rate: "sensor.grid_power",
+      },
+      { type: "solar", stat_energy_from: "sensor.roof", stat_rate: "sensor.roof_power" },
+      { type: "solar", stat_energy_from: "sensor.shed" },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    // Home Assistant's sign: negative is going to the grid.
+    mock.hass.states["sensor.grid_power"] = entity("sensor.grid_power", "-1.2", "kW");
+    mock.hass.states["sensor.roof_power"] = entity("sensor.roof_power", "800");
+    return mock;
+  }
+
+  function sourceBlock(el: EnergyFlowMapperPanel, role: string, nth = 0): HTMLElement {
+    return root(el).querySelectorAll<HTMLElement>(`.block.source:not(.placeholder)[data-role="${role}"]`)[nth];
+  }
+
+  it("shows the power now on the source blocks", async () => {
+    const el = await mount(withPower());
+    expect(sourceBlock(el, "import").querySelector(".value")!.textContent).toBe("0 W");
+    expect(sourceBlock(el, "export").querySelector(".value")!.textContent).toBe("1.2 kW");
+    expect(sourceBlock(el, "production").querySelector(".value")!.textContent).toBe("800 W");
+    // A source without a power sensor in the energy settings shows no value.
+    expect(sourceBlock(el, "production", 1).querySelector(".value")).toBeNull();
+    // Placeholders never show one.
+    expect(root(el).querySelector(".block.placeholder .value")).toBeNull();
+  });
+
+  it("keeps the role on one line, so the value always fits the block", () => {
+    const css = EnergyFlowMapperPanel.styles.cssText.replace(/\s+/g, " ");
+    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*white-space: nowrap/);
+    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*text-overflow: ellipsis/);
+  });
+
+  it("shows the home meter's power now and nothing for a source of an unknown type", async () => {
+    const mock = withPower();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.home_supported = true;
+    snap.prefs.energy_sources.push(
+      { type: "home", stat_energy_to: "sensor.main", stat_rate: "sensor.main_power" },
+      { type: "heat", stat_energy_from: "sensor.heat", stat_rate: "sensor.roof_power" },
+    );
+    mock.hass.states["sensor.main_power"] = entity("sensor.main_power", "640");
+    mock.responses["energy_flow_mapper/energy"] = {
+      period: "week",
+      start: "2026-11-09T00:00:00+01:00",
+      end: "2026-11-16T00:00:00+01:00",
+      water_unit: "L",
+      energy: { "sensor.heat": 5 },
+      untracked: {},
+      issues: [],
+    };
+    const el = await mount(mock);
+    expect(sourceBlock(el, "home").querySelector(".value")!.textContent).toBe("640 W");
+    expect(sourceBlock(el, "consumption").querySelector(".value")).toBeNull();
+    el.setPeriod("week");
+    await settle(el);
+    // Its unit is unknown: no value in a period either.
+    expect(sourceBlock(el, "consumption").querySelector(".value")).toBeNull();
+  });
+
+  it("shows no power for an unavailable power sensor", async () => {
+    const mock = withPower();
+    mock.hass.states["sensor.roof_power"] = entity("sensor.roof_power", "unavailable");
+    const el = await mount(mock);
+    expect(sourceBlock(el, "production").querySelector(".value")).toBeNull();
+  });
+
+  it("shows the energy of the period on the source blocks", async () => {
+    const mock = withPower();
+    mock.responses["energy_flow_mapper/energy"] = {
+      period: "week",
+      start: "2026-11-09T00:00:00+01:00",
+      end: "2026-11-16T00:00:00+01:00",
+      water_unit: "L",
+      energy: { "sensor.import": 12.5, "sensor.export": 3, "sensor.roof": 20 },
+      untracked: {},
+      issues: [],
+    };
+    const el = await mount(mock);
+    el.setPeriod("week");
+    await settle(el);
+    expect(sourceBlock(el, "import").querySelector(".value")!.textContent).toBe("12.5 kWh");
+    expect(sourceBlock(el, "export").querySelector(".value")!.textContent).toBe("3 kWh");
+    expect(sourceBlock(el, "production").querySelector(".value")!.textContent).toBe("20 kWh");
+    expect(sourceBlock(el, "production", 1).querySelector(".value")).toBeNull();
+  });
+
   it("assigns a free sensor by dropping it on a placeholder", async () => {
     const mock = mockHass();
     const el = await mount(mock);
@@ -1607,6 +1702,32 @@ describe("water", () => {
     await settle(el);
     return el;
   }
+
+  it("shows the water meter's flow now and its volume in a period", async () => {
+    const mock = waterMock();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.prefs.energy_sources = snap.prefs.energy_sources.map((s) =>
+      s.type === "water" ? { ...s, stat_rate: "sensor.main_flow" } : s,
+    );
+    mock.hass.states["sensor.main_flow"] = entity("sensor.main_flow", "0.6", "m³/h");
+    mock.responses["energy_flow_mapper/energy"] = {
+      period: "week",
+      start: "2026-11-09T00:00:00+01:00",
+      end: "2026-11-16T00:00:00+01:00",
+      water_unit: "L",
+      energy: { "sensor.water_main": 1250 },
+      untracked: {},
+      issues: [],
+    };
+    const el = await waterTab(mock);
+    const meter = () => root(el).querySelector('.block.source[data-role="water"] .value')!.textContent;
+    // 0.6 m³/h are 10 L/min.
+    expect(meter()).toBe("10 L/min");
+    el.setPeriod("week");
+    await settle(el);
+    // Like the devices: a large volume in m³.
+    expect(meter()).toBe("1.25 m³");
+  });
 
   it("shows water devices, meters and free water meters in their own tab", async () => {
     const mock = waterMock();

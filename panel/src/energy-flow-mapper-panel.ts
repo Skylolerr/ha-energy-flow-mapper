@@ -7,6 +7,7 @@ import {
   canMove,
   displayName,
   homeNow,
+  sourceNow,
   powerStats,
   suggestionsFor,
   moveTargets,
@@ -2622,11 +2623,11 @@ export class EnergyFlowMapperPanel extends LitElement {
           }}
         >
           <div class="block-text">
-            <span class="node-name">${block.kind === "placeholder" ? `+ ${label}` : label}</span>
+            <span class="node-name" title=${label}>${block.kind === "placeholder" ? `+ ${label}` : label}</span>
             ${block.stat
               ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
               : nothing}
-            ${block.stat && role === "gas" ? this._renderGasValue(block.stat) : nothing}
+            ${block.kind === "source" ? this._renderSourceValue(block) : nothing}
           </div>
           ${haStats.some((stat) => this._haIssuesFor(stat).length)
             ? html`<span class="badge" title=${haStats.map((stat) => this._badgeTitle(stat, [])).filter(Boolean).join("\n")}
@@ -2647,6 +2648,28 @@ export class EnergyFlowMapperPanel extends LitElement {
       default:
         return this._renderDeviceBlock(block, devices);
     }
+  }
+
+  /**
+   * What a source delivered or took in the period, or its power (water: flow)
+   * now from Home Assistant's power sensor of the source; gas has its own.
+   */
+  private _renderSourceValue(block: Block): TemplateResult | typeof nothing {
+    const role = block.role ?? "import";
+    // A source type the panel does not know has no known unit.
+    if (!block.stat || role === "battery" || role === "consumption") {
+      return nothing;
+    }
+    if (role === "gas") {
+      return this._renderGasValue(block.stat);
+    }
+    const value =
+      this._period === "now"
+        ? this.hass
+          ? sourceNow(this.hass, block.source?.stat_rate, role)
+          : null
+        : (this._energy?.energy[block.stat] ?? null);
+    return value === null ? nothing : html`<span class="sub value">${this._formatValue(value)}</span>`;
   }
 
   /**
@@ -4595,6 +4618,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .block.home .mdi {
       color: var(--primary-text-color);
+    }
+    /* The role on one line: name and value below it always fit the block. */
+    .block.source .node-name {
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .block.source {
       border: 1px solid var(--source-color);
