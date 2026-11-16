@@ -77,11 +77,13 @@ export function formatNumber(
   }
 }
 
-/** Format a power in W, switching to kW from 1000 W. */
+/** Format a power in W, switching to kW from 1000 W and to MW from 1000 kW. */
 export function formatPower(hass: HomeAssistant | undefined, watts: number): string {
-  return Math.abs(watts) >= 1000
-    ? `${formatNumber(hass, watts / 1000, 2)} kW`
-    : `${formatNumber(hass, watts)} W`;
+  const abs = Math.abs(watts);
+  if (abs >= 1_000_000) {
+    return `${formatNumber(hass, watts / 1_000_000, 2)} MW`;
+  }
+  return abs >= 1000 ? `${formatNumber(hass, watts / 1000, 2)} kW` : `${formatNumber(hass, watts)} W`;
 }
 
 /** Format energy in kWh, switching to Wh below 1 kWh. */

@@ -237,6 +237,21 @@ describe("names and power", () => {
     expect(sourceNow(hass, undefined, "production")).toBeNull();
     expect(sourceNow(hass, "sensor.solar", "gas")).toBeNull();
     expect(sourceNow(hass, "sensor.solar", "consumption")).toBeNull();
+    // A sensor reporting "-0" shows 0, never "-0 W".
+    const zero = { states: { "sensor.z": state("-0") } } as unknown as HomeAssistant;
+    expect(Object.is(sourceNow(zero, "sensor.z", "home"), 0)).toBe(true);
+    expect(sourceNow(zero, "sensor.z", "water")).toBeNull(); // W is no flow
+  });
+
+  it("knows gigawatts and terawatts", () => {
+    const hass = {
+      states: {
+        "sensor.gw": { entity_id: "sensor.gw", state: "0.002", attributes: { unit_of_measurement: "GW" } },
+        "sensor.tw": { entity_id: "sensor.tw", state: "0.000001", attributes: { unit_of_measurement: "TW" } },
+      },
+    } as unknown as HomeAssistant;
+    expect(powerInWatts(hass, "sensor.gw")).toBeCloseTo(2_000_000);
+    expect(powerInWatts(hass, "sensor.tw")).toBeCloseTo(1_000_000);
   });
 
   it("converts flow to L/min", () => {

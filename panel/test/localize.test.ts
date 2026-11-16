@@ -109,6 +109,8 @@ describe("formatting", () => {
     expect(formatPower(hass("en"), 42.4)).toBe("42 W");
     expect(formatPower(hass("en"), 1234)).toBe("1.23 kW");
     expect(formatPower(hass("en"), -1500)).toBe("-1.5 kW");
+    // Large plants: megawatts from 1000 kW.
+    expect(formatPower(hass("en"), 1_500_000)).toBe("1.5 MW");
   });
 });
 

@@ -319,7 +319,7 @@ export function displayName(
   return device?.name || stats[stat]?.energy_name || stats[stat]?.name || stat;
 }
 
-const POWER_FACTORS: Record<string, number> = { mW: 0.001, W: 1, kW: 1000, MW: 1e6 };
+const POWER_FACTORS: Record<string, number> = { mW: 0.001, W: 1, kW: 1000, MW: 1e6, GW: 1e9, TW: 1e12 };
 
 const GALLON = 3.785411784;
 /** Flow units of Home Assistant, in L/min. */
@@ -402,7 +402,8 @@ export function sourceNow(hass: HomeAssistant, rate: string | undefined, role: S
       return Math.max(value, 0);
     case "home":
     case "water":
-      return value;
+      // A sensor reporting "-0" shows 0.
+      return value === 0 ? 0 : value;
     default:
       return null;
   }
