@@ -899,10 +899,11 @@ async def websocket_card(
                 "role": role,
                 "stat": stat,
                 "name": source.get(NAME) or info[stat]["name"] or stat,
-                # Home now comes from the home meter's power sensor.
+                # Home Assistant's power sensor of the source, for its power
+                # now (signed for grid and battery) and for Home now.
                 **(
                     {"stat_rate": source[RATE]}
-                    if role == "home" and isinstance(source.get(RATE), str)
+                    if isinstance(source.get(RATE), str)
                     else {}
                 ),
             }

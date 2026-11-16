@@ -242,6 +242,47 @@ async def test_card_leaves_gas_out(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+async def test_card_sources_carry_their_power_sensor(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Every source with a power sensor sends it, so the card can show it now."""
+    sources = deepcopy(ENERGY_PREFS["energy_sources"])
+    for source in sources:
+        if source["type"] == "grid":
+            source["stat_rate"] = "sensor.grid_power"
+        if source["type"] == "solar":
+            source["stat_rate"] = "sensor.solar_power"
+    await energy_access.async_write(hass, {"energy_sources": sources})
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    rates = {s["role"]: s.get("stat_rate") for s in response["result"]["sources"]}
+    assert rates["import"] == "sensor.grid_power"
+    assert rates["export"] == "sensor.grid_power"
+    assert rates["production"] == "sensor.solar_power"
+    # A source without one has no key at all.
+    battery = [s for s in response["result"]["sources"] if s["type"] == "battery"]
+    assert battery
+    assert all("stat_rate" not in s for s in battery)
+    # The water card gets the water meter's flow sensor the same way.
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *sources,
+                {
+                    "type": "water",
+                    "stat_energy_from": "sensor.water_main",
+                    "stat_rate": "sensor.water_flow",
+                },
+            ]
+        },
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card", kind="water")
+    assert [s.get("stat_rate") for s in response["result"]["sources"]] == [
+        "sensor.water_flow"
+    ]
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_water_unit_warning_and_unknown_kind(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
