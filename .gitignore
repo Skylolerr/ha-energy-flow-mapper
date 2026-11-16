@@ -22,3 +22,6 @@ node_modules/
 .DS_Store
 Thumbs.db
 
+
+# Local Home Assistant test instances (venvs, configs); never committed
+.testenv/
