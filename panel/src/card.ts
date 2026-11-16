@@ -12,7 +12,17 @@ import {
   cardConfig,
   type CardConfig,
 } from "./card-config";
-import { buildTree, coverage, homeNow, rateValue, type SourceRole, type TreeNode, untracked, walk } from "./draft";
+import {
+  buildTree,
+  coverage,
+  homeNow,
+  rateValue,
+  sourceNow,
+  type SourceRole,
+  type TreeNode,
+  untracked,
+  walk,
+} from "./draft";
 import {
   arrowHead,
   arrowSize,
@@ -68,7 +78,7 @@ export interface CardSource {
   role: SourceRole;
   stat: string;
   name: string;
-  /** Power sensor of the home meter, for Home now. */
+  /** Home Assistant's power sensor of the source, for its power now and Home now. */
   stat_rate?: string;
 }
 
@@ -299,6 +309,21 @@ export class EnergyFlowMapperCardView extends LitElement {
     return new Map(devices.map((d) => [d.stat_consumption, energy[d.stat_consumption] ?? null]));
   }
 
+  /** A source's power now (Home Assistant's power sensor) or its energy in the period. */
+  private _renderSourceValue(block: Block): TemplateResult | typeof nothing {
+    const role = block.role;
+    if (!block.stat || role === undefined || role === "battery" || role === "consumption") {
+      return nothing;
+    }
+    const value =
+      this.config?.period === "now"
+        ? this.hass
+          ? sourceNow(this.hass, block.source?.stat_rate, role)
+          : null
+        : (this._data?.energy?.[block.stat] ?? null);
+    return value === null ? nothing : html`<span class="sub value">${this._format(value)}</span>`;
+  }
+
   _format(value: number): string {
     const water = this.config?.kind === "water";
     const unit = this._data?.water_unit ?? "L";
@@ -432,7 +457,13 @@ export class EnergyFlowMapperCardView extends LitElement {
     }
     const sources =
       config.show_sources && !config.root
-        ? (this._data?.sources ?? []).map((s) => ({ type: s.type, role: s.role, stat: s.stat, name: s.name }))
+        ? (this._data?.sources ?? []).map((s) => ({
+            type: s.type,
+            role: s.role,
+            stat: s.stat,
+            name: s.name,
+            ...(s.stat_rate ? { stat_rate: s.stat_rate } : {}),
+          }))
         : [];
     const result = layout(
       display,
@@ -528,14 +559,16 @@ export class EnergyFlowMapperCardView extends LitElement {
       }
       case "source": {
         const role = block.role ?? "import";
+        const label = hasKey(`role_${role}`) ? this._t(`role_${role}` as StringKey) : role;
         return html`<div
           class="block source"
           style="${style};--source-color:${SOURCE_COLORS[role] ?? "var(--divider-color)"}"
           data-role=${role}
         >
           <div class="block-text">
-            <span class="node-name">${hasKey(`role_${role}`) ? this._t(`role_${role}` as StringKey) : role}</span>
+            <span class="node-name" title=${label}>${label}</span>
             <span class="sub">${block.source?.name ?? block.stat}</span>
+            ${this._renderSourceValue(block)}
           </div>
           ${block.stat && this._haTitles(block.stat).length
             ? html`<span class="badge" title=${this._haTitles(block.stat).join("\n")}>!</span>`
@@ -828,6 +861,13 @@ export class EnergyFlowMapperCardView extends LitElement {
       border: 1px solid var(--source-color);
       border-left: 5px solid var(--source-color);
       background: color-mix(in srgb, var(--source-color) 14%, var(--block-bg));
+    }
+    /* The role on one line: name and value below it always fit the block. */
+    .block.source .node-name {
+      display: block;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .block.untracked {
       border: 2px dashed var(--block-border);

@@ -209,6 +209,54 @@ describe("card", () => {
     expect(label).toBe("heat");
   });
 
+  it("shows the power now on its sources", async () => {
+    const mock = mockHass(() =>
+      data({
+        sources: [
+          { type: "grid", role: "import", stat: "sensor.import", name: "Grid", stat_rate: "sensor.grid_power" },
+          { type: "grid", role: "export", stat: "sensor.export", name: "Grid", stat_rate: "sensor.grid_power" },
+          { type: "solar", role: "production", stat: "sensor.roof", name: "Roof", stat_rate: "sensor.roof_power" },
+          { type: "solar", role: "production", stat: "sensor.shed", name: "Shed" },
+        ],
+      }),
+    );
+    // Home Assistant's sign: negative is going to the grid.
+    mock.hass.states["sensor.grid_power"] = { entity_id: "sensor.grid_power", state: "-1.2", attributes: { unit_of_measurement: "kW" } };
+    mock.hass.states["sensor.roof_power"] = { entity_id: "sensor.roof_power", state: "800", attributes: { unit_of_measurement: "W" } };
+    const el = await view({ period: "now" }, mock);
+    const value = (role: string, nth = 0) =>
+      el.shadowRoot!.querySelectorAll(`.block.source[data-role="${role}"]`)[nth].querySelector(".value")?.textContent ?? null;
+    expect(value("import")).toBe("0 W");
+    expect(value("export")).toBe("1.2 kW");
+    expect(value("production")).toBe("800 W");
+    expect(value("production", 1)).toBeNull();
+  });
+
+  it("shows no value for an unavailable power sensor or a source of an unknown type", async () => {
+    const mock = mockHass(() =>
+      data({
+        sources: [
+          { type: "solar", role: "production", stat: "sensor.roof", name: "Roof", stat_rate: "sensor.roof_power" },
+          { type: "heat", role: "consumption" as never, stat: "sensor.heat", name: "Heat", stat_rate: "sensor.roof_power" },
+        ],
+      }),
+    );
+    mock.hass.states["sensor.roof_power"] = { entity_id: "sensor.roof_power", state: "unavailable", attributes: { unit_of_measurement: "W" } };
+    const el = await view({ period: "now" }, mock);
+    expect(el.shadowRoot!.querySelector(".block.source .value")).toBeNull();
+  });
+
+  it("keeps a source's role on one line", () => {
+    const css = (customElements.get(CARD_VIEW_TAG) as unknown as { styles: { cssText: string } }).styles.cssText.replace(/\s+/g, " ");
+    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*white-space: nowrap/);
+  });
+
+  it("shows the energy of the period on its sources", async () => {
+    const mock = mockHass(() => data({ ...periodValues(), energy: { "sensor.import": 3 } }));
+    const el = await view({ period: "week" }, mock);
+    expect(el.shadowRoot!.querySelector('.block.source[data-role="import"] .value')!.textContent).toBe("3 kWh");
+  });
+
   it("shows sources, Home, devices with energy and untracked, and the warning", async () => {
     const mock = mockHass();
     const el = await view({ period: "week" }, mock);
