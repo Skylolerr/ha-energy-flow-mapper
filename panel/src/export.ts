@@ -168,7 +168,8 @@ export function anonymize(
     if (g !== undefined) {
       return { ...b, title: groupLabel(g), area: null };
     }
-    if (b.block.kind === "source" || b.named) {
+    // A source keeps its value; its sensor name is in `area`.
+    if (b.named) {
       return { ...b, sub: null, area: null };
     }
     return { ...b, area: null };

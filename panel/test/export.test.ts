@@ -30,7 +30,8 @@ const LAYOUT: Layout = {
 
 function blocks(): ExportBlock[] {
   return [
-    { block: LAYOUT.blocks[0], title: "Grid import", sub: "Main meter", area: null, color: "#488fc2", warn: false },
+    // A source: its value, then its sensor name, like a device and its area.
+    { block: LAYOUT.blocks[0], title: "Grid import", sub: "3 kWh", area: "Main meter", color: "#488fc2", warn: false },
     { block: LAYOUT.blocks[1], title: "Home", sub: "20 kWh measured", area: null, color: "#727272", warn: false },
     // A name with markup, its area and its entity ID.
     { block: LAYOUT.blocks[2], title: "Anna's <room>", sub: "2 kWh", area: "Kids room Anna", color: "#03a9f4", warn: true },
@@ -87,8 +88,9 @@ describe("anonymize", () => {
     expect(result[2].sub).toBe("2 kWh");
     expect(result[2].area).toBeNull();
     expect(result[3].area).toBeNull();
-    // Sources keep their role but not the sensor's name.
-    expect(result[0].sub).toBeNull();
+    // Sources keep their role and value but not the sensor's name.
+    expect(result[0].sub).toBe("3 kWh");
+    expect(result[0].area).toBeNull();
   });
 
   it("leaves no name, area, statistic or entity ID in the image", () => {

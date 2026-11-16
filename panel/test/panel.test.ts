@@ -1305,10 +1305,40 @@ describe("sources", () => {
     expect(root(el).querySelector(".block.placeholder .value")).toBeNull();
   });
 
-  it("keeps the role on one line, so the value always fits the block", () => {
+  it("puts the value in front of the sensor name, like devices, so the role keeps two lines", async () => {
+    const el = await mount(withPower());
+    const solar = sourceBlock(el, "production");
+    const subs = solar.querySelectorAll(".sub");
+    expect(subs).toHaveLength(1);
+    expect(subs[0].textContent!.replace(/\s+/g, " ").trim()).toMatch(/^800 W · /);
+    // Without a value only the sensor name.
+    expect(sourceBlock(el, "production", 1).querySelector(".sub")!.textContent!.trim()).not.toContain("·");
+    // The role is not forced onto one line any more, and keeps the drop hint as tooltip.
     const css = EnergyFlowMapperPanel.styles.cssText.replace(/\s+/g, " ");
-    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*white-space: nowrap/);
-    expect(css).toMatch(/\.block\.source \.node-name \{[^}]*text-overflow: ellipsis/);
+    expect(css).not.toMatch(/\.block\.source \.node-name \{/);
+    expect(solar.querySelector(".node-name")!.hasAttribute("title")).toBe(false);
+  });
+
+  it("shows no part value for a home meter whose data is late", async () => {
+    const mock = withPower();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.home_supported = true;
+    snap.prefs.energy_sources.push({ type: "home", stat_energy_to: "sensor.main" });
+    mock.responses["energy_flow_mapper/energy"] = {
+      period: "today",
+      start: "2026-11-16T00:00:00+01:00",
+      end: "2026-11-16T12:00:00+01:00",
+      water_unit: "L",
+      energy: { "sensor.main": 2.1, "sensor.import": 3 },
+      untracked: {},
+      issues: [],
+      home: { value: null, basis: null, stale: "sensor.main", untracked: null },
+    };
+    const el = await mount(mock);
+    el.setPeriod("today");
+    await settle(el);
+    expect(sourceBlock(el, "home").querySelector(".value")).toBeNull();
+    expect(sourceBlock(el, "import").querySelector(".value")!.textContent).toBe("3 kWh");
   });
 
   it("shows the home meter's power now and nothing for a source of an unknown type", async () => {
@@ -2683,6 +2713,22 @@ describe("save as image", () => {
     }
     expect(svg).toContain("Device 1");
     expect(svg).toContain("Grid import");
+  });
+
+  it("keeps the values of the sources when it hides names", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.energy_sources = [
+      { type: "grid", stat_energy_from: "sensor.import", stat_energy_to: "sensor.export", stat_rate: "sensor.grid_power" },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.grid_power"] = entity("sensor.grid_power", "-1.2", "kW");
+    const el = await mount(mock);
+    const { toPng } = capture(el);
+    await save(el, true);
+    const svg = toPng.mock.calls[0][0];
+    expect(svg).toContain("1.2 kW");
+    expect(svg).not.toContain("sensor.");
   });
 
   it("hides the meter name of a late home meter", async () => {

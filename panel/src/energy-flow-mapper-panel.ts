@@ -13,6 +13,7 @@ import {
   moveTargets,
   rateValue,
   sourceRows,
+  type SourceRole,
   subtree,
   type TreeNode,
   untracked,
@@ -1952,6 +1953,17 @@ export class EnergyFlowMapperPanel extends LitElement {
       block.kind === "source" || block.kind === "placeholder"
         ? (SOURCE_COLORS[block.role ?? ""] ?? "var(--divider-color, #e0e0e0)")
         : "var(--secondary-text-color, #727272)";
+    if (block.kind === "source" && block.stat) {
+      // Like a device: the value, then the sensor name (which hiding names drops).
+      return {
+        block,
+        title,
+        sub: this._sourceValueText(block),
+        area: block.source?.name || this._name(block.stat),
+        color: this._cssColor(color),
+        warn,
+      };
+    }
     // A late home meter is named in the text of Home.
     const named = block.kind === "home" && this._home()?.stale != null;
     return { block, title, sub: subs.join("\n") || null, area: null, color: this._cssColor(color), warn, named };
@@ -2623,11 +2635,8 @@ export class EnergyFlowMapperPanel extends LitElement {
           }}
         >
           <div class="block-text">
-            <span class="node-name" title=${label}>${block.kind === "placeholder" ? `+ ${label}` : label}</span>
-            ${block.stat
-              ? html`<span class="sub">${block.source?.name || this._name(block.stat)}</span>`
-              : nothing}
-            ${block.kind === "source" ? this._renderSourceValue(block) : nothing}
+            <span class="node-name">${block.kind === "placeholder" ? `+ ${label}` : label}</span>
+            ${block.stat ? this._renderSourceSub(block) : nothing}
           </div>
           ${haStats.some((stat) => this._haIssuesFor(stat).length)
             ? html`<span class="badge" title=${haStats.map((stat) => this._badgeTitle(stat, [])).filter(Boolean).join("\n")}
@@ -2651,25 +2660,41 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
+   * The line below a source's role: its value first, as with devices, then its
+   * sensor name («800 W · Roof PV»), so the role may take two lines.
+   */
+  private _renderSourceSub(block: Block): TemplateResult {
+    const name = block.source?.name || this._name(block.stat!);
+    const value = block.kind === "source" ? this._sourceValueText(block) : null;
+    return html`<span class="sub"
+      >${value === null ? nothing : html`<span class="value">${value}</span> · `}${name}</span
+    >`;
+  }
+
+  /**
    * What a source delivered or took in the period, or its power (water: flow)
    * now from Home Assistant's power sensor of the source; gas has its own.
+   * A home meter whose data is late shows no part value (Home names it).
    */
-  private _renderSourceValue(block: Block): TemplateResult | typeof nothing {
+  _sourceValueText(block: Block): string | null {
     const role = block.role ?? "import";
     // A source type the panel does not know has no known unit.
-    if (!block.stat || role === "battery" || role === "consumption") {
-      return nothing;
+    if (!block.stat || role === "consumption") {
+      return null;
     }
     if (role === "gas") {
-      return this._renderGasValue(block.stat);
+      return this._gasValueText(block.stat);
+    }
+    if (this._period !== "now" && this._home()?.stale === block.stat) {
+      return null;
     }
     const value =
       this._period === "now"
         ? this.hass
-          ? sourceNow(this.hass, block.source?.stat_rate, role)
+          ? sourceNow(this.hass, block.source?.stat_rate, role as SourceRole)
           : null
         : (this._energy?.energy[block.stat] ?? null);
-    return value === null ? nothing : html`<span class="sub value">${this._formatValue(value)}</span>`;
+    return value === null ? null : this._formatValue(value);
   }
 
   /**
@@ -2677,26 +2702,23 @@ export class EnergyFlowMapperPanel extends LitElement {
    * volume (in `gas_unit`) or by energy (in kWh); the flow is shown as its
    * sensor reports it.
    */
-  private _renderGasValue(stat: string): TemplateResult | typeof nothing {
-    let text: string | null = null;
+  private _gasValueText(stat: string): string | null {
     if (this._period === "now") {
       const rate = this.draftSources.find((s) => s.type === "gas" && s.stat_energy_from === stat)?.stat_rate;
       const state = typeof rate === "string" ? this.hass?.states[rate] : undefined;
       const value = state ? Number(state.state) : NaN;
-      if (state && state.state !== "" && Number.isFinite(value)) {
-        text = `${formatNumber(this.hass, value, 2)} ${state.attributes.unit_of_measurement ?? ""}`.trim();
-      }
-    } else {
-      const value = this._energy?.energy[stat];
-      if (value != null) {
-        const unit = this._info(stat)?.unit;
-        text =
-          unit && ENERGY_UNITS.includes(unit)
-            ? formatEnergy(this.hass, value)
-            : formatVolume(this.hass, value, this._energy?.gas_unit ?? "m³");
-      }
+      return state && state.state !== "" && Number.isFinite(value)
+        ? `${formatNumber(this.hass, value, 2)} ${state.attributes.unit_of_measurement ?? ""}`.trim()
+        : null;
     }
-    return text === null ? nothing : html`<span class="sub value">${text}</span>`;
+    const value = this._energy?.energy[stat];
+    if (value == null) {
+      return null;
+    }
+    const unit = this._info(stat)?.unit;
+    return unit && ENERGY_UNITS.includes(unit)
+      ? formatEnergy(this.hass, value)
+      : formatVolume(this.hass, value, this._energy?.gas_unit ?? "m³");
   }
 
   private _renderDeviceBlock(block: Block, devices: Device[]): TemplateResult {
@@ -4618,13 +4640,6 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .block.home .mdi {
       color: var(--primary-text-color);
-    }
-    /* The role on one line: name and value below it always fit the block. */
-    .block.source .node-name {
-      display: block;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
     .block.source {
       border: 1px solid var(--source-color);
