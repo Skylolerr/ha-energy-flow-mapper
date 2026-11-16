@@ -11,11 +11,26 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-11-16
+
+> **Highlight:** the sources show their values too – grid, solar, battery, the home meter and
+> water, now or in the period, in the panel and on the dashboard card.
+
 ### ✨ Added
 
-- **Values on the sources:** grid import and export, solar, battery, the home meter and water
-  now show their power now (from the power sensor in Home Assistant's energy settings) or their
-  energy in the selected period, in the panel and on the dashboard card.
+- **Values on the sources:** grid import and export, solar, battery and the home meter show
+  their power now (from the power sensor in Home Assistant's energy settings) or their energy in
+  the selected period; water shows its flow or volume. Like on devices, the value stands in front
+  of the sensor name («800 W · Roof PV»). Solar never shows less than 0. In the panel and on the
+  dashboard card.
+
+### 🐛 Fixed
+
+- **Save as image** with hidden names keeps the values of the sources and drops only their
+  sensor names.
+- **Large power values** from 1000 kW show in MW; sensors in GW or TW are understood.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.1 · minimum 2026.10.0*
 
 ## [0.9.1] - 2026-11-12
 
