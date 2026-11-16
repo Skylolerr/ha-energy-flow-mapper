@@ -16,6 +16,7 @@ import {
   powerInWatts,
   rateValue,
   sourceKind,
+  sourceNow,
   sourceRows,
   subtree,
   suggestionsFor,
@@ -206,6 +207,36 @@ describe("names and power", () => {
     expect(powerInWatts(hass, "sensor.bad")).toBeNull();
     expect(powerInWatts(hass, "sensor.missing")).toBeNull();
     expect(powerInWatts(hass, undefined)).toBeNull();
+  });
+
+  it("gives the power now of a source in the direction of its role", () => {
+    const state = (value: string, unit = "W") => ({ entity_id: "x", state: value, attributes: { unit_of_measurement: unit } });
+    const hass = {
+      states: {
+        "sensor.grid_in": state("300"),
+        "sensor.grid_out": state("-1.2", "kW"),
+        "sensor.battery": state("-500"),
+        "sensor.solar": state("800"),
+        "sensor.flow": state("6", "L/min"),
+        "sensor.na": state("unavailable"),
+      },
+    } as unknown as HomeAssistant;
+    // Home Assistant's sign: positive from the grid / discharging, negative to it / charging.
+    expect(sourceNow(hass, "sensor.grid_in", "import")).toBe(300);
+    expect(sourceNow(hass, "sensor.grid_in", "export")).toBe(0);
+    expect(sourceNow(hass, "sensor.grid_out", "import")).toBe(0);
+    expect(sourceNow(hass, "sensor.grid_out", "export")).toBe(1200);
+    expect(sourceNow(hass, "sensor.battery", "discharge")).toBe(0);
+    expect(sourceNow(hass, "sensor.battery", "charge")).toBe(500);
+    expect(sourceNow(hass, "sensor.solar", "production")).toBe(800);
+    // An inverter reporting a little standby draw at night still produces nothing.
+    expect(sourceNow(hass, "sensor.battery", "production")).toBe(0);
+    expect(sourceNow(hass, "sensor.solar", "home")).toBe(800);
+    expect(sourceNow(hass, "sensor.flow", "water")).toBe(6);
+    expect(sourceNow(hass, "sensor.na", "import")).toBeNull();
+    expect(sourceNow(hass, undefined, "production")).toBeNull();
+    expect(sourceNow(hass, "sensor.solar", "gas")).toBeNull();
+    expect(sourceNow(hass, "sensor.solar", "consumption")).toBeNull();
   });
 
   it("converts flow to L/min", () => {
@@ -411,7 +442,7 @@ describe("home meter", () => {
   const HOME = { type: "home", stat_energy_to: "main", stat_rate: "main_power", name: "Main", x: 1 };
 
   it("is a source row of electricity", () => {
-    expect(sourceRows([HOME])).toEqual([{ type: "home", role: "home", stat: "main", name: "Main" }]);
+    expect(sourceRows([HOME])).toEqual([{ type: "home", role: "home", stat: "main", name: "Main", stat_rate: "main_power" }]);
     expect(sourceRows([HOME], "water")).toEqual([]);
   });
 

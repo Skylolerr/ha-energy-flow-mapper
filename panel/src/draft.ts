@@ -60,6 +60,8 @@ export interface SourceRow {
   role: SourceRole;
   stat: string;
   name?: string;
+  /** Home Assistant's power sensor of the source (signed for grid and battery). */
+  stat_rate?: string;
 }
 
 function setOptional(device: Device, key: string, value: unknown): void {
@@ -375,6 +377,37 @@ export function rateValue(
   return kind === "water" ? flowInLitresPerMinute(hass, entityId) : powerInWatts(hass, entityId);
 }
 
+/**
+ * The power now of one role of a source, from Home Assistant's power sensor of
+ * that source (`stat_rate`). For grid and battery it is signed: positive from
+ * the grid or discharging, negative to the grid or charging; each role shows
+ * its direction (0 while the flow goes the other way); solar never goes
+ * below 0. Water is a flow in
+ * L/min; gas and unknown roles have no power here.
+ */
+export function sourceNow(hass: HomeAssistant, rate: string | undefined, role: SourceRole): number | null {
+  const value = rateValue(hass, rate, role === "water" ? "water" : "electricity");
+  if (value === null) {
+    return null;
+  }
+  switch (role) {
+    case "import":
+    case "discharge":
+      return Math.max(value, 0);
+    case "export":
+    case "charge":
+      return Math.max(-value, 0);
+    case "production":
+      // An inverter's standby draw at night is no production.
+      return Math.max(value, 0);
+    case "home":
+    case "water":
+      return value;
+    default:
+      return null;
+  }
+}
+
 /** Own value minus children for each node with children (null if unknown). */
 export function untracked(
   nodes: TreeNode[],
@@ -429,11 +462,12 @@ export function sourceRows(sources: Source[], kind?: Tab): SourceRow[] {
       continue;
     }
     const [from, to] = SOURCE_ROLES[source.type] ?? ["consumption", null];
+    const rate = typeof source.stat_rate === "string" ? { stat_rate: source.stat_rate } : {};
     if (source.stat_energy_from) {
-      rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name });
+      rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name, ...rate });
     }
     if (to !== null && source.stat_energy_to) {
-      rows.push({ type: source.type, role: to, stat: source.stat_energy_to, name: source.name });
+      rows.push({ type: source.type, role: to, stat: source.stat_energy_to, name: source.name, ...rate });
     }
   }
   return rows;
