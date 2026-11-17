@@ -18,6 +18,8 @@ export interface ExportBlock {
   named?: boolean;
   /** Child devices hidden because the device is collapsed. */
   hidden?: number;
+  /** Path of the line icon of a helper or external statistic (24×24), drawn at the top left. */
+  mark?: string | null;
 }
 
 export interface ExportEdge {
@@ -84,6 +86,11 @@ function blockSvg(item: ExportBlock, index: number, options: ExportOptions): str
         }">${escapeXml(line)}</text>`,
     ),
     `</g>`,
+    item.mark
+      ? `<path d="${escapeXml(item.mark)}" transform="translate(${x + 6} ${y + 4}) scale(0.5833)" fill="none" stroke="${
+          theme.secondary
+        }" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>`
+      : "",
     item.hidden
       ? `<text x="${x + w - 10}" y="${y + h - 8}" text-anchor="end" font-family="${FONT}" font-size="11" fill="${
           theme.secondary

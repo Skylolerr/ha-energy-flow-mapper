@@ -324,6 +324,17 @@ describe("applyGroupChanges", () => {
     expect(top[0].group).toBeNull();
   });
 
+  it("takes the groups of a removed device with a missing parent to Home", () => {
+    const { devices, groups } = applyAllChanges(
+      [dev("p", "gone"), dev("a", "p"), dev("b", "p")],
+      [grp("g", ["a", "b"], "p")],
+      [{ type: "remove", stat: "p" }],
+      "electricity",
+    );
+    expect(devices).toEqual([dev("a"), dev("b")]);
+    expect(groups.map((g) => [g.parent, g.members])).toEqual([[null, ["a", "b"]]]);
+  });
+
   it("dissolves a top-level group", () => {
     expect(run([{ type: "dissolve_group", id: "g" }], [grp("g", ["a"], "p")])).toEqual([]);
   });

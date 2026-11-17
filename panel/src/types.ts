@@ -88,7 +88,12 @@ export interface StatInfo {
   floor_name: string | null;
   /** The entity belongs to a helper created by Energy Flow Mapper. */
   created_helper?: boolean;
+  /** What the statistic comes from: a kind of helper, an external statistic, or a device's sensor (null). */
+  stat_type?: StatType | null;
 }
+
+/** The kinds of helpers the panel marks, and external statistics. */
+export type StatType = "integral" | "group" | "template" | "utility_meter" | "helper" | "external";
 
 /** A meter that is not used yet; `power` is a suggested stat_rate (power or flow). */
 export interface Candidate extends StatInfo {
@@ -117,6 +122,8 @@ export interface Issue {
   details: Record<string, unknown>;
   /** The tab the issue belongs to. */
   kind?: Tab;
+  /** In a check: the settings had this issue before the draft (it does not block saving). */
+  existing?: boolean;
 }
 
 /** A message of Home Assistant's own energy check, attached to a block. */

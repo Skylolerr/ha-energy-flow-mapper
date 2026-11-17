@@ -22,6 +22,8 @@ import {
   suggestionsFor,
   type TreeNode,
   untracked,
+  untrackedMissing,
+  homeUntracked,
   walk,
 } from "../src/draft";
 import type { Change, ChildPair, Device, HomeAssistant } from "../src/types";
@@ -123,6 +125,29 @@ describe("applyChanges", () => {
   it("removing a top-level device makes its children top-level", () => {
     const result = applyChanges(deep(), [{ type: "remove", stat: "main" }]);
     expect(buildTree(result).map((n) => n.stat)).toEqual(["kitchen", "office", "garage"]);
+  });
+
+  it.each(["remove", "use_as_home_meter"] as const)(
+    "does not let children inherit a missing parent (%s)",
+    (type) => {
+      const devices: Device[] = [
+        { stat_consumption: "p", included_in_stat: "gone" },
+        { stat_consumption: "c1", included_in_stat: "p" },
+        { stat_consumption: "c2", included_in_stat: "p" },
+      ];
+      expect(applyChanges(devices, [{ type, stat: "p" }])).toEqual([
+        { stat_consumption: "c1" },
+        { stat_consumption: "c2" },
+      ]);
+    },
+  );
+
+  it("does not make a child its own parent when removing a device in an old loop", () => {
+    const devices: Device[] = [
+      { stat_consumption: "a", included_in_stat: "b" },
+      { stat_consumption: "b", included_in_stat: "a" },
+    ];
+    expect(applyChanges(devices, [{ type: "remove", stat: "a" }])).toEqual([{ stat_consumption: "b" }]);
   });
 
   it("leaves devices alone on source changes", () => {
@@ -297,8 +322,44 @@ describe("names and power", () => {
         ["coffee", 15],
       ]),
     );
+    // A child without a value measures nothing: its share is untracked.
     values.delete("office");
-    expect(untracked(roots, values).get("main")).toBeNull();
+    values.set("coffee", null);
+    expect(untracked(roots, values)).toEqual(
+      new Map([
+        ["main", 20],
+        ["kitchen", 30],
+        ["coffee", null],
+      ]),
+    );
+  });
+
+  it("lists the children without a value", () => {
+    const roots = buildTree(deep());
+    const values = new Map<string, number | null>([
+      ["main", 50],
+      ["kitchen", 30],
+      ["coffee", 20],
+      ["grinder", 5],
+      ["office", 10],
+    ]);
+    expect(untrackedMissing(roots, values)).toEqual(new Map());
+    values.delete("office");
+    values.set("coffee", null);
+    expect(untrackedMissing(roots, values)).toEqual(
+      new Map([
+        ["main", ["office"]],
+        ["kitchen", ["coffee"]],
+      ]),
+    );
+  });
+
+  it("computes what no top-level device covers", () => {
+    const roots = buildTree(deep());
+    const values = new Map<string, number | null>([["main", 50]]);
+    expect(homeUntracked(roots, values, 80)).toBe(30);
+    expect(homeUntracked(roots, new Map(), 80)).toBe(80);
+    expect(homeUntracked(roots, values, null)).toBeNull();
   });
 });
 
@@ -564,11 +625,15 @@ describe("coverage", () => {
     expect(coverage(10, [8, 4])).toBe(1.2);
   });
 
-  it("has no value without a positive home or with a device without value", () => {
+  it("counts a device without a value as covering nothing", () => {
+    expect(coverage(10, [2, null])).toBe(0.2);
+    expect(coverage(10, [null])).toBe(0);
+  });
+
+  it("has no value without a positive home", () => {
     expect(coverage(null, [1])).toBeNull();
     expect(coverage(0, [1])).toBeNull();
     expect(coverage(-2, [1])).toBeNull();
-    expect(coverage(10, [2, null])).toBeNull();
     // A meter that went backwards (reset, mixed statistics) gives no share.
     expect(coverage(10, [5, -1])).toBeNull();
   });

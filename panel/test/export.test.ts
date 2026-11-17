@@ -134,6 +134,13 @@ describe("lines and markers in the picture", () => {
     expect(svg).toContain(">65% covered by devices</text>");
   });
 
+  it("draws the mark of a helper at the top left of its block", () => {
+    const device = { ...blocks()[2], mark: "M1 2L3 4" };
+    const svg = diagramSvg(LAYOUT, [device], [], options);
+    expect(svg).toContain('<path d="M1 2L3 4" transform="translate(606 28) scale(0.5833)"');
+    expect(diagramSvg(LAYOUT, [blocks()[2]], [], options)).not.toContain("scale(0.5833)");
+  });
+
   it("marks a collapsed device with the number of hidden child devices", () => {
     const device = { ...blocks()[2], hidden: 3 };
     expect(diagramSvg(LAYOUT, [device], [], options)).toContain("▸ +3");

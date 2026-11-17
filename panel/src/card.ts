@@ -20,7 +20,9 @@ import {
   sourceNow,
   type SourceRole,
   type TreeNode,
+  homeUntracked,
   untracked,
+  untrackedMissing,
   walk,
 } from "./draft";
 import {
@@ -37,6 +39,7 @@ import {
   strokeWidth,
 } from "./layout";
 import { type DisplayNode, displayTree, groupBlockId, groupDevices, groupValue, GROUP_PREFIX } from "./groups";
+import { typeIcon } from "./icons";
 import {
   coverageText,
   errorText,
@@ -50,7 +53,7 @@ import {
   localize,
   type StringKey,
 } from "./localize";
-import type { Device, DeviceKind, Group, HaIssue, HomeAssistant, HomeResult, Issue } from "./types";
+import type { Device, DeviceKind, Group, HaIssue, HomeAssistant, HomeResult, Issue, StatType } from "./types";
 
 const DOMAIN = "energy_flow_mapper";
 /** How often the card reads the tree and the period values again. */
@@ -71,6 +74,8 @@ export interface CardDevice {
   parent: string | null;
   stat_rate: string | null;
   area: string | null;
+  /** A kind of helper, an external statistic, or null for a device's sensor. */
+  stat_type?: StatType | null;
 }
 
 export interface CardSource {
@@ -427,6 +432,11 @@ export class EnergyFlowMapperCardView extends LitElement {
    * What the whole home uses (not below a start device): now from the home
    * meter's power sensor, in a period from the card command.
    */
+  /** The name a device block shows. */
+  private _deviceName(stat: string): string {
+    return this._data?.devices.find((d) => d.stat === stat)?.name ?? stat;
+  }
+
   _home(roots: TreeNode[], values: Map<string, number | null>): HomeResult | null {
     const config = this.config;
     if (!config || config.root || config.kind !== "electricity") {
@@ -443,9 +453,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     if (value === null) {
       return null;
     }
-    const tops = roots.map((n) => values.get(n.stat) ?? null);
-    const rest = tops.some((v) => v === null) ? null : value - tops.reduce<number>((a, b) => a + (b ?? 0), 0);
-    return { value, basis: "measured", stale: null, untracked: rest };
+    return { value, basis: "measured", stale: null, untracked: homeUntracked(roots, values, value) };
   }
 
   private _renderDiagram(
@@ -458,8 +466,14 @@ export class EnergyFlowMapperCardView extends LitElement {
     const values = this._values(devices);
     const rest = untracked(roots, values);
     const home = this._home(roots, values);
+    // The devices without a value whose share each untracked value includes.
+    const missing = untrackedMissing(roots, values);
     if (home?.value != null) {
       rest.set(HOME_ID, home.untracked);
+      missing.set(
+        HOME_ID,
+        roots.filter((n) => (values.get(n.stat) ?? null) === null).map((n) => n.stat),
+      );
     }
     const sources =
       config.show_sources && !config.root
@@ -515,7 +529,7 @@ export class EnergyFlowMapperCardView extends LitElement {
           ${edges.map((edge) => this._renderEdge(edge, blocks, maxValue))}
         </svg>
         ${result.frames.map((frame) => this._renderFrame(frame))}
-        ${shown.map((block) => this._renderBlock(block, measured, rest, home, groupNodes, values, groups))}
+        ${shown.map((block) => this._renderBlock(block, measured, rest, home, groupNodes, values, groups, missing))}
       </div>
       </div>
     </div>`;
@@ -550,6 +564,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     groupNodes: Map<string, DisplayNode> = new Map(),
     values: Map<string, number | null> = new Map(),
     groups: Group[] = [],
+    missing: Map<string, string[]> = new Map(),
   ): TemplateResult {
     const style = `left:${block.x}px;top:${block.y}px;width:${block.w}px;height:${block.h}px`;
     switch (block.kind) {
@@ -582,10 +597,19 @@ export class EnergyFlowMapperCardView extends LitElement {
       }
       case "untracked": {
         const value = rest.get(block.stat!);
+        const valueText = value == null ? this._t("none") : this._format(value);
+        const names = value == null ? [] : (missing.get(block.stat!) ?? []).map((stat) => this._deviceName(stat));
+        const hint = !names.length
+          ? null
+          : names.length === 1
+            ? this._t("untracked_without_one", { name: names[0] })
+            : this._t("untracked_without_many", { count: String(names.length) });
         return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
           <div class="block-text">
             <span class="node-name">${this._t("untracked")}</span>
-            <span class="sub">${value == null ? this._t("none") : this._format(value)}</span>
+            <span class="sub" title=${hint ? this._t("untracked_missing_title", { names: names.join(", ") }) : nothing}
+              >${hint ? `${valueText} · ${hint}` : valueText}</span
+            >
           </div>
         </div>`;
       }
@@ -711,7 +735,19 @@ export class EnergyFlowMapperCardView extends LitElement {
         ${sub ? html`<span class="sub">${sub}</span>` : nothing}
       </div>
       ${titles.length ? html`<span class="badge" title=${titles.join("\n")}>!</span>` : nothing}
+      ${this.config?.show_types && device?.stat_type
+        ? html`<span class="type-mark" title=${this._typeText(device.stat_type)}>${typeIcon(device.stat_type)}</span>`
+        : nothing}
     </div>`;
+  }
+
+  /** «Helper: integral», «External statistic». */
+  private _typeText(type: StatType): string {
+    return type === "external"
+      ? this._t("type_external")
+      : type === "helper"
+        ? this._t("type_helper")
+        : this._t("type_helper_kind", { kind: this._t(`type_${type}`) });
   }
 
   /** Home Assistant's check messages for a block, in HA's words. */
@@ -876,6 +912,17 @@ export class EnergyFlowMapperCardView extends LitElement {
       font-weight: 400;
       color: var(--secondary-text-color);
     }
+    .block .type-mark {
+      position: absolute;
+      top: 4px;
+      left: 6px;
+      line-height: 0;
+      color: var(--secondary-text-color);
+    }
+    .block .type-icon {
+      width: 14px;
+      height: 14px;
+    }
     .badge {
       flex: none;
       width: 20px;
@@ -982,6 +1029,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       { name: "show_untracked", selector: { boolean: {} } },
       // Coverage is measured against the home consumption: electricity only.
       ...(this._config?.kind === "water" ? [] : [{ name: "show_coverage", selector: { boolean: {} } }]),
+      { name: "show_types", selector: { boolean: {} } },
     ];
   }
 
@@ -1008,6 +1056,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       show_sources: "card_field_show_sources",
       show_untracked: "card_field_show_untracked",
       show_coverage: "card_field_show_coverage",
+      show_types: "card_field_show_types",
     };
     return this._t(labels[field.name]);
   };
@@ -1042,6 +1091,7 @@ export class EnergyFlowMapperCardEditor extends LitElement {
       show_sources: true,
       show_untracked: true,
       show_coverage: false,
+      show_types: false,
     };
     for (const [key, value] of Object.entries(defaults)) {
       if (next[key] === value) {

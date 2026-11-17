@@ -24,6 +24,8 @@ export interface CardConfig {
   show_untracked: boolean;
   /** Show how much of the home the devices cover (electricity). */
   show_coverage: boolean;
+  /** Mark helpers and external statistics (off by default). */
+  show_types: boolean;
 }
 
 /** Check a configuration and fill in the defaults; throws for invalid values. */
@@ -58,5 +60,6 @@ export function cardConfig(config: unknown): CardConfig {
     show_sources: raw.show_sources !== false,
     show_untracked: raw.show_untracked !== false,
     show_coverage: raw.show_coverage === true,
+    show_types: raw.show_types === true,
   };
 }

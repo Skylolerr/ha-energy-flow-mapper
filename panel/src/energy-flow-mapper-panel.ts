@@ -17,6 +17,8 @@ import {
   subtree,
   type TreeNode,
   untracked,
+  untrackedMissing,
+  homeUntracked,
 } from "./draft";
 import { anonymize, diagramSize, diagramSvg, type ExportBlock, type ExportEdge, svgToPng } from "./export";
 import {
@@ -29,7 +31,7 @@ import {
   groupDevices,
   newGroupId,
 } from "./groups";
-import { icon } from "./icons";
+import { icon, typeIcon, typePath } from "./icons";
 import {
   arrowHead,
   arrowSize,
@@ -85,6 +87,7 @@ import type {
   Source,
   Tab,
   StatInfo,
+  StatType,
   ValidateResult,
   WSError,
 } from "./types";
@@ -106,6 +109,8 @@ export const TOUCH_DRAG_LIFT = 48;
 const ORIENTATION_KEY = "energy_flow_mapper.orientation";
 /** Where this browser remembers that the coverage at Home is switched off. */
 const COVERAGE_KEY = "energy_flow_mapper.coverage";
+const TYPE_MARKS_KEY = "energy_flow_mapper.helper_marks";
+const FREE_COLLAPSED_KEY = "energy_flow_mapper.free_collapsed";
 /** The unsaved draft of this browser, so leaving the panel does not lose it. */
 const DRAFT_KEY = "energy_flow_mapper.draft";
 
@@ -239,6 +244,24 @@ function savedCoverage(): boolean {
   }
 }
 
+/** Whether this browser marks helpers and external statistics (off unless switched on). */
+function savedTypeMarks(): boolean {
+  try {
+    return localStorage.getItem(TYPE_MARKS_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
+/** Whether this browser folds the free sensors to a strip (open unless folded). */
+function savedFreeCollapsed(): boolean {
+  try {
+    return localStorage.getItem(FREE_COLLAPSED_KEY) === "on";
+  } catch {
+    return false;
+  }
+}
+
 /** The draft this browser kept; storage may be blocked or hold something broken. */
 function keptDraft(): KeptDraft | null {
   try {
@@ -306,6 +329,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     _period: { state: true },
     _orientation: { state: true },
     _coverage: { state: true },
+    _typeMarks: { state: true },
+    _freeCollapsed: { state: true },
     _ignored: { state: true },
     _energy: { state: true },
     _tab: { state: true },
@@ -357,6 +382,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _period: Period;
   declare _orientation: Orientation;
   declare _coverage: boolean;
+  declare _typeMarks: boolean;
+  declare _freeCollapsed: boolean;
   /** Suggestions an admin ignored, stored in Home Assistant. */
   declare _ignored: ChildPair[];
   /** Energy of the current period and draft; null for "now" or while loading. */
@@ -412,6 +439,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._period = "now";
     this._orientation = savedOrientation();
     this._coverage = savedCoverage();
+    this._typeMarks = savedTypeMarks();
+    this._freeCollapsed = savedFreeCollapsed();
     this._ignored = [];
     this._energy = null;
     this._tab = "electricity";
@@ -767,9 +796,53 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     const devices = this.draft;
     const power = this._values(devices);
-    const tops = buildTree(devices).map((n) => power.get(n.stat) ?? null);
-    const rest = tops.some((v) => v === null) ? null : value - tops.reduce<number>((a, b) => a + (b ?? 0), 0);
-    return { value, basis: "measured", stale: null, untracked: rest };
+    return { value, basis: "measured", stale: null, untracked: homeUntracked(buildTree(devices), power, value) };
+  }
+
+  /**
+   * The devices without a value whose share is in the untracked value of
+   * `stat` (a device, or Home): its children, or Home's top-level devices.
+   */
+  _missingFor(stat: string, devices: Device[], values = this._values(devices)): string[] {
+    const roots = buildTree(devices);
+    if (stat === HOME_ID) {
+      return this._home()?.value != null
+        ? roots.filter((n) => (values.get(n.stat) ?? null) === null).map((n) => n.stat)
+        : [];
+    }
+    return untrackedMissing(roots, values).get(stat) ?? [];
+  }
+
+  /** The untracked value with «without …» when devices without a value are in it. */
+  _untrackedText(
+    stat: string,
+    value: number | null | undefined,
+    devices: Device[],
+    values?: Map<string, number | null>,
+  ): { value: string; text: string; title: string | null; hint: string | null } {
+    const valueText = value == null ? this._t("none") : this._formatValue(value);
+    const hint = value == null ? null : this._missingText(this._missingFor(stat, devices, values), devices);
+    return {
+      value: valueText,
+      text: hint ? `${valueText} · ${hint.text}` : valueText,
+      title: hint?.title ?? null,
+      hint: hint?.text ?? null,
+    };
+  }
+
+  /** «without TV» / «without 2 devices», and all names for the tooltip; null without missing devices. */
+  _missingText(missing: string[], devices: Device[]): { text: string; title: string } | null {
+    if (!missing.length) {
+      return null;
+    }
+    const names = missing.map((stat) => this._name(stat, devices));
+    return {
+      text:
+        names.length === 1
+          ? this._t("untracked_without_one", { name: names[0] })
+          : this._t("untracked_without_many", { count: String(names.length) }),
+      title: this._t("untracked_missing_title", { names: names.join(", ") }),
+    };
   }
 
   private _info(stat: string): StatInfo | undefined {
@@ -1845,9 +1918,13 @@ export class EnergyFlowMapperPanel extends LitElement {
         )}
       </div>
       <div
-        class="content ${this.narrow ? "narrow" : ""} ${this._changes.length || this._multi.size || this._selectMode ? "above-footer" : ""}"
+        class="content ${this.narrow ? "narrow" : ""} ${!this.narrow && this._freeCollapsed ? "free-collapsed" : ""} ${this._changes.length || this._multi.size || this._selectMode ? "above-footer" : ""}"
       >
-        ${this.narrow ? nothing : html`<aside class="column free">${this._renderCandidates()}</aside>`}
+        ${this.narrow
+          ? nothing
+          : html`<aside class="column free">
+              ${this._freeCollapsed ? this._renderFreeStrip() : this._renderCandidates(true)}
+            </aside>`}
         <main class="column main">
           ${this._view === "list"
             ? html`${this._renderSources()} ${this._renderTree()}`
@@ -1933,6 +2010,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         color: this._cssColor("var(--primary-color, #03a9f4)"),
         warn,
         hidden: this._collapsed.has(stat) ? (block.node?.children.length ?? 0) : 0,
+        mark: this._typeMarks && this._info(stat)?.stat_type ? typePath(this._info(stat)!.stat_type!) : null,
       };
     }
     if (block.kind === "group") {
@@ -1953,6 +2031,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       block.kind === "source" || block.kind === "placeholder"
         ? (SOURCE_COLORS[block.role ?? ""] ?? "var(--divider-color, #e0e0e0)")
         : "var(--secondary-text-color, #727272)";
+    if (block.kind === "untracked") {
+      // «without …» names devices, so it goes where hiding names drops it.
+      const rest = this._untrackedText(block.stat!, flows.get(block.id), devices);
+      return { block, title, sub: rest.value, area: rest.hint, color: this._cssColor(color), warn };
+    }
     if (block.kind === "source" && block.stat) {
       // Like a device: the value, then the sensor name (which hiding names drops).
       return {
@@ -2054,6 +2137,45 @@ export class EnergyFlowMapperPanel extends LitElement {
     } catch {
       // Blocked storage: the choice just lasts until the panel is opened again.
     }
+  }
+
+  /** Fold the free sensors to a strip (more room for the diagram) or open them; remembered. */
+  setFreeCollapsed(on: boolean): void {
+    this._freeCollapsed = on;
+    try {
+      localStorage.setItem(FREE_COLLAPSED_KEY, on ? "on" : "off");
+    } catch {
+      // Blocked storage: the choice just lasts until the panel is opened again.
+    }
+  }
+
+  /** Show or hide the marks of helpers and external statistics and remember the choice. */
+  setTypeMarks(on: boolean): void {
+    this._typeMarks = on;
+    try {
+      localStorage.setItem(TYPE_MARKS_KEY, on ? "on" : "off");
+    } catch {
+      // Blocked storage: the choice just lasts until the panel is opened again.
+    }
+  }
+
+  /**
+   * What a helper or external statistic is, for its mark («Helper: integral»);
+   * null for a device's own sensor.
+   */
+  _typeText(stat: string): string | null {
+    const info = this._info(stat);
+    const type: StatType | null | undefined = info?.stat_type;
+    if (!type) {
+      return null;
+    }
+    const text =
+      type === "external"
+        ? this._t("type_external")
+        : type === "helper"
+          ? this._t("type_helper")
+          : this._t("type_helper_kind", { kind: this._t(`type_${type}`) });
+    return info?.created_helper ? `${text} · ${this._t("created_by")}` : text;
   }
 
   /** Run the diagram the other way, fit it again and remember the choice. */
@@ -2356,6 +2478,15 @@ export class EnergyFlowMapperPanel extends LitElement {
                   ${this._t("coverage_toggle")}
                 </button>`
               : nothing}
+            ${this._tab !== "gas"
+              ? html`<button
+                  class="types-toggle ${this._typeMarks ? "active" : ""}"
+                  aria-pressed=${String(this._typeMarks)}
+                  @click=${() => this.setTypeMarks(!this._typeMarks)}
+                >
+                  ${this._t("types_toggle")}
+                </button>`
+              : nothing}
             <div class="orientation" role="group" aria-label=${this._t("orientation_label")}>
               ${(["horizontal", "vertical"] as const).map(
                 (orientation) => html`<button
@@ -2646,11 +2777,11 @@ export class EnergyFlowMapperPanel extends LitElement {
         </button>`;
       }
       case "untracked": {
-        const value = rest.get(block.stat!);
+        const restText = this._untrackedText(block.stat!, rest.get(block.stat!), devices);
         return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
           <div class="block-text">
             <span class="node-name">${this._t("untracked")}</span>
-            <span class="sub">${value == null ? this._t("none") : this._formatValue(value)}</span>
+            <span class="sub" title=${restText.title ?? nothing}>${restText.text}</span>
           </div>
         </div>`;
       }
@@ -2788,6 +2919,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       </div>
       ${warned || node.problem
         ? html`<span class="badge" title=${this._badgeTitle(stat, issues)}>!</span>`
+        : nothing}
+      ${this._typeMarks && this._info(stat)?.stat_type
+        ? html`<span class="type-mark" title=${this._typeText(stat) ?? nothing}>${typeIcon(this._info(stat)!.stat_type!)}</span>`
         : nothing}
       ${suggestion
         ? html`<span class="suggestion" title=${this._t("suggestion_text", { parent: this._name(suggestion.parent, devices) })}
@@ -3047,6 +3181,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const handlers = this._dragHandlers(node.stat);
     const watts = power.get(node.stat) ?? null;
     const untrackedWatts = rest.get(node.stat);
+    const restText = untrackedWatts === undefined ? null : this._untrackedText(node.stat, untrackedWatts, devices, power);
     return html`
       <li role="treeitem" aria-expanded=${node.children.length ? String(!collapsed) : nothing}>
         <div
@@ -3111,9 +3246,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 ? html`<li class="untracked">
                     <span class="toggle"></span>
                     <span class="node-name">${this._t("untracked")}</span>
-                    <span class="node-power"
-                      >${untrackedWatts === null ? this._t("none") : this._formatValue(untrackedWatts)}</span
-                    >
+                    <span class="node-power" title=${restText?.title ?? nothing}>${restText?.text}</span>
                   </li>`
                 : nothing}
             </ul>`
@@ -3122,11 +3255,38 @@ export class EnergyFlowMapperPanel extends LitElement {
     `;
   }
 
-  private _renderCandidates(): TemplateResult {
+  /** The folded free sensors: a strip that opens them again. */
+  private _renderFreeStrip(): TemplateResult {
+    return html`<button
+      class="free-strip"
+      aria-expanded="false"
+      title=${this._t("free_expand")}
+      @click=${() => this.setFreeCollapsed(false)}
+    >
+      ${icon("chevronRight")}
+      <span class="free-strip-label">${this._t("free_sensors")}</span>
+      <span class="free-strip-count">${formatNumber(this.hass, this._freeCandidates().length)}</span>
+    </button>`;
+  }
+
+  private _renderCandidates(foldable = false): TemplateResult {
     const candidates = this._freeCandidates();
     return html`
       <section class="card">
-        <div class="card-header"><h2>${this._t("free_sensors")}</h2></div>
+        <div class="card-header">
+          <h2>${this._t("free_sensors")}</h2>
+          ${foldable
+            ? html`<button
+                class="icon fold"
+                aria-label=${this._t("free_collapse")}
+                title=${this._t("free_collapse")}
+                aria-expanded="true"
+                @click=${() => this.setFreeCollapsed(true)}
+              >
+                ${icon("chevronLeft")}
+              </button>`
+            : nothing}
+        </div>
         <p class="hint">${this._t(this._tabKey("free_sensors_hint"))}</p>
         <input
           type="search"
@@ -3237,9 +3397,10 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${energy !== undefined
             ? row(water ? "detail_volume" : "detail_energy", energy === null ? null : this._formatValue(energy))
             : nothing}
+          ${row("detail_type", info?.stat_type ? this._typeText(stat) : this._t("type_sensor"))}
           ${info?.created_helper ? row("detail_helper", this._t("created_by")) : nothing}
           ${rest !== undefined
-            ? row("detail_untracked", rest === null ? null : this._formatValue(rest))
+            ? row("detail_untracked", rest === null ? null : this._untrackedText(stat, rest, devices).text)
             : nothing}
         </dl>
         ${issues.length
@@ -3300,7 +3461,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** The draft's changes, what blocks saving, and undo, discard and save. */
   private _renderDraftBar(): TemplateResult {
     const count = this._changeCount();
-    const errors = this._validation?.issues.filter((i) => i.severity === "error").length ?? 0;
+    // Errors the settings had before do not block saving; only new ones count.
+    const errors = this._validation?.issues.filter((i) => i.severity === "error" && !i.existing).length ?? 0;
     return html`
       <span class="count"
         >${count === 1
@@ -3446,21 +3608,15 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** The list of changes, problems and what Home Assistant rejects. */
   private _renderCheck(result: ValidateResult): TemplateResult {
-    const errors = result.issues.filter((i) => i.severity === "error");
+    const errors = result.issues.filter((i) => i.severity === "error" && !i.existing);
+    const kept = result.issues.filter((i) => i.severity === "error" && i.existing);
     const warnings = result.issues.filter((i) => i.severity === "warning");
-    const saved = this._snapshot?.issues ?? [];
-    const kindOf = (i: Issue) => i.kind ?? "electricity";
-    const wasSaved = (i: Issue) =>
-      saved.some((s) => s.code === i.code && s.stat === i.stat && kindOf(s) === kindOf(i));
     const issueList = (issues: Issue[]) =>
       html`<ul class="issues">
         ${issues.map(
           (i) =>
             html`<li class=${i.severity}>
               ${this._name(i.stat)}: ${this._issueText(i)}
-              ${i.severity === "error" && wasSaved(i)
-                ? html`<span class="saved-issue">(${this._t("issue_saved")})</span>`
-                : nothing}
               <button class="link" @click=${() => this._showIssue(i)}>${this._t("show_block")}</button>
             </li>`,
         )}
@@ -3469,6 +3625,12 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${result.diff.map((entry) => html`<li>${this._diffText(entry)}</li>`)}
       </ul>
       ${errors.length ? html`<p>${this._t("confirm_errors")}</p>${issueList(errors)}` : nothing}
+      ${kept.length
+        ? html`<p class="kept-note">
+              ${icon("alert")} ${this._t(result.rejected ? "confirm_kept_rejected" : "confirm_kept")}
+            </p>
+            ${issueList(kept)}`
+        : nothing}
       ${warnings.length ? html`<p>${this._t("confirm_warnings")}</p>${issueList(warnings)}` : nothing}
       ${result.rejected
         ? html`<p>${this._t("confirm_rejected")}</p>
@@ -4222,6 +4384,53 @@ export class EnergyFlowMapperPanel extends LitElement {
           "details main";
       }
     }
+    /* Folded free sensors: a slim strip; the diagram gets the room. */
+    .content.free-collapsed {
+      /* Details as wide as with the free sensors open (a fifth); the rest is the diagram's. */
+      grid-template-columns: auto minmax(360px, 1fr) minmax(240px, 20%);
+    }
+    @container panel (max-width: 960px) {
+      .content.free-collapsed {
+        grid-template-columns: auto minmax(0, 1fr);
+        grid-template-areas:
+          "free main"
+          "free details";
+      }
+    }
+    .free-strip {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 6px;
+      border: 1px solid var(--divider-color);
+      border-radius: var(--ha-card-border-radius, 12px);
+      background: var(--card-background-color);
+      color: var(--primary-text-color);
+      cursor: pointer;
+      font: inherit;
+    }
+    .free-strip .mdi {
+      width: 20px;
+      height: 20px;
+    }
+    .free-strip-label {
+      writing-mode: vertical-rl;
+      transform: rotate(180deg);
+      font-weight: 500;
+    }
+    .free-strip-count {
+      min-width: 20px;
+      padding: 1px 6px;
+      border-radius: 10px;
+      background: var(--secondary-background-color);
+      color: var(--secondary-text-color);
+      font-size: 12px;
+      text-align: center;
+    }
+    .card-header .fold {
+      margin-left: auto;
+    }
     .content.narrow {
       grid-template-columns: 1fr;
       grid-template-rows: minmax(0, 1fr);
@@ -4504,6 +4713,17 @@ export class EnergyFlowMapperPanel extends LitElement {
     .periods button:last-child,
     .orientation button:last-child {
       border-radius: 0 8px 8px 0;
+    }
+    .block .type-mark {
+      position: absolute;
+      top: 4px;
+      left: 6px;
+      line-height: 0;
+      color: var(--secondary-text-color);
+    }
+    .block .type-icon {
+      width: 14px;
+      height: 14px;
     }
     .block .suggestion {
       position: absolute;
@@ -4831,8 +5051,17 @@ export class EnergyFlowMapperPanel extends LitElement {
       gap: 4px;
       color: var(--error-color);
     }
-    .saved-issue {
+    .kept-note {
+      display: flex;
+      align-items: flex-start;
+      gap: 6px;
       color: var(--secondary-text-color);
+    }
+    .kept-note .mdi {
+      flex: none;
+      width: 18px;
+      height: 18px;
+      color: var(--warning-color, #ffa600);
     }
     ul.issues button.link {
       margin-left: 4px;

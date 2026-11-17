@@ -3,12 +3,16 @@
 
 import { svg, type SVGTemplateResult } from "lit";
 
+import type { StatType } from "./types";
+
 const PATHS = {
   menu: "M3,6H21V8H3V6M3,11H21V13H3V11M3,16H21V18H3V16Z",
   dots: "M12,16A2,2 0 0,1 14,18A2,2 0 0,1 12,20A2,2 0 0,1 10,18A2,2 0 0,1 12,16M12,10A2,2 0 0,1 14,12A2,2 0 0,1 12,14A2,2 0 0,1 10,12A2,2 0 0,1 12,10M12,4A2,2 0 0,1 14,6A2,2 0 0,1 12,8A2,2 0 0,1 10,6A2,2 0 0,1 12,4Z",
   refresh:
     "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
   home: "M10,20V14H14V20H19V12H22L12,3L2,12H5V20H10Z",
+  chevronLeft: "M15.41,16.58L10.83,12L15.41,7.41L14,6L8,12L14,18L15.41,16.58Z",
+  chevronRight: "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z",
   lightbulb:
     "M12,2A7,7 0 0,1 19,9C19,11.38 17.81,13.47 16,14.74V17A1,1 0 0,1 15,18H9A1,1 0 0,1 8,17V14.74C6.19,13.47 5,11.38 5,9A7,7 0 0,1 12,2M9,21V20H15V21A1,1 0 0,1 14,22H10A1,1 0 0,1 9,21M12,4A5,5 0 0,0 7,9C7,11.05 8.23,12.81 10,13.58V16H14V13.58C15.77,12.81 17,11.05 17,9A5,5 0 0,0 12,4Z",
   flash: "M7,2V13H10V22L17,10H13L17,2H7Z",
@@ -22,6 +26,27 @@ const PATHS = {
 } as const;
 
 export type IconName = keyof typeof PATHS;
+
+// Line icons for the kind of a statistic (drawn for the panel, not from MDI).
+const TYPE_PATHS: Record<StatType, string> = {
+  integral: "M16 3.5c-2.4-1-4.5 0-4.5 3.2v10.6c0 3.2-2.1 4.2-4.5 3.2",
+  group: "M17 4.5H7l6 7.5-6 7.5h10",
+  template:
+    "M9 4C7 4 6.5 5 6.5 7v2.5C6.5 11 5.5 12 4 12c1.5 0 2.5 1 2.5 2.5V17c0 2 .5 3 2.5 3M15 4c2 0 2.5 1 2.5 3v2.5c0 1.5 1 2.5 2.5 2.5-1.5 0-2.5 1-2.5 2.5V17c0 2-.5 3-2.5 3",
+  utility_meter: "M4 7h16v10H4zM10 7v10M14 7v10",
+  helper: "M15.5 4c-2 0-3 1-3.5 3l-2.5 10c-.5 2-1.5 3-3.5 3M8.5 10.5h7",
+  external: "M7 18.5a4 4 0 0 1-.6-7.96 5.5 5.5 0 0 1 10.6-1.3A4.6 4.6 0 0 1 17.4 18.5Z",
+};
+
+/** The path of a kind's line icon, for the picture. */
+export function typePath(type: StatType): string {
+  return TYPE_PATHS[type];
+}
+
+/** The small line icon of a kind of statistic. */
+export function typeIcon(type: StatType): SVGTemplateResult {
+  return svg`<svg class="type-icon" viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d=${TYPE_PATHS[type]}></path></svg>`;
+}
 
 export function icon(name: IconName): SVGTemplateResult {
   return svg`<svg class="mdi" viewBox="0 0 24 24" aria-hidden="true"><path d=${PATHS[name]}></path></svg>`;

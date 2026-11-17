@@ -165,9 +165,14 @@ export function applyDraft(
         });
       }
       const [removed] = result.splice(index, 1);
+      // Like hierarchy.py: a missing parent (an old error) or the child itself
+      // (an old loop) is not inherited; the child goes to the top level.
+      const present = new Set(result.map((d) => d.stat_consumption));
       for (const other of result) {
         if (other.included_in_stat === change.stat) {
-          setOptional(other, "included_in_stat", removed.included_in_stat);
+          const parent = removed.included_in_stat;
+          const keep = parent !== undefined && present.has(parent) && parent !== other.stat_consumption;
+          setOptional(other, "included_in_stat", keep ? parent : undefined);
         }
       }
     }
@@ -409,7 +414,7 @@ export function sourceNow(hass: HomeAssistant, rate: string | undefined, role: S
   }
 }
 
-/** Own value minus children for each node with children (null if unknown). */
+/** Own value minus children for each node with children (null without an own value). */
 export function untracked(
   nodes: TreeNode[],
   values: Map<string, number | null>,
@@ -420,15 +425,36 @@ export function untracked(
       continue;
     }
     const own = values.get(node.stat) ?? null;
-    const children = node.children.map((child) => values.get(child.stat) ?? null);
+    // A child without a value measures nothing: its share is untracked.
     result.set(
       node.stat,
-      own === null || children.some((v) => v === null)
-        ? null
-        : own - children.reduce<number>((sum, v) => sum + (v ?? 0), 0),
+      own === null ? null : own - node.children.reduce<number>((sum, c) => sum + (values.get(c.stat) ?? 0), 0),
     );
   }
   return result;
+}
+
+/**
+ * The children without a value of each device that has a value; only devices
+ * with such children. Their untracked value includes what these children use.
+ */
+export function untrackedMissing(nodes: TreeNode[], values: Map<string, number | null>): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const node of walk(nodes)) {
+    if ((values.get(node.stat) ?? null) === null) {
+      continue;
+    }
+    const missing = node.children.filter((c) => (values.get(c.stat) ?? null) === null).map((c) => c.stat);
+    if (missing.length) {
+      result.set(node.stat, missing);
+    }
+  }
+  return result;
+}
+
+/** What the home uses minus all top-level devices; one without a value counts as untracked. */
+export function homeUntracked(roots: TreeNode[], values: Map<string, number | null>, home: number | null): number | null {
+  return home === null ? null : home - roots.reduce<number>((sum, n) => sum + (values.get(n.stat) ?? 0), 0);
 }
 
 const SOURCE_ROLES: Record<string, [SourceRole, SourceRole | null]> = {
@@ -597,12 +623,13 @@ export function homeNow(hass: HomeAssistant, sources: Source[]): number | null {
 }
 
 /**
- * How much of the home the top-level devices cover (1 = all of it); null
- * without a positive home value, or when a top-level device has no value or a
- * negative one (a meter that went backwards gives no meaningful share).
+ * How much of the home the top-level devices cover (1 = all of it); a device
+ * without a value covers nothing, as in the untracked value. Null without a
+ * positive home value, or when a top-level device has a negative value (a meter
+ * that went backwards gives no meaningful share).
  */
 export function coverage(home: number | null, tops: (number | null)[]): number | null {
-  if (home === null || home <= 0 || tops.some((v) => v === null || v < 0)) {
+  if (home === null || home <= 0 || tops.some((v) => v !== null && v < 0)) {
     return null;
   }
   return tops.reduce<number>((sum, v) => sum + (v ?? 0), 0) / home;

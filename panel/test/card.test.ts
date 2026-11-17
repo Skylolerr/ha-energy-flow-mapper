@@ -112,8 +112,10 @@ describe("card configuration", () => {
       show_sources: true,
       show_untracked: true,
       show_coverage: false,
+      show_types: false,
     });
     expect(cardConfig({ show_coverage: true }).show_coverage).toBe(true);
+    expect(cardConfig({ show_types: true }).show_types).toBe(true);
     expect(cardConfig({ orientation: "vertical" }).orientation).toBe("vertical");
     expect(() => cardConfig({ orientation: "diagonal" })).toThrow("orientation must be one of");
     expect(cardConfig({ kind: "water", period: "now", show_sources: false, root: "sensor.a" })).toMatchObject({
@@ -314,6 +316,20 @@ describe("card", () => {
     expect(Number.parseFloat(canvas.style.left)).toBeGreaterThan(0);
   });
 
+  it("marks helpers and external statistics only when asked", async () => {
+    const mock = mockHass();
+    const typed = data();
+    typed.devices[0].stat_type = "integral";
+    typed.devices[2].stat_type = "external";
+    mock.answer = () => typed;
+    const plain = await view({ period: "now" }, mock);
+    expect(plain.shadowRoot!.querySelector(".type-mark")).toBeNull();
+    const el = await view({ period: "now", show_types: true }, mock);
+    expect(block(el, "sensor.server")!.querySelector(".type-mark")!.getAttribute("title")).toBe("Helper: integral");
+    expect(block(el, "portal:tv")!.querySelector(".type-mark")!.getAttribute("title")).toBe("External statistic");
+    expect(block(el, "sensor.nas")!.querySelector(".type-mark")).toBeNull();
+  });
+
   it("shows power now from the states, without asking for a period", async () => {
     const mock = mockHass();
     const el = await view({ period: "now" }, mock);
@@ -505,8 +521,8 @@ describe("card", () => {
       });
     const el = await view({ period: "now" }, mock);
     expect(el.shadowRoot!.querySelector(".block.home")!.textContent).toContain("80 W measured");
-    // Server 50 W and TV without power: what no device covers is unknown.
-    expect(el.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("–");
+    // Server 50 W and TV without power: the TV's share is untracked.
+    expect(el.shadowRoot!.querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("30 W · without TV");
   });
 
   it("loads again when it comes back, and stops watching its size when it leaves", async () => {
@@ -717,6 +733,7 @@ describe("card editor", () => {
       "show_sources",
       "show_untracked",
       "show_coverage",
+      "show_types",
     ]);
     const root = schema[3].selector as { select: { options: { value: string; label: string }[] } };
     expect(root.select.options).toEqual([
@@ -741,6 +758,7 @@ describe("card editor", () => {
       "Show sources",
       "Show untracked consumption",
       "Show how much the devices cover",
+      "Mark helpers and external statistics",
     ]);
     const form = el.shadowRoot!.querySelector("ha-form") as HTMLElement & { data: Record<string, unknown> };
     expect(form.data.root).toBe("");

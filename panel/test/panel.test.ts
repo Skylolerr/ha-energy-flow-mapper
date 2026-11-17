@@ -347,6 +347,22 @@ describe("editing", () => {
     expect(details).toContain("Office");
     expect(details).toContain("Untracked by its child devices 40 W");
   });
+
+  it("names a child without a value wherever the untracked value shows", async () => {
+    const mock = mockHass();
+    delete mock.hass.states["sensor.sonos_power"];
+    const el = await mount(mock);
+    // The Sonos measures nothing now: all of the server's 50 W is untracked.
+    expect(root(el).querySelector('.block.untracked[data-parent="sensor.server"]')!.textContent).toContain(
+      "50 W · without Sonos",
+    );
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(text(el)).toContain("Untracked by its child devices 50 W · without Sonos");
+    el._view = "list";
+    await settle(el);
+    expect(root(el).querySelector("li.untracked")!.textContent).toContain("50 W · without Sonos");
+  });
 });
 
 describe("saving", () => {
@@ -552,32 +568,67 @@ describe("kept draft", () => {
   });
 });
 
+describe("collapsing the free sensors", () => {
+  it("folds the column to a strip and remembers it", async () => {
+    localStorage.clear();
+    const el = await mount(mockHass());
+    const free = () => root(el).querySelector(".column.free")!;
+    expect(free().textContent).toContain("Free sensors");
+    free().querySelector<HTMLButtonElement>('button[aria-label="Hide free sensors"]')!.click();
+    await settle(el);
+    expect(root(el).querySelector(".content")!.classList.contains("free-collapsed")).toBe(true);
+    expect(free().querySelector("input[type=search]")).toBeNull();
+    const strip = free().querySelector<HTMLButtonElement>("button.free-strip")!;
+    expect(strip.getAttribute("aria-expanded")).toBe("false");
+    expect(strip.textContent).toContain("Free sensors");
+    expect(strip.textContent).toContain("3");
+    // The choice is remembered.
+    const again = await mount(mockHass());
+    expect(root(again).querySelector("button.free-strip")).not.toBeNull();
+    root(again).querySelector<HTMLButtonElement>("button.free-strip")!.click();
+    await settle(again);
+    expect(root(again).querySelector(".content")!.classList.contains("free-collapsed")).toBe(false);
+    expect(root(again).querySelector(".column.free input[type=search]")).not.toBeNull();
+    expect((await mount(mockHass())).shadowRoot!.querySelector("button.free-strip")).toBeNull();
+  });
+
+  it("leaves the phone layout alone", async () => {
+    localStorage.clear();
+    localStorage.setItem("energy_flow_mapper.free_collapsed", "on");
+    const el = await mount(mockHass(), true);
+    expect(root(el).querySelector(".column.free")).toBeNull();
+    expect(root(el).querySelector(".content")!.classList.contains("free-collapsed")).toBe(false);
+  });
+});
+
 describe("blocked saving", () => {
-  function blocking(mock: Mock): void {
+  function blocking(mock: Mock, valid = false): void {
     mock.responses["energy_flow_mapper/get"] = {
       ...snapshot(),
       issues: [{ code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {} }],
     };
     mock.responses["energy_flow_mapper/validate"] = {
-      valid: false,
+      valid,
       issues: [
-        { code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {} },
-        { code: "cycle", severity: "error", stat: "sensor.tv", details: {}, kind: "electricity" },
+        { code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {}, existing: true },
+        ...(valid
+          ? []
+          : [{ code: "cycle", severity: "error", stat: "sensor.tv", details: {}, kind: "electricity", existing: false }]),
       ],
       diff: [{ type: "moved", stat: "sensor.tv", from: null, to: "sensor.server" }],
     };
   }
 
-  it("says in the footer that problems block saving", async () => {
+  it("counts only the problems the draft adds in the footer", async () => {
     const mock = mockHass();
     blocking(mock);
     const el = await mount(mock);
     el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
     await settle(el);
-    expect(root(el).querySelector(".footer .blocked")!.textContent).toContain("2 problems prevent saving");
+    expect(root(el).querySelector(".footer .blocked")!.textContent).toContain("1 problem prevents saving");
   });
 
-  it("marks problems of the saved settings and shows the block of a problem", async () => {
+  it("lists problems that were already there apart, and shows the block of a problem", async () => {
     const mock = mockHass();
     blocking(mock);
     const el = await mount(mock);
@@ -585,14 +636,33 @@ describe("blocked saving", () => {
     el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
     await el._openConfirm();
     await settle(el);
-    const items = [...root(el).querySelectorAll("dialog ul.issues li")];
-    expect(items[0].textContent).toContain("already in the saved settings");
-    expect(items[1].textContent).not.toContain("already in the saved settings");
-    items[1].querySelector<HTMLButtonElement>("button")!.click();
+    const lists = [...root(el).querySelectorAll("dialog ul.issues")];
+    expect(lists).toHaveLength(2);
+    expect(lists[0].textContent).toContain("TV");
+    expect(lists[0].textContent).not.toContain("Sonos");
+    expect(lists[1].textContent).toContain("Sonos");
+    expect(root(el).querySelector("dialog")!.textContent).toContain(
+      "These problems were already in your energy settings. They stay as they are and don't prevent saving:",
+    );
+    lists[0].querySelector<HTMLButtonElement>("button")!.click();
     await settle(el);
     expect(el._dialog).toBeNull();
     expect(el._tab).toBe("electricity");
     expect(el._selected).toBe("sensor.tv");
+  });
+
+  it("saves with problems that were already there, after naming them", async () => {
+    const mock = mockHass();
+    blocking(mock, true);
+    const el = await mount(mock);
+    el._change({ type: "move", stat: "sensor.tv", parent: "sensor.server" });
+    await settle(el);
+    expect(root(el).querySelector(".footer .blocked")).toBeNull();
+    await el._openConfirm();
+    await settle(el);
+    expect(root(el).querySelector("dialog")!.textContent).toContain("already in your energy settings");
+    const save = root(el).querySelector<HTMLButtonElement>("dialog button.primary")!;
+    expect(save.disabled).toBe(false);
   });
 });
 
@@ -777,6 +847,41 @@ describe("export and import", () => {
     expect(el._changes).toEqual([]);
     expect(text(el)).toContain("Imported. The previous settings were backed up.");
     expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/get")).toHaveLength(2);
+  });
+
+  it("imports a file with a problem that was already there, after naming it", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = {
+      valid: true,
+      changed: true,
+      issues: [{ code: "missing_parent", severity: "error", stat: "sensor.sonos", details: {}, existing: true }],
+      rejected: null,
+      diff: [{ type: "moved", stat: "sensor.tv", from: null, to: "sensor.server" }],
+    };
+    const el = await mount(mock);
+    await el._readImport(new File([JSON.stringify(exportDocument)], "settings.json"));
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("already in your energy settings");
+    expect(dialog.textContent).not.toContain("Fix these problems first");
+    expect(dialog.querySelector<HTMLButtonElement>("button.primary")!.disabled).toBe(false);
+  });
+
+  it("does not call old problems harmless when Home Assistant rejects the result", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/import_check"] = {
+      valid: false,
+      changed: true,
+      issues: [{ code: "duplicate_source", severity: "error", stat: "sensor.tv", details: { count: 2 }, existing: true }],
+      rejected: "Grid import used twice",
+      diff: [{ type: "moved", stat: "sensor.tv", from: null, to: "sensor.server" }],
+    };
+    const el = await mount(mock);
+    await el._readImport(new File([JSON.stringify(exportDocument)], "settings.json"));
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Grid import used twice");
+    expect(dialog.textContent).not.toContain("don't prevent saving");
   });
 
   it("says when a file holds the current settings", async () => {
@@ -2208,6 +2313,60 @@ describe("find in the diagram", () => {
   });
 });
 
+describe("helper marks", () => {
+  function typed(created = false): Mock {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.stats["sensor.server"].stat_type = "integral";
+    snap.stats["sensor.server"].created_helper = created;
+    snap.stats["sensor.tv"].stat_type = "external";
+    mock.responses["energy_flow_mapper/get"] = snap;
+    return mock;
+  }
+
+  it("are off until switched on, and the choice is remembered", async () => {
+    localStorage.clear();
+    const el = await mount(typed());
+    expect(root(el).querySelector(".type-mark")).toBeNull();
+    const toggle = buttonWith(el, "Mark helpers");
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    toggle.click();
+    await settle(el);
+    const mark = (stat: string) => root(el).querySelector(`.block.device[data-stat="${stat}"] .type-mark`);
+    expect(mark("sensor.server")!.getAttribute("title")).toBe("Helper: integral");
+    expect(mark("sensor.tv")!.getAttribute("title")).toBe("External statistic");
+    // A device's own sensor gets no mark.
+    expect(mark("sensor.sonos")).toBeNull();
+    const again = await mount(typed());
+    expect(buttonWith(again, "Mark helpers").getAttribute("aria-pressed")).toBe("true");
+    expect(root(again).querySelector(".type-mark")).not.toBeNull();
+    buttonWith(again, "Mark helpers").click();
+    await settle(again);
+    expect(root(again).querySelector(".type-mark")).toBeNull();
+  });
+
+  it("says when Energy Flow Mapper created the helper", async () => {
+    localStorage.clear();
+    const el = await mount(typed(true));
+    buttonWith(el, "Mark helpers").click();
+    await settle(el);
+    expect(root(el).querySelector('.block.device[data-stat="sensor.server"] .type-mark')!.getAttribute("title")).toBe(
+      "Helper: integral · Created by Energy Flow Mapper",
+    );
+  });
+
+  it("names the kind in the details, also when the marks are off", async () => {
+    localStorage.clear();
+    const el = await mount(typed());
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(text(el)).toContain("Type Helper: integral");
+    node(el, "sensor.sonos").click();
+    await settle(el);
+    expect(text(el)).toContain("Type Sensor");
+  });
+});
+
 describe("home meter", () => {
   function homeMock(supported = true, sources?: unknown[]): Mock {
     const mock = mockHass();
@@ -2411,9 +2570,23 @@ describe("home meter", () => {
     mock.hass.states["sensor.main_power"] = entity("sensor.main_power", "200");
     const el = await mount(mock);
     expect(root(el).querySelector(".block.home")!.textContent).toContain("200 W measured");
-    // Server 50 W (with Sonos below it) and TV without power: unknown.
-    expect(root(el).querySelector('.block.untracked[data-parent="home"]')).not.toBeNull();
-    expect(root(el).querySelector('.block.untracked[data-parent="home"]')!.textContent).toContain("–");
+    // Server 50 W (with Sonos below it) and TV without power: the TV's share
+    // is untracked, and the block says so.
+    const rest = root(el).querySelector('.block.untracked[data-parent="home"]')!;
+    expect(rest.textContent).toContain("150 W · without TV");
+    expect(rest.querySelector(".sub")!.getAttribute("title")).toBe("No value: TV");
+    // The TV covers nothing now: the devices cover 50 W of 200 W.
+    expect(root(el).querySelector(".block.home")!.textContent).toContain("25% covered by devices");
+  });
+
+  it("names how many devices have no value when there are several", async () => {
+    const mock = homeMock(true, WITH_HOME);
+    mock.hass.states["sensor.main_power"] = entity("sensor.main_power", "200");
+    delete mock.hass.states["sensor.server_power"];
+    const el = await mount(mock);
+    const rest = root(el).querySelector('.block.untracked[data-parent="home"]')!;
+    expect(rest.textContent).toContain("200 W · without 2 devices");
+    expect(rest.querySelector(".sub")!.getAttribute("title")).toBe("No value: Server & co, TV");
   });
 });
 
@@ -2713,6 +2886,37 @@ describe("save as image", () => {
     }
     expect(svg).toContain("Device 1");
     expect(svg).toContain("Grid import");
+  });
+
+  it("names a device without a value in the picture, but not when it hides names", async () => {
+    const mock = mockHass();
+    delete mock.hass.states["sensor.sonos_power"];
+    const el = await mount(mock);
+    const { toPng } = capture(el);
+    await save(el);
+    expect(toPng.mock.calls[0][0]).toContain("50 W · without Sonos");
+    await save(el, true);
+    const hidden = toPng.mock.calls[1][0];
+    expect(hidden).toContain("50 W");
+    expect(hidden).not.toContain("Sonos");
+  });
+
+  it("draws the marks in the picture only when they are on", async () => {
+    localStorage.clear();
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.stats["sensor.server"].stat_type = "integral";
+    snap.stats["sensor.tv"].stat_type = "external";
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    const { toPng } = capture(el);
+    await save(el);
+    expect(toPng.mock.calls[0][0]).not.toContain("scale(0.5833)");
+    buttonWith(el, "Mark helpers").click();
+    await settle(el);
+    await save(el, true);
+    // Two marks (the integral helper and the external statistic), also without names.
+    expect(toPng.mock.calls[1][0].match(/scale\(0\.5833\)/g)).toHaveLength(2);
   });
 
   it("keeps the values of the sources when it hides names", async () => {
