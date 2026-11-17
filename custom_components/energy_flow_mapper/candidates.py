@@ -27,6 +27,7 @@ from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
+from homeassistant.loader import IntegrationNotLoaded, async_get_loaded_integration
 
 from .hierarchy import DEVICE_KEYS, STAT, DeviceKind, Prefs, child_pairs, used_stats
 
@@ -150,6 +151,28 @@ def _energy_device_name(
     return " ".join(part for part in parts if part) or None
 
 
+# Helpers that get their own mark in the panel; other helpers are "helper".
+_HELPER_TYPES = {
+    "integration": "integral",
+    "group": "group",
+    "template": "template",
+    "utility_meter": "utility_meter",
+}
+
+
+def _stat_type(hass: HomeAssistant, entry: er.RegistryEntry | None) -> str | None:
+    """Return the kind of helper an entity belongs to, or None for a sensor."""
+    if entry is None:
+        return None
+    if entry.platform in _HELPER_TYPES:
+        return _HELPER_TYPES[entry.platform]
+    try:
+        integration = async_get_loaded_integration(hass, entry.platform)
+    except IntegrationNotLoaded:
+        return None
+    return "helper" if integration.integration_type == "helper" else None
+
+
 @callback
 def names_by_device() -> bool:
     """Return True if Home Assistant names energy devices after their device.
@@ -184,8 +207,12 @@ def async_stat_info(
         "area_name": None,
         "floor_id": None,
         "floor_name": None,
+        # What the statistic comes from: a kind of helper, "external", or
+        # None for a device's sensor.
+        "stat_type": None,
     }
     if not valid_entity_id(stat):
+        info["stat_type"] = "external"
         meta = (external or {}).get(stat)
         if meta is not None:
             info["name"] = meta.get("name")
@@ -200,6 +227,7 @@ def async_stat_info(
     state = hass.states.get(stat)
     entry = er.async_get(hass).async_get(stat)
     info["entity_id"] = stat
+    info["stat_type"] = _stat_type(hass, entry)
     info["device_class"] = _device_class(hass, stat)
     device = None
     if entry is not None and entry.device_id:

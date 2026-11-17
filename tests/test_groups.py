@@ -908,3 +908,16 @@ def test_sum_meter_draft_sequence_for_a_group_nested_in_another() -> None:
     assert set(by_id) == {"e"}
     assert by_id["e"]["members"] == ["new"]
     assert by_id["e"]["parent"] == "p"
+
+
+def test_remove_device_with_a_missing_parent_takes_its_groups_to_home() -> None:
+    """Like its children, a group does not inherit a parent that is not there."""
+    p = prefs(dev("p", "gone"), dev("a", "p"), dev("b", "p"))
+    stored = electricity(named("g", "Kitchen", ["a", "b"], "p"))
+    new, result = apply_all(p, stored, [{"type": "remove", "stat": "p"}])
+    assert [d.get("included_in_stat") for d in new["device_consumption"]] == [
+        None,
+        None,
+    ]
+    (group,) = result["electricity"]
+    assert (group["parent"], group["members"]) == (None, ["a", "b"])

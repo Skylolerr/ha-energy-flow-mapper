@@ -84,6 +84,8 @@ from .hierarchy import (
     home_plausibility,
     home_stats,
     home_untracked,
+    issue_dicts,
+    new_errors,
     plausibility,
     prefs_hash,
     source_energy_stats,
@@ -403,6 +405,7 @@ async def websocket_validate(
     runtime = _runtime(hass)
     prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
     new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
+    before = _issues(hass, prefs)
     issues = _issues(hass, new)
     rejected = energy_access.schema_error(
         {key: new[key] for key in _changed_keys(prefs, new)}
@@ -410,8 +413,8 @@ async def websocket_validate(
     connection.send_result(
         msg["id"],
         {
-            "valid": not has_errors(issues) and rejected is None,
-            "issues": [issue.as_dict() for issue in issues],
+            "valid": not new_errors(before, issues) and rejected is None,
+            "issues": issue_dicts(before, issues),
             "rejected": rejected,
             "diff": [*diff(prefs, new), *diff_groups(groups, new_groups)],
         },
@@ -484,8 +487,7 @@ async def websocket_save(
     async with runtime.lock:
         prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
         new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
-        issues = _issues(hass, new)
-        _refuse_errors(issues)
+        _refuse_errors(new_errors(_issues(hass, prefs), _issues(hass, new)))
         keys = _changed_keys(prefs, new)
         if not keys and new_groups == groups:
             connection.send_result(
@@ -555,17 +557,10 @@ async def websocket_restore(
         if update:
             energy_access.validate(update)
             if not runtime.backups.is_newest(msg[ATTR_BACKUP_ID]):
-                present = {
-                    (issue.code, issue.stat, issue.kind)
-                    for issue in _issues(hass, prefs)
-                    if issue.severity is Severity.ERROR
-                }
                 _refuse_errors(
-                    [
-                        issue
-                        for issue in _issues(hass, dict(prefs) | update)
-                        if (issue.code, issue.stat, issue.kind) not in present
-                    ],
+                    new_errors(
+                        _issues(hass, prefs), _issues(hass, dict(prefs) | update)
+                    ),
                     "restore_invalid",
                 )
         # Groups are restored as stored; a backup from before groups existed
@@ -890,6 +885,7 @@ async def websocket_card(
                 "parent": device.get(PARENT),
                 "stat_rate": device.get(RATE),
                 "area": info[device[STAT]]["area_name"],
+                "stat_type": info[device[STAT]]["stat_type"],
             }
             for device in devices
         ],
@@ -1016,6 +1012,7 @@ async def websocket_import_check(
     # A file is not checked like a draft: its lists may be malformed, so
     # Home Assistant's schemas come first and the hierarchy only after them.
     rejected = energy_access.schema_error(update)
+    before = _issues(hass, prefs)
     issues = _issues(hass, new) if rejected is None else []
     groups_changed = False
     new_groups = groups
@@ -1030,9 +1027,9 @@ async def websocket_import_check(
     connection.send_result(
         msg["id"],
         {
-            "valid": not has_errors(issues) and rejected is None,
+            "valid": not new_errors(before, issues) and rejected is None,
             "changed": bool(update) or groups_changed,
-            "issues": [issue.as_dict() for issue in issues],
+            "issues": issue_dicts(before, issues),
             "rejected": rejected,
             "diff": (
                 [*diff(prefs, new), *diff_groups(groups, new_groups)]
@@ -1056,8 +1053,7 @@ async def websocket_import(
         new, update, imported_groups = _imported(prefs, msg[ATTR_DOCUMENT])
         energy_access.validate(update)
         groups_changed = _imported_groups_change(runtime, new, imported_groups)
-        issues = _issues(hass, new)
-        _refuse_errors(issues)
+        _refuse_errors(new_errors(_issues(hass, prefs), _issues(hass, new)))
         if not update and not groups_changed:
             connection.send_result(
                 msg["id"], {"hash": msg[ATTR_BASE_HASH], ATTR_BACKUP_ID: None}

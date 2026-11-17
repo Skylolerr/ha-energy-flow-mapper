@@ -684,6 +684,7 @@ async def test_card_for_every_user(
         "parent": None,
         "stat_rate": "sensor.main_power",
         "area": None,
+        "stat_type": None,
     }
     assert devices["sensor.kitchen_energy"]["parent"] == "sensor.main_energy"
     assert devices["sensor.kitchen_energy"]["area"] == "Kitchen"
@@ -2905,3 +2906,183 @@ async def test_save_drops_ghost_groups_of_removed_devices(
     )
     get = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
     assert get["result"]["groups"]["electricity"] == []
+
+
+async def _double_solar(hass: HomeAssistant) -> None:
+    """Add sensor.solar_energy as a source a second time, as HA allows."""
+    prefs = await energy_access.async_get_prefs(hass)
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *prefs["energy_sources"],
+                {"type": "solar", "stat_energy_from": "sensor.solar_energy"},
+            ]
+        },
+    )
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_errors_already_there_do_not_block_saving(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """An error the settings had before is kept and marked; it blocks nothing."""
+    await _double_solar(hass)
+    base_hash = await current_hash(hass_ws_client, hass)
+    changes = [{"type": "rename", "stat": "sensor.kitchen_energy", "name": "Kitchen"}]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    result = response["result"]
+    assert result["valid"] is True
+    errors = [i for i in result["issues"] if i["severity"] == "error"]
+    assert errors
+    assert {(i["stat"], i["existing"]) for i in errors} == {
+        ("sensor.solar_energy", True)
+    }
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    # The rename is saved, the doubled solar source is kept.
+    assert {
+        "stat_consumption": "sensor.kitchen_energy",
+        "name": "Kitchen",
+    }.items() <= next(
+        d
+        for d in prefs["device_consumption"]
+        if d["stat_consumption"] == "sensor.kitchen_energy"
+    ).items()
+    solar = [
+        s
+        for s in prefs["energy_sources"]
+        if s.get("stat_energy_from") == "sensor.solar_energy"
+    ]
+    assert len(solar) == 2
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_new_errors_still_block_next_to_old_ones(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A draft that adds an error is refused; the message names only the new one."""
+    await _double_solar(hass)
+    base_hash = await current_hash(hass_ws_client, hass)
+    changes = [{"type": "add", "stat": "sensor.grid_import"}]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    result = response["result"]
+    assert result["valid"] is False
+    assert {
+        (i["stat"], i["existing"]) for i in result["issues"] if i["severity"] == "error"
+    } == {("sensor.solar_energy", True), ("sensor.grid_import", False)}
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    assert response["error"]["translation_placeholders"] == {
+        "issues": "source_and_device (sensor.grid_import)"
+    }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_import_keeps_errors_that_are_already_there(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A file with the same old error can be imported, like a draft."""
+    await _double_solar(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    devices = [dict(d) for d in prefs["device_consumption"]]
+    devices[0]["name"] = "Renamed"
+    document = {
+        "format": "energy_flow_mapper",
+        "version": 1,
+        "data": {"device_consumption": devices},
+    }
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import_check",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["result"]["valid"] is True
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/import",
+        base_hash=base_hash,
+        document=document,
+    )
+    assert response["success"], response
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_old_cycle_does_not_block_a_group_only_save(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A loop made outside the mapper stays; changing only groups still saves."""
+    prefs = await energy_access.async_get_prefs(hass)
+    devices = deepcopy(prefs["device_consumption"])
+    devices[0]["included_in_stat"] = "sensor.grinder_energy"
+    await energy_access.async_write(hass, {"device_consumption": devices})
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[
+            {
+                "type": "create_group",
+                "id": "g1",
+                "name": "Garage",
+                "parent": None,
+                "members": ["sensor.garage_energy"],
+                "groups": [],
+            }
+        ],
+    )
+    assert response["success"], response
+    prefs = await energy_access.async_get_prefs(hass)
+    assert prefs["device_consumption"] == devices
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_a_second_device_under_a_missing_parent_is_new(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The same kind of error on another device is a new error."""
+    prefs = await energy_access.async_get_prefs(hass)
+    devices = deepcopy(prefs["device_consumption"])
+    devices[-1]["included_in_stat"] = "sensor.ghost"
+    await energy_access.async_write(hass, {"device_consumption": devices})
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=await current_hash(hass_ws_client, hass),
+        changes=[
+            {"type": "move", "stat": "sensor.kitchen_energy", "parent": "sensor.ghost"}
+        ],
+    )
+    assert response["error"]["translation_placeholders"] == {
+        "issues": "missing_parent (sensor.kitchen_energy)"
+    }

@@ -30,6 +30,8 @@ from custom_components.energy_flow_mapper.hierarchy import (
     home_plausibility,
     home_stats,
     home_untracked,
+    issue_dicts,
+    new_errors,
     parent_map,
     plausibility,
     prefs_hash,
@@ -39,6 +41,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     summarize,
     tree_depth,
     untracked,
+    untracked_missing,
     used_stats,
     validate,
     walk,
@@ -412,6 +415,38 @@ def test_remove_top_level_device_makes_children_top_level() -> None:
     ]
 
 
+@pytest.mark.parametrize("kind", ["remove", "use_as_home_meter"])
+def test_removed_device_with_a_missing_parent_makes_children_top_level(
+    kind: str,
+) -> None:
+    """Children do not inherit a parent that is not there (an old error)."""
+    data = prefs(
+        device_consumption=[
+            {"stat_consumption": "sensor.p", "included_in_stat": "sensor.gone"},
+            {"stat_consumption": "sensor.c1", "included_in_stat": "sensor.p"},
+            {"stat_consumption": "sensor.c2", "included_in_stat": "sensor.p"},
+        ],
+        energy_sources=[],
+    )
+    new = apply_changes(data, [{"type": kind, "stat": "sensor.p"}])
+    assert new["device_consumption"] == [
+        {"stat_consumption": "sensor.c1"},
+        {"stat_consumption": "sensor.c2"},
+    ]
+
+
+def test_removed_device_in_a_loop_does_not_make_a_child_its_own_parent() -> None:
+    """In an old loop A <-> B, removing A must not put B under itself."""
+    data = prefs(
+        device_consumption=[
+            {"stat_consumption": "sensor.a", "included_in_stat": "sensor.b"},
+            {"stat_consumption": "sensor.b", "included_in_stat": "sensor.a"},
+        ]
+    )
+    new = apply_changes(data, [{"type": "remove", "stat": "sensor.a"}])
+    assert new["device_consumption"] == [{"stat_consumption": "sensor.b"}]
+
+
 def test_apply_creates_device_list() -> None:
     new = apply_changes({"energy_sources": []}, [{"type": "add", "stat": "sensor.a"}])
     assert new["device_consumption"] == [{"stat_consumption": "sensor.a"}]
@@ -588,12 +623,33 @@ def test_untracked() -> None:
         "sensor.kitchen": 10.0,
         "sensor.coffee": 15.0,
     }
+    # A child without a value measures nothing: its share is untracked.
+    # Only a parent without a value has no untracked value.
     del values["sensor.office"]
     values["sensor.coffee"] = None  # type: ignore[assignment]
     assert untracked(roots, values) == {
-        "sensor.main": None,
-        "sensor.kitchen": None,
+        "sensor.main": 20.0,
+        "sensor.kitchen": 30.0,
         "sensor.coffee": None,
+    }
+
+
+def test_untracked_missing() -> None:
+    """The children without a value, for each parent that has one."""
+    roots = build_tree(deep_devices())
+    values = {
+        "sensor.main": 50.0,
+        "sensor.kitchen": 30.0,
+        "sensor.coffee": 20.0,
+        "sensor.grinder": 5.0,
+        "sensor.office": 10.0,
+    }
+    assert untracked_missing(roots, values) == {}
+    del values["sensor.office"]
+    values["sensor.coffee"] = None  # type: ignore[assignment]
+    assert untracked_missing(roots, values) == {
+        "sensor.main": ["sensor.office"],
+        "sensor.kitchen": ["sensor.coffee"],
     }
 
 
@@ -639,6 +695,15 @@ def test_plausibility_skips_unknown_values() -> None:
     roots = build_tree([device("sensor.p"), device("sensor.c", "sensor.p")])
     assert plausibility(roots, {"sensor.c": 5.0}) == []
     assert plausibility(roots, {}) == []
+    # A child without a value still means no warning, as before.
+    roots = build_tree(
+        [
+            device("sensor.p"),
+            device("sensor.c", "sensor.p"),
+            device("sensor.d", "sensor.p"),
+        ]
+    )
+    assert plausibility(roots, {"sensor.p": 1.0, "sensor.c": 5.0}) == []
 
 
 # --- hash -------------------------------------------------------------------
@@ -1172,7 +1237,8 @@ def test_home_untracked_and_plausibility() -> None:
     )
     values = {"sensor.a": 3.0, "sensor.b": 4.0, "sensor.c": 100.0}
     assert home_untracked(roots, values, 10.0) == 3.0
-    assert home_untracked(roots, values | {"sensor.b": None}, 10.0) is None
+    # A top-level device without a value counts as untracked.
+    assert home_untracked(roots, values | {"sensor.b": None}, 10.0) == 7.0
     assert home_untracked(roots, values, None) is None
     assert home_untracked([], {}, 10.0) == 10.0
     issue = home_plausibility(roots, values, 6.0)
@@ -1639,3 +1705,79 @@ def test_ha_issues_power_only_grid_goes_to_its_power_sensor() -> None:
         ("sensor.grid_power_in", "electricity", "entity_not_numeric"),
         ("sensor.grid_2_power", "electricity", "entity_unavailable"),
     ]
+
+
+# --- errors a change adds ----------------------------------------------------
+
+
+def _errors(**extra: Any) -> list[Issue]:
+    return validate(prefs(**extra))
+
+
+def test_new_errors_ignores_errors_that_were_there() -> None:
+    before = _errors(
+        device_consumption=[
+            {"stat_consumption": "sensor.a", "included_in_stat": "sensor.gone"}
+        ]
+    )
+    after = _errors(
+        device_consumption=[
+            {"stat_consumption": "sensor.a", "included_in_stat": "sensor.gone"},
+            {"stat_consumption": "sensor.b"},
+        ]
+    )
+    assert new_errors(before, after) == []
+    assert [d["existing"] for d in issue_dicts(before, after)] == [True]
+
+
+def test_new_errors_sees_a_worse_error_under_the_same_name() -> None:
+    a = {"stat_consumption": "sensor.a"}
+    # A third copy of a doubled device.
+    assert new_errors(
+        _errors(device_consumption=[a, a]), _errors(device_consumption=[a, a, a])
+    )
+    # Another missing parent for the same device.
+    old = [{"stat_consumption": "sensor.a", "included_in_stat": "sensor.x"}]
+    new = [{"stat_consumption": "sensor.a", "included_in_stat": "sensor.y"}]
+    (error,) = new_errors(
+        _errors(device_consumption=old), _errors(device_consumption=new)
+    )
+    assert error.code is IssueCode.MISSING_PARENT
+    # A meter used by a third source.
+    solar = {"type": "solar", "stat_energy_from": "sensor.s"}
+    twice = _errors(energy_sources=[solar, solar], device_consumption=[])
+    thrice = _errors(energy_sources=[solar, solar, solar], device_consumption=[])
+    assert twice[0].details == {"count": 2}
+    assert [i.code for i in new_errors(twice, thrice)] == [IssueCode.DUPLICATE_SOURCE]
+    marked = issue_dicts(twice, thrice)
+    assert [d["existing"] for d in marked] == [False]
+
+
+def test_new_errors_ignores_the_list_of_a_doubled_source() -> None:
+    """Which source's list a doubled meter belongs to may change by itself."""
+    solar = {"type": "solar", "stat_energy_from": "sensor.s"}
+    gas = {"type": "gas", "stat_energy_from": "sensor.s"}
+    before = _errors(energy_sources=[solar, gas, solar], device_consumption=[])
+    after = _errors(energy_sources=[solar, gas], device_consumption=[])
+    assert new_errors(before, after) == []
+
+
+def test_issue_dicts_marks_warnings_that_were_there() -> None:
+    """Statistics unknown to the recorder: the old ones are marked."""
+    known = {"sensor.other": "kWh"}
+    units = {DeviceKind.ELECTRICITY: ("kWh",), DeviceKind.WATER: ("L",)}
+    before = validate(prefs(), known, units)
+    devices = [*deep_devices(), {"stat_consumption": "sensor.new"}]
+    after = validate(prefs(devices), known, units)
+    marks = {(d["stat"], d["existing"]) for d in issue_dicts(before, after)}
+    assert ("sensor.main", True) in marks
+    assert ("sensor.new", False) in marks
+
+
+def test_new_errors_keeps_the_lists_apart() -> None:
+    """The same error in the water list is not the old one of electricity."""
+    broken = [{"stat_consumption": "sensor.a", "included_in_stat": "sensor.gone"}]
+    before = _errors(device_consumption=broken)
+    after = _errors(device_consumption=broken, device_consumption_water=broken)
+    (error,) = new_errors(before, after)
+    assert error.kind is DeviceKind.WATER

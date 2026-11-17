@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.loader import async_get_integration
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper.candidates import (
@@ -84,6 +85,49 @@ async def test_stat_info_from_registry_only(hass: HomeAssistant) -> None:
     assert info["name"] == "Offline meter"
     assert info["unit"] == "Wh"
     assert info["device_class"] == "energy"
+
+
+async def test_stat_info_type_of_helpers_and_external(hass: HomeAssistant) -> None:
+    """Helpers say which kind they are; device sensors and unknowns say nothing."""
+    registry = er.async_get(hass)
+    for platform in (
+        "integration",
+        "group",
+        "template",
+        "utility_meter",
+        "statistics",
+        "shelly",
+    ):
+        registry.async_get_or_create(
+            "sensor", platform, f"{platform}_1", suggested_object_id=platform
+        )
+    # Another helper is only known as one once its integration is loaded.
+    assert async_stat_info(hass, "sensor.statistics")["stat_type"] is None
+    await async_get_integration(hass, "statistics")
+    await async_get_integration(hass, "shelly")
+    types = {
+        stat: async_stat_info(hass, stat)["stat_type"]
+        for stat in (
+            "sensor.integration",
+            "sensor.group",
+            "sensor.template",
+            "sensor.utility_meter",
+            "sensor.statistics",
+            "sensor.shelly",
+            "sensor.unknown",
+            "portal:energy_import",
+        )
+    }
+    assert types == {
+        "sensor.integration": "integral",
+        "sensor.group": "group",
+        "sensor.template": "template",
+        "sensor.utility_meter": "utility_meter",
+        "sensor.statistics": "helper",
+        "sensor.shelly": None,
+        "sensor.unknown": None,
+        "portal:energy_import": "external",
+    }
 
 
 @pytest.mark.usefixtures("sensors")

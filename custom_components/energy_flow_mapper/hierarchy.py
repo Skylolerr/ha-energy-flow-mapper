@@ -434,7 +434,13 @@ def validate(
         stat for role, stat in source_roles(all_sources) if role != AssignRole.HOME
     )
     issues.extend(
-        Issue(IssueCode.DUPLICATE_SOURCE, Severity.ERROR, stat, kind=kinds[stat])
+        Issue(
+            IssueCode.DUPLICATE_SOURCE,
+            Severity.ERROR,
+            stat,
+            {"count": count},
+            kind=kinds[stat],
+        )
         for stat, count in counts.items()
         if count > 1
     )
@@ -444,6 +450,66 @@ def validate(
 def has_errors(issues: Sequence[Issue]) -> bool:
     """Return True if any issue prevents saving."""
     return any(issue.severity is Severity.ERROR for issue in issues)
+
+
+def _error_key(issue: Issue) -> tuple[Any, ...]:
+    """Tell errors apart across a change.
+
+    A missing parent also by the parent it points to. A doubled source without
+    its list: which source's list it belongs to may change by itself.
+    """
+    if issue.code is IssueCode.MISSING_PARENT:
+        return (issue.code, issue.stat, issue.kind, issue.details.get("parent"))
+    if issue.code is IssueCode.DUPLICATE_SOURCE:
+        return (issue.code, issue.stat)
+    return (issue.code, issue.stat, issue.kind)
+
+
+def _error_weights(issues: Sequence[Issue]) -> Counter[tuple[Any, ...]]:
+    """How often each error occurs; a doubled source counts its uses."""
+    weights: Counter[tuple[Any, ...]] = Counter()
+    for issue in issues:
+        if issue.severity is Severity.ERROR:
+            weights[_error_key(issue)] += int(issue.details.get("count", 1))
+    return weights
+
+
+def new_errors(before: Sequence[Issue], after: Sequence[Issue]) -> list[Issue]:
+    """Return the errors of `after` that a change added to `before`.
+
+    The settings may hold errors Home Assistant accepts, maybe on purpose; they
+    are kept. An error counts as new when it was not there or got worse: a
+    third copy of a device, a meter used by one more source, another missing
+    parent.
+    """
+    old, now = _error_weights(before), _error_weights(after)
+    return [
+        issue
+        for issue in after
+        if issue.severity is Severity.ERROR
+        and now[_error_key(issue)] > old[_error_key(issue)]
+    ]
+
+
+def issue_dicts(
+    before: Sequence[Issue], after: Sequence[Issue]
+) -> list[dict[str, Any]]:
+    """Return the issues of a check; `existing` marks those that were there."""
+    added = {_error_key(issue) for issue in new_errors(before, after)}
+    old_errors = _error_weights(before)
+    old_warnings = {
+        (i.code, i.stat, i.kind) for i in before if i.severity is not Severity.ERROR
+    }
+    return [
+        issue.as_dict()
+        | {
+            "existing": _error_key(issue) in old_errors
+            and _error_key(issue) not in added
+            if issue.severity is Severity.ERROR
+            else (issue.code, issue.stat, issue.kind) in old_warnings
+        }
+        for issue in after
+    ]
 
 
 def _set_optional(device: Device, key: str, value: Any) -> None:
@@ -628,12 +694,24 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
             _set_optional(devices[index], NAME, change.get(NAME))
         elif kind == ChangeType.REMOVE:
             removed = devices.pop(index)
-            for other in devices:
-                if other.get(PARENT) == stat:
-                    _set_optional(other, PARENT, removed.get(PARENT))
+            _lift_children(devices, stat, removed.get(PARENT))
         else:
             raise ChangeError("unknown_change", stat)
     return result
+
+
+def _lift_children(devices: list[Device], stat: str, parent: str | None) -> None:
+    """Move the children of the removed device `stat` up to its parent.
+
+    A parent that is not in the list (an error the settings already had) or
+    the child itself (an old loop) is not inherited: the child goes to the top
+    level instead, so removing a device never adds an error.
+    """
+    present = {device[STAT] for device in devices}
+    for other in devices:
+        if other.get(PARENT) == stat:
+            keep = parent in present and parent != other[STAT]
+            _set_optional(other, PARENT, parent if keep else None)
 
 
 def _apply_source_change(
@@ -667,9 +745,7 @@ def _use_as_home_meter(
     if index is None:
         raise ChangeError("unknown_device", stat)
     removed = devices.pop(index)
-    for other in devices:
-        if other.get(PARENT) == stat:
-            _set_optional(other, PARENT, removed.get(PARENT))
+    _lift_children(devices, stat, removed.get(PARENT))
     _assign_home(sources, stat, removed.get(RATE), removed.get(NAME))
 
 
@@ -740,19 +816,42 @@ def untracked(
 ) -> dict[str, float | None]:
     """Return own value minus the children's values for each device with children.
 
-    The result is None when the device or one of its children has no value.
+    The result is None when the device has no value. A child without a value
+    measures nothing, so its share counts as untracked (see `untracked_missing`).
     """
     result: dict[str, float | None] = {}
     for node in walk(nodes):
         if not node.children:
             continue
         own = values.get(node.stat)
-        children = [values.get(child.stat) for child in node.children]
-        if own is None or any(value is None for value in children):
+        if own is None:
             result[node.stat] = None
-        else:
-            result[node.stat] = own - sum(v for v in children if v is not None)
+            continue
+        children = [values.get(child.stat) for child in node.children]
+        result[node.stat] = own - sum(v for v in children if v is not None)
     return result
+
+
+def untracked_missing(
+    nodes: Sequence[Node], values: Mapping[str, float | None]
+) -> dict[str, list[str]]:
+    """Return the children without a value of each device that has a value.
+
+    Only devices with at least one such child are listed. Their untracked value
+    includes what these children use.
+    """
+    result: dict[str, list[str]] = {}
+    for node in walk(nodes):
+        if values.get(node.stat) is None:
+            continue
+        missing = [c.stat for c in node.children if values.get(c.stat) is None]
+        if missing:
+            result[node.stat] = missing
+    return result
+
+
+def _children_known(node: Node, values: Mapping[str, float | None]) -> bool:
+    return all(values.get(child.stat) is not None for child in node.children)
 
 
 def plausibility(
@@ -765,12 +864,16 @@ def plausibility(
     """Warn when children use clearly more than their parent.
 
     Both limits must be exceeded: more than `ratio` of the parent's value and
-    more than `min_amount` (in the unit of the values) in absolute terms.
+    more than `min_amount` (in the unit of the values) in absolute terms. No
+    warning while a child has no value.
     """
     issues: list[Issue] = []
-    for stat, rest in untracked(nodes, energy).items():
+    rests = untracked(nodes, energy)
+    for node in walk(nodes):
+        stat = node.stat
+        rest = rests.get(stat)
         own = energy.get(stat)
-        if rest is None or own is None:
+        if rest is None or own is None or not _children_known(node, energy):
             continue
         # Rounded so that float noise does not decide right at the limits.
         excess = round(-rest, 9)
@@ -849,12 +952,13 @@ def home_consumption(
 def home_untracked(
     roots: Sequence[Node], values: Mapping[str, float | None], home: float | None
 ) -> float | None:
-    """Return the home consumption minus all top-level devices, or None."""
+    """Return the home consumption minus all top-level devices, or None.
+
+    A top-level device without a value counts as untracked, like a child.
+    """
     if home is None:
         return None
     tops = [values.get(node.stat) for node in roots]
-    if any(value is None for value in tops):
-        return None
     return home - sum(value for value in tops if value is not None)
 
 
@@ -867,10 +971,13 @@ def home_plausibility(
 ) -> Issue | None:
     """Warn when the top-level devices use clearly more than the home.
 
-    The same limits as for a device and its children.
+    The same limits as for a device and its children, and no warning while a
+    top-level device has no value.
     """
     rest = home_untracked(roots, energy, home)
     if rest is None or home is None:
+        return None
+    if any(energy.get(node.stat) is None for node in roots):
         return None
     excess = round(-rest, 9)
     if excess > round(ratio * home, 9) and excess > min_amount:
