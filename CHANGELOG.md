@@ -11,6 +11,53 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-11-17
+
+> **Highlight:** a device without a value no longer hides what is untracked, problems that
+> were already in your settings no longer block saving, and two new switches: *Mark
+> helpers* and folding the free sensors for more room.
+
+### ✨ Added
+
+- **Fold the free sensors:** the arrow in the header of *Free sensors* folds the column to a
+  slim strip with the number of free sensors, so the diagram gets more room; a click on the
+  strip opens it again. The browser remembers it. Phones are unchanged.
+- **Mark helpers** (off by default): *Mark helpers* above the diagram puts a small mark at
+  the top left of every meter that is a helper – ∫ integral, Σ group, { } template, a
+  utility meter or another helper – or an external statistic (a cloud). A device's own
+  sensor gets no mark. The tooltip names the kind («Helper: integral», also «Created by
+  Energy Flow Mapper»), the details always name it («Type: Sensor»), and «Save as image»
+  draws the marks when they are on. The browser remembers the choice. On the dashboard
+  card: `show_types` (off by default).
+
+### 📦 Changed
+
+- **Problems that were already there no longer block saving:** if your energy settings
+  already hold a problem that Home Assistant accepts (for example a meter used as a source
+  and as a device, or a source added twice), you can save, import and restore again. Only
+  problems your changes add prevent saving. The check before saving lists the problems
+  that were already there separately: they stay as they are. The bar at the bottom counts
+  only the new ones. A problem that gets worse counts as new (a third copy of a device, a
+  meter in one more source, another missing parent).
+- **Removing a device whose parent is missing** (or that is part of an old loop) moves its
+  children to the top level instead of under the missing parent, so removing never adds a
+  problem.
+- **Untracked consumption with a device that has no value:** when a child device has no
+  value (for example a plug that is unavailable), the untracked value is no longer «–».
+  The device measures nothing, so its share counts as untracked, and the block names it:
+  «44 W · without TV backlight», from two devices «without 2 devices» with all names in the
+  tooltip. The same in the details, the list, on the dashboard card, below Home and in
+  «Save as image» (hiding names drops the hint). Without a value of the device itself there
+  is still no untracked value. The warning that children use more than their parent still
+  needs a value for every child.
+- **Coverage at Home** («X % covered by devices») counts a top-level device without a value
+  as covering nothing, instead of hiding the share.
+- **README on sum meters:** a sub panel plus its solar is only right if the sub panel's
+  meter counts both ways; with a meter that counts only what it draws (many Shelly meters),
+  the gross value is drawn − returned + solar (a template helper).
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.1 · minimum 2026.10.0*
+
 ## [0.9.2] - 2026-11-16
 
 > **Highlight:** the sources show their values too – grid, solar, battery, the home meter and

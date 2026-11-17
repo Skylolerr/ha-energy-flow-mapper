@@ -79,6 +79,10 @@ solar, battery or water meter, and which meters are not used yet.
   as in the energy dashboard.
 - **Coverage** – Home shows how much of the house the devices cover, for example
   *72% covered by devices*. Switch it off with *Coverage* above the diagram.
+- **Mark helpers** (off by default) – *Mark helpers* above the diagram puts a small
+  mark at the top left of every meter that is a helper (∫ integral, Σ group, { } template,
+  utility meter, other helpers) or an external statistic (a cloud). A device's own sensor
+  gets no mark. The details always name the type.
 - **Home Assistant's own checks** – what the energy settings of Home Assistant report
   (sensor unavailable, entity gone, wrong unit, …) is marked right at the block, in Home
   Assistant's own words.
@@ -98,7 +102,8 @@ solar, battery or water meter, and which meters are not used yet.
   Prices and compensations of an existing source stay as they are. Each source shows its
   power now (from the power sensor in the energy settings) or its energy in the period.
 - **Free sensors** – energy and water meters and external statistics (for example from
-  your supplier's portal) that are not in the dashboard yet, added with one drag.
+  your supplier's portal) that are not in the dashboard yet, added with one drag. The arrow in
+  the header folds the column to a slim strip when you need more room for the diagram.
 - **Meters for power and flow sensors** – "Create meter" turns a power sensor (a UPS, PoE
   ports, …) or a flow sensor into an ordinary integral helper and puts it in the diagram.
 - **Suggestions from child devices** – where an integration registers a device as part of
@@ -107,7 +112,10 @@ solar, battery or water meter, and which meters are not used yet.
   admin. Nothing changes by itself, and connections such as a Zigbee stick never count.
 - **Sum meters** – *Create sum meter* turns a group (or sensors you pick, for example a
   sub panel plus its solar) into a real Home Assistant sum helper that becomes a device
-  in the energy dashboard, with the members below it.
+  in the energy dashboard, with the members below it. A sub panel plus its solar is only
+  right if the sub panel's meter counts both ways (net). If it counts only what it draws
+  and reports what flows back separately (many Shelly meters), the gross value is
+  *drawn − returned + solar*; use a template helper for that.
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. *Undo change*
   takes back a step, and every save stores a backup first. Leave the panel and come back:
@@ -188,6 +196,7 @@ orientation: vertical  # horizontal (top-down, default) or vertical (left to rig
 show_sources: true     # sources before Home (not with root)
 show_untracked: true   # blocks for untracked consumption
 show_coverage: false   # "72% covered by devices" at Home (electricity, off by default)
+show_types: false      # small mark on helpers and external statistics (off by default)
 ```
 
 A tree wider than the card is shown at half size at least; then the card scrolls
