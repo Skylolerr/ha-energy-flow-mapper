@@ -459,6 +459,58 @@ async def test_energy_name_like_home_assistant(
     assert async_stat_info(hass, "portal:energy_import")["energy_name"] is None
 
 
+async def test_energy_name_with_the_entity_for_devices_with_several_meters(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """From 2026.11.2 there is also a name with the entity part, as in HA."""
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    meter = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "proem")}, name="Pro EM"
+    )
+    registry = er.async_get(hass)
+    for channel in (1, 2):
+        registry.async_get_or_create(
+            "sensor",
+            "test",
+            f"ch{channel}",
+            suggested_object_id=f"pro_em_channel_{channel}_energy",
+            device_id=meter.id,
+            has_entity_name=True,
+            original_name=f"Channel {channel} energy",
+        )
+    monkeypatch.setattr(candidates_module, "names_with_entity", lambda: True)
+    info = async_stat_info(hass, "sensor.pro_em_channel_1_energy")
+    assert info["energy_name"] == "Pro EM"
+    assert info["energy_entity_name"] == "Pro EM Channel 1 energy"
+    # Before 2026.11.2 Home Assistant has no such name.
+    monkeypatch.setattr(candidates_module, "names_with_entity", lambda: False)
+    assert (
+        async_stat_info(hass, "sensor.pro_em_channel_1_energy")["energy_entity_name"]
+        is None
+    )
+    # External statistics and entities without a device have none.
+    monkeypatch.setattr(candidates_module, "names_with_entity", lambda: True)
+    assert async_stat_info(hass, "portal:energy_import")["energy_entity_name"] is None
+
+
+def test_names_with_entity_follows_the_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for version, expected in (
+        ((2026, 10, "4"), False),
+        ((2026, 11, "1"), False),
+        ((2026, 11, "2"), True),
+        ((2026, 11, "3b0"), True),
+        ((2026, 12, "0"), True),
+    ):
+        monkeypatch.setattr(candidates_module, "MAJOR_VERSION", version[0])
+        monkeypatch.setattr(candidates_module, "MINOR_VERSION", version[1])
+        monkeypatch.setattr(candidates_module, "PATCH_VERSION", version[2])
+        assert candidates_module.names_with_entity() is expected, version
+
+
 async def test_energy_name_of_a_child_device(
     hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -6,6 +6,7 @@ import {
   coverage,
   canMove,
   displayName,
+  ambiguousDevices,
   homeNow,
   sourceNow,
   powerStats,
@@ -862,10 +863,21 @@ export class EnergyFlowMapperPanel extends LitElement {
       : [...this.draftOf("electricity"), ...this.draftOf("water")],
   ): string {
     const candidates = this._allCandidates();
-    return displayName(stat, devices, {
+    const stats = {
       ...this._snapshot?.stats,
       ...Object.fromEntries(candidates.map((c) => [c.stat, c])),
-    });
+    };
+    return displayName(stat, devices, stats, this._ambiguous(stats));
+  }
+
+  /**
+   * Devices whose name another device of the same list shares (each list on
+   * its own, as in Home Assistant); they are named with the entity part.
+   */
+  private _ambiguous(stats: Record<string, StatInfo | undefined>): Set<string> {
+    const electricity = ambiguousDevices(this.draftOf("electricity"), stats);
+    const water = ambiguousDevices(this.draftOf("water"), stats);
+    return new Set([...electricity, ...water]);
   }
 
   private _issues(): Issue[] {
@@ -4750,6 +4762,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .periods button.active,
     .coverage-toggle.active,
+    .types-toggle.active,
     .orientation button.active {
       background: var(--primary-color);
       border-color: var(--primary-color);

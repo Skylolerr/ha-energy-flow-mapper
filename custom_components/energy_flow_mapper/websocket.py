@@ -75,6 +75,7 @@ from .hierarchy import (
     DeviceKind,
     Prefs,
     Severity,
+    ambiguous_devices,
     build_tree,
     card_ha_issues,
     diff,
@@ -873,12 +874,25 @@ async def websocket_card(
         hass, {stat for stat in stats if not valid_entity_id(stat)}
     )
     info = {stat: async_stat_info(hass, stat, external) for stat in stats}
+    # Devices that share their name with another one get the entity part too.
+    ambiguous = ambiguous_devices(
+        devices,
+        {
+            stat: i["energy_name"] if i["energy_entity_name"] else None
+            for stat, i in info.items()
+        },
+    )
     result: dict[str, Any] = {
         "kind": kind,
         "devices": [
             {
                 "stat": device[STAT],
                 "name": device.get(NAME)
+                or (
+                    info[device[STAT]]["energy_entity_name"]
+                    if device[STAT] in ambiguous
+                    else None
+                )
                 or info[device[STAT]]["energy_name"]
                 or info[device[STAT]]["name"]
                 or device[STAT],

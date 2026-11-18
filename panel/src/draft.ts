@@ -314,14 +314,62 @@ export function moveTargets(devices: Device[], stat: string): string[] {
     .filter((target) => canMove(devices, stat, target));
 }
 
-/** Display name: own name, then the entity's name, then the statistic ID. */
+/**
+ * Display name: own name, then the energy name (with the entity part where
+ * `ambiguous` says devices share a name), then the statistic's name or ID.
+ */
 export function displayName(
   stat: string,
   devices: Device[],
   stats: Record<string, StatInfo | undefined>,
+  ambiguous: ReadonlySet<string> = new Set(),
 ): string {
   const device = devices.find((d) => d.stat_consumption === stat);
-  return device?.name || stats[stat]?.energy_name || stats[stat]?.name || stat;
+  const info = stats[stat];
+  return (
+    device?.name ||
+    (ambiguous.has(stat) ? info?.energy_entity_name : null) ||
+    info?.energy_name ||
+    info?.name ||
+    stat
+  );
+}
+
+/**
+ * The devices of one list whose name another device of the list shares, like
+ * hierarchy.py's `ambiguous_devices`: they get the entity part, as Home
+ * Assistant's energy dashboard does from 2026.11.2. Only device names take
+ * part (a statistic with an `energy_entity_name`); an own name counts but
+ * never gives way.
+ */
+export function ambiguousDevices(devices: Device[], stats: Record<string, StatInfo | undefined>): Set<string> {
+  const byLabel = new Map<string, Set<string>>();
+  const named = new Set<string>();
+  for (const device of devices) {
+    const stat = device.stat_consumption;
+    const info = stats[stat];
+    const label = device.name || (info?.energy_entity_name ? info.energy_name : null);
+    if (!label) {
+      continue;
+    }
+    if (device.name) {
+      named.add(stat);
+    }
+    const group = byLabel.get(label) ?? new Set<string>();
+    group.add(stat);
+    byLabel.set(label, group);
+  }
+  const result = new Set<string>();
+  for (const group of byLabel.values()) {
+    if (group.size > 1) {
+      for (const stat of group) {
+        if (!named.has(stat)) {
+          result.add(stat);
+        }
+      }
+    }
+  }
+  return result;
 }
 
 const POWER_FACTORS: Record<string, number> = { mW: 0.001, W: 1, kW: 1000, MW: 1e6, GW: 1e9, TW: 1e12 };

@@ -3086,3 +3086,45 @@ async def test_a_second_device_under_a_missing_parent_is_new(
     assert response["error"]["translation_placeholders"] == {
         "issues": "missing_parent (sensor.kitchen_energy)"
     }
+
+
+async def test_card_names_devices_with_several_meters_after_the_entity(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two meters of one device get the entity part on the card, as in HA."""
+    monkeypatch.setattr(candidates_module, "names_by_device", lambda: True)
+    monkeypatch.setattr(candidates_module, "names_with_entity", lambda: True)
+    entry = MockConfigEntry(domain="test")
+    entry.add_to_hass(hass)
+    meter = dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "proem")}, name="Pro EM"
+    )
+    registry = er.async_get(hass)
+    for channel in (1, 2):
+        registry.async_get_or_create(
+            "sensor",
+            "test",
+            f"ch{channel}",
+            suggested_object_id=f"pro_em_channel_{channel}_energy",
+            device_id=meter.id,
+            has_entity_name=True,
+            original_name=f"Channel {channel} energy",
+        )
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption": [
+                {"stat_consumption": "sensor.pro_em_channel_1_energy"},
+                {"stat_consumption": "sensor.pro_em_channel_2_energy"},
+            ]
+        },
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/card")
+    names = {d["stat"]: d["name"] for d in response["result"]["devices"]}
+    assert names == {
+        "sensor.pro_em_channel_1_energy": "Pro EM Channel 1 energy",
+        "sensor.pro_em_channel_2_energy": "Pro EM Channel 2 energy",
+    }

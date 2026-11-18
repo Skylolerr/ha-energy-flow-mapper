@@ -568,6 +568,26 @@ describe("kept draft", () => {
   });
 });
 
+describe("devices with several meters", () => {
+  it("are named with the entity part where they share a name, per list", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.stats["sensor.server"].energy_name = "Pro EM";
+    snap.stats["sensor.server"].energy_entity_name = "Pro EM Channel 1";
+    snap.stats["sensor.sonos"].energy_name = "Pro EM";
+    snap.stats["sensor.sonos"].energy_entity_name = "Pro EM Channel 2";
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    expect(node(el, "sensor.server").textContent).toContain("Pro EM Channel 1");
+    expect(node(el, "sensor.sonos").textContent).toContain("Pro EM Channel 2");
+    // Once one of them is gone, the other is named after its device again.
+    el._change({ type: "remove", stat: "sensor.sonos" });
+    await settle(el);
+    expect(node(el, "sensor.server").textContent).not.toContain("Channel 1");
+    expect(node(el, "sensor.server").textContent).toContain("Pro EM");
+  });
+});
+
 describe("collapsing the free sensors", () => {
   it("folds the column to a strip and remembers it", async () => {
     localStorage.clear();
@@ -2343,6 +2363,11 @@ describe("helper marks", () => {
     buttonWith(again, "Mark helpers").click();
     await settle(again);
     expect(root(again).querySelector(".type-mark")).toBeNull();
+  });
+
+  it("shows the switch as pressed like the other switches", () => {
+    const css = [EnergyFlowMapperPanel.styles].flat().map((s) => String(s)).join(" ");
+    expect(css).toMatch(/\.types-toggle\.active/);
   });
 
   it("says when Energy Flow Mapper created the helper", async () => {

@@ -11,6 +11,7 @@ import {
   NEW_WATER,
   canMove,
   displayName,
+  ambiguousDevices,
   homeNow,
   moveTargets,
   powerInWatts,
@@ -575,6 +576,26 @@ describe("device names like Home Assistant", () => {
     expect(displayName("a", [{ stat_consumption: "a" }], stats)).toBe("Office hub A");
     expect(displayName("b", [{ stat_consumption: "b" }], stats)).toBe("B energy");
     expect(displayName("c", [], stats)).toBe("c");
+  });
+
+  it("adds the entity part where devices of one list share a name, as HA 2026.11.2 does", () => {
+    const stats = {
+      ch1: { name: "x", energy_name: "Pro EM", energy_entity_name: "Pro EM Channel 1" },
+      ch2: { name: "y", energy_name: "Pro EM", energy_entity_name: "Pro EM Channel 2" },
+      own: { name: "z", energy_name: "Pro EM", energy_entity_name: "Pro EM Channel 3" },
+      lamp: { name: "Lamp energy", energy_name: "Lamp", energy_entity_name: "Lamp energy" },
+      old: { name: "w", energy_name: "Pro EM", energy_entity_name: null },
+    } as never;
+    const list = [{ stat_consumption: "ch1" }, { stat_consumption: "ch2" }, { stat_consumption: "lamp" }];
+    expect([...ambiguousDevices(list, stats)].sort()).toEqual(["ch1", "ch2"]);
+    const ambiguous = ambiguousDevices(list, stats);
+    expect(displayName("ch1", list, stats, ambiguous)).toBe("Pro EM Channel 1");
+    expect(displayName("lamp", list, stats, ambiguous)).toBe("Lamp");
+    // A user-set name counts, but keeps its name.
+    const named = [{ stat_consumption: "own", name: "Pro EM" }, { stat_consumption: "ch1" }];
+    expect([...ambiguousDevices(named, stats)]).toEqual(["ch1"]);
+    // Without the entity name (HA before 2026.11.2) nothing collides.
+    expect(ambiguousDevices([{ stat_consumption: "old" }, { stat_consumption: "ch1" }], stats).size).toBe(0);
   });
 });
 

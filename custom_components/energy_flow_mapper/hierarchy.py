@@ -474,6 +474,36 @@ def _error_weights(issues: Sequence[Issue]) -> Counter[tuple[Any, ...]]:
     return weights
 
 
+def ambiguous_devices(
+    devices: Sequence[Mapping[str, Any]], labels: Mapping[str, str | None]
+) -> set[str]:
+    """Return the devices of one list whose label another device shares.
+
+    Like Home Assistant's energy dashboard from 2026.11.2: a device that owns
+    several meters of the same kind would show the same label for each, so
+    those get the entity name as well. A name set by the user counts towards a
+    collision but never gives way; statistics without a device label do not
+    take part. `labels` maps a statistic to its label without the entity part.
+    """
+    by_label: dict[str, set[str]] = {}
+    named: set[str] = set()
+    for device in devices:
+        stat = device[STAT]
+        label = device.get(NAME) or labels.get(stat)
+        if not label:
+            continue
+        if device.get(NAME):
+            named.add(stat)
+        by_label.setdefault(label, set()).add(stat)
+    return {
+        stat
+        for stats in by_label.values()
+        if len(stats) > 1
+        for stat in stats
+        if stat not in named
+    }
+
+
 def new_errors(before: Sequence[Issue], after: Sequence[Issue]) -> list[Issue]:
     """Return the errors of `after` that a change added to `before`.
 

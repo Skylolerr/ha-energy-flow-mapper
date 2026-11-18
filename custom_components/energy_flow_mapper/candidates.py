@@ -17,6 +17,7 @@ from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     MAJOR_VERSION,
     MINOR_VERSION,
+    PATCH_VERSION,
     UnitOfEnergy,
     UnitOfPower,
     UnitOfVolume,
@@ -126,6 +127,8 @@ def _energy_device_name(
     entry: er.RegistryEntry,
     device: Any,
     device_name: str | None,
+    *,
+    with_entity: bool = False,
 ) -> str | None:
     """Return the name Home Assistant's energy dashboard gives a device.
 
@@ -133,7 +136,8 @@ def _energy_device_name(
     "parent device" and "device", following the context: the device unless the
     entity has its own area and name, the parent device (`parent_device_id`,
     never `via_device_id`) only for a child device without an area. None when
-    neither applies; the entity's name stays then.
+    neither applies; the entity's name stays then. `with_entity` adds the
+    entity's own name, as HA does for a device with several meters (2026.11.2).
     """
     follows_device = str(entry.next_name_part) == "device"
     own_name = entry.name if entry.name is not None else entry.original_name
@@ -148,6 +152,8 @@ def _energy_device_name(
         )
     if follows_device or not own_name:
         parts.append(device_name or "")
+    if with_entity:
+        parts.append(own_name or "")
     return " ".join(part for part in parts if part) or None
 
 
@@ -171,6 +177,19 @@ def _stat_type(hass: HomeAssistant, entry: er.RegistryEntry | None) -> str | Non
     except IntegrationNotLoaded:
         return None
     return "helper" if integration.integration_type == "helper" else None
+
+
+@callback
+def names_with_entity() -> bool:
+    """Return True if HA adds the entity name to devices that share a name.
+
+    From 2026.11.2 (frontend 20261028.6) the energy dashboard names devices
+    that own several meters of the same kind after device and entity.
+    """
+    patch = int(
+        "".join(c for c in str(PATCH_VERSION).split(".")[0] if c.isdigit()) or 0
+    )
+    return (MAJOR_VERSION, MINOR_VERSION, patch) >= (2026, 11, 2)
 
 
 @callback
@@ -199,6 +218,9 @@ def async_stat_info(
         "entity_id": None,
         "name": None,
         "energy_name": None,
+        # The name with the entity part, for devices that share a name (HA
+        # 2026.11.2 and newer; None otherwise).
+        "energy_entity_name": None,
         "unit": None,
         "device_class": None,
         "device_id": None,
@@ -245,10 +267,14 @@ def async_stat_info(
     )
     info["energy_name"] = info["name"]
     if entry is not None and device is not None and names_by_device():
-        info["energy_name"] = (
-            _energy_device_name(hass, entry, device, info["device_name"])
-            or info["name"]
-        )
+        device_label = _energy_device_name(hass, entry, device, info["device_name"])
+        info["energy_name"] = device_label or info["name"]
+        # Only a device label can collide; set only then, so its presence
+        # also says the energy name is the device label.
+        if device_label and names_with_entity():
+            info["energy_entity_name"] = _energy_device_name(
+                hass, entry, device, info["device_name"], with_entity=True
+            )
 
     area_id = (entry.area_id if entry else None) or (device.area_id if device else None)
     area = ar.async_get(hass).async_get_area(area_id) if area_id else None

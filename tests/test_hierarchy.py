@@ -19,6 +19,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     IssueCode,
     Node,
     Severity,
+    ambiguous_devices,
     apply_changes,
     build_tree,
     card_ha_issues,
@@ -1781,3 +1782,28 @@ def test_new_errors_keeps_the_lists_apart() -> None:
     after = _errors(device_consumption=broken, device_consumption_water=broken)
     (error,) = new_errors(before, after)
     assert error.kind is DeviceKind.WATER
+
+
+# --- names of devices with several meters -----------------------------------
+
+
+def test_ambiguous_devices_share_a_label_within_one_list() -> None:
+    """Like HA: devices whose label collides get the entity part; own names win."""
+    devices = [
+        {"stat_consumption": "sensor.ch1"},
+        {"stat_consumption": "sensor.ch2"},
+        {"stat_consumption": "sensor.ch3", "name": "Pro EM"},
+        {"stat_consumption": "sensor.lamp"},
+        {"stat_consumption": "sensor.portal"},
+    ]
+    labels = {
+        "sensor.ch1": "Pro EM",
+        "sensor.ch2": "Pro EM",
+        "sensor.ch3": "Pro EM",
+        "sensor.lamp": "Lamp",
+        "sensor.portal": None,
+    }
+    assert ambiguous_devices(devices, labels) == {"sensor.ch1", "sensor.ch2"}
+    # A user-set name counts towards a collision, but never gives way.
+    assert ambiguous_devices(devices[2:4] + devices[:1], labels) == {"sensor.ch1"}
+    assert ambiguous_devices(devices[3:], labels) == set()
