@@ -11,6 +11,22 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-11-18
+
+> **Highlight:** device names follow Home Assistant 2026.11.2 again: meters of one device
+> keep apart by their entity name.
+
+### 🐛 Fixed
+
+- **Names of devices with several meters, like Home Assistant 2026.11.2:** when one device owns
+  several meters of the same kind (a Shelly Pro EM, an Emporia with many circuits), Home
+  Assistant now adds the entity name so they stay apart, for example «Pro EM Channel 1 energy».
+  The panel and the dashboard card do the same, in each list on its own; a name you set
+  yourself always stays. Before Home Assistant 2026.11.2 nothing changes.
+- **Mark helpers** is highlighted while it is on, like *Coverage* and the other switches.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.2 · minimum 2026.10.0*
+
 ## [0.10.0] - 2026-11-17
 
 > **Highlight:** a device without a value no longer hides what is untracked, problems that
