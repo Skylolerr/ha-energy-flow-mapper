@@ -1,5 +1,5 @@
 # Internal checklist against the Home Assistant integration quality scale.
-# Goal: all Silver rules, Gold where it makes sense (SPEC.md §13).
+# Goal: all Silver rules, Gold where it makes sense.
 rules:
   # Bronze
   action-setup:

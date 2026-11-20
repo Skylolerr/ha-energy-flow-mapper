@@ -1,7 +1,7 @@
 """WebSocket commands of the panel and the dashboard card.
 
 All of them require an admin, except `card`: it only reads what the energy
-dashboard shows every user anyway (see SPEC.md §2).
+dashboard shows every user anyway.
 """
 
 from __future__ import annotations
