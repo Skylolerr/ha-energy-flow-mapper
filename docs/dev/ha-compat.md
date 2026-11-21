@@ -12,6 +12,10 @@ dashboard does. Both depend on HA internals that can change between releases.
 - HA ≥ 2026.10 uses `probatio` instead of `voluptuous` (`import probatio as vol`).
 - Unknown fields in the preferences are passed through unchanged, so fields of newer HA
   releases survive a save.
+- `manifest.json` `categories` (`energy.meters_monitoring`) is read from 2026.11 on (website,
+  app, Marketplace). The 2026.10 loader reads the manifest without a schema and ignores the key.
+  Hassfest and the HACS action check the value
+  ([categories](https://contributors.home-assistant.io/core/integrations/categories/)).
 
 ## Version gates
 

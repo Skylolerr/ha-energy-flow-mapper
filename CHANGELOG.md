@@ -11,6 +11,11 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### 📦 Changed
+
+- **Category in the Marketplace:** Home Assistant's Marketplace (HACS) lists Energy Flow Mapper
+  under *Energy → Meters & monitoring*. Nothing changes in how the integration works.
+
 ## [0.10.1] - 2026-11-18
 
 > **Highlight:** device names follow Home Assistant 2026.11.2 again: meters of one device
