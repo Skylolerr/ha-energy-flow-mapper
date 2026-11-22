@@ -7,6 +7,7 @@ import type {
   Device,
   DeviceKind,
   HomeAssistant,
+  PowerConfig,
   Source,
   StatInfo,
   Tab,
@@ -63,7 +64,7 @@ export interface SourceRow {
   /** Home Assistant's power sensor of the source (signed for grid and battery). */
   stat_rate?: string;
   /** The grid or battery's `power_config`, when it has one. */
-  power_config?: unknown;
+  power_config?: PowerConfig;
 }
 
 function setOptional(device: Device, key: string, value: unknown): void {
@@ -446,7 +447,7 @@ export function rateValue(
 /** What `sourcePower` needs of a source: its derived sensor and its `power_config`. */
 export interface PowerSource {
   stat_rate?: unknown;
-  power_config?: unknown;
+  power_config?: PowerConfig | null;
 }
 
 function sensorText(value: unknown): string | undefined {
@@ -596,7 +597,7 @@ export function sourceRows(sources: Source[], kind?: Tab): SourceRow[] {
     const [from, to] = SOURCE_ROLES[source.type] ?? ["consumption", null];
     const rate = {
       ...(typeof source.stat_rate === "string" ? { stat_rate: source.stat_rate } : {}),
-      ...(isEmpty(source.power_config) ? {} : { power_config: source.power_config }),
+      ...(isEmpty(source.power_config) ? {} : { power_config: source.power_config as PowerConfig }),
     };
     if (source.stat_energy_from) {
       rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name, ...rate });

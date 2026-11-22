@@ -316,4 +316,11 @@ export const en = {
   tools: "Tools",
   help: "Help",
   sum_name_exists: "An entity named “{name}” already exists. The new helper would get the same name; choose another one to tell them apart.",
+  power_sensor: "Power sensor",
+  flow_sensor: "Flow sensor",
+  power_variant_single: "Standard",
+  power_variant_inverted: "Inverted",
+  power_variant_two: "Two sensors",
+  power_none: "None",
+  power_same_device: "Same device",
 };

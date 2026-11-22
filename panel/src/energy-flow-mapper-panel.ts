@@ -83,6 +83,7 @@ import type {
   Issue,
   Orientation,
   Period,
+  PowerConfig,
   SaveResult,
   Snapshot,
   Source,
@@ -162,9 +163,48 @@ type Dialog =
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" }
   /** Discard a draft of several changes? */
-  | { kind: "discard" };
+  | { kind: "discard" }
+  /**
+   * The power (water, gas: flow) sensor of a device or a source. `first` and
+   * `second` are the picked sensors ("" is none); `second` is only used by the
+   * two-sensor variant of a grid or battery. `initial` is the change the
+   * dialog would write unchanged, so OK without a change adds nothing.
+   */
+  | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string };
 
 type SumDialog = Extract<Dialog, { kind: "sum" }>;
+type PowerDialog = Extract<Dialog, { kind: "power" }>;
+
+/** What a power dialog edits: a device of the tab, or one role of a source. */
+export type PowerTarget = { kind: "device"; stat: string } | { kind: "source"; stat: string; role: SourceRole };
+
+/** How a grid or battery reads its power, named like HA's dialog. */
+type PowerVariant = "single" | "inverted" | "two";
+const POWER_VARIANTS: readonly PowerVariant[] = ["single", "inverted", "two"];
+const POWER_VARIANT_KEYS = {
+  single: "power_variant_single",
+  inverted: "power_variant_inverted",
+  two: "power_variant_two",
+} as const;
+
+/** Source roles with a power (flow) sensor; grid and battery roles take a `power_config`. */
+const POWER_ROLES: ReadonlySet<string> = new Set([
+  "import",
+  "export",
+  "production",
+  "discharge",
+  "charge",
+  "gas",
+  "water",
+  "home",
+]);
+const POWER_CONFIG_ROLES: ReadonlySet<string> = new Set(["import", "export", "discharge", "charge"]);
+
+/** A sensor text of a `power_config`, or "" when it is not one. */
+function sensorOf(config: Record<string, unknown>, key: string): string {
+  const value = config[key];
+  return typeof value === "string" ? value : "";
+}
 
 /** Errors whose `stat` may be a group id; the panel shows the group's name instead. */
 const GROUP_ERRORS: ReadonlySet<string> = new Set(["unknown_group", "group_parents_differ", "group_loop", "group_exists"]);
@@ -1640,6 +1680,112 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
+  // --- power sensors ----------------------------------------------------------
+
+  /**
+   * Open the power (water, gas: flow) sensor dialog of a device or a source,
+   * with the draft's current sensors preselected; a grid or battery also with
+   * the variant its `power_config` uses.
+   */
+  _openPowerDialog(target: PowerTarget): void {
+    let variant: PowerVariant = "single";
+    let first = "";
+    let second = "";
+    if (target.kind === "device") {
+      first = this.draft.find((d) => d.stat_consumption === target.stat)?.stat_rate ?? "";
+    } else {
+      const row = sourceRows(this.draftSources).find((r) => r.stat === target.stat && r.role === target.role);
+      const config = (row?.power_config ?? {}) as Record<string, unknown>;
+      if (sensorOf(config, "stat_rate_inverted")) {
+        variant = "inverted";
+        first = sensorOf(config, "stat_rate_inverted");
+      } else if (sensorOf(config, "stat_rate_from") || sensorOf(config, "stat_rate_to")) {
+        variant = "two";
+        first = sensorOf(config, "stat_rate_from");
+        second = sensorOf(config, "stat_rate_to");
+      } else {
+        first = sensorOf(config, "stat_rate") || (row?.stat_rate ?? "");
+      }
+    }
+    const dialog: PowerDialog = { kind: "power", target, variant, first, second, initial: "" };
+    this._dialog = { ...dialog, initial: JSON.stringify(this._powerChange(dialog)) };
+  }
+
+  /**
+   * The change a power dialog writes: `set_rate` for a device; for a source
+   * `set_source_rate`, with a `power_config` for grid and battery (null
+   * without a sensor) and a plain `stat_rate` for the others. Null while the
+   * two-sensor variant has only one of its sensors.
+   */
+  private _powerChange(dialog: PowerDialog): Change | null {
+    const { target, variant } = dialog;
+    const first = dialog.first || null;
+    if (target.kind === "device") {
+      return { type: "set_rate", stat: target.stat, stat_rate: first, ...this._kind() };
+    }
+    const role = target.role;
+    if (role === "consumption") {
+      return null;
+    }
+    if (!POWER_CONFIG_ROLES.has(role)) {
+      return { type: "set_source_rate", stat: target.stat, role, stat_rate: first };
+    }
+    const second = variant === "two" ? dialog.second || null : null;
+    if (variant === "two" && (first === null) !== (second === null)) {
+      return null;
+    }
+    const power_config: PowerConfig | null =
+      first === null
+        ? null
+        : variant === "two"
+          ? { stat_rate_from: first, stat_rate_to: second! }
+          : variant === "inverted"
+            ? { stat_rate_inverted: first }
+            : { stat_rate: first };
+    return { type: "set_source_rate", stat: target.stat, role, power_config };
+  }
+
+  /**
+   * The sensors a power dialog offers for the meter `stat`: power sensors
+   * (water and gas tab: flow sensors) of Home Assistant and the backend's
+   * candidates; those of the meter's own HA device first, then by name.
+   */
+  _powerOptions(stat: string): { entity_id: string; sameDevice: boolean }[] {
+    const flow = this._tab !== "electricity";
+    const deviceClass = flow ? "volume_flow_rate" : "power";
+    const ids = new Set(
+      Object.entries(this.hass?.states ?? {})
+        .filter(([id, state]) => id.startsWith("sensor.") && state?.attributes?.device_class === deviceClass)
+        .map(([id]) => id),
+    );
+    for (const candidate of (flow ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? []) {
+      ids.add(candidate.stat);
+    }
+    const device = this._snapshot?.stats[stat]?.device_id ?? null;
+    const entities = this.hass?.entities ?? {};
+    return [...ids]
+      .map((entity_id) => ({
+        entity_id,
+        sameDevice: device !== null && entities[entity_id]?.device_id === device,
+        name: this._sensorName(entity_id),
+      }))
+      .sort((a, b) => Number(b.sameDevice) - Number(a.sameDevice) || a.name.localeCompare(b.name))
+      .map(({ entity_id, sameDevice }) => ({ entity_id, sameDevice }));
+  }
+
+  /** The name of a sensor: its friendly name, the backend's name, or its entity id. */
+  private _sensorName(entityId: string): string {
+    const known = [...(this._snapshot?.power_candidates ?? []), ...(this._snapshot?.flow_candidates ?? [])].find(
+      (c) => c.stat === entityId,
+    );
+    return (
+      String(this.hass?.states[entityId]?.attributes.friendly_name ?? "") ||
+      known?.name ||
+      this._info(entityId)?.name ||
+      entityId
+    );
+  }
+
   // --- sum meter --------------------------------------------------------------
 
   /**
@@ -1835,6 +1981,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     this._observeViewport();
     this._observeFooter();
+    if (this._dialog?.kind === "power") {
+      // A select's own bindings come before its options, and a new list of
+      // sensors (states pushed by HA) may shift them: pick the sensor by value.
+      for (const select of this.renderRoot.querySelectorAll<HTMLSelectElement>("select.power-picker")) {
+        select.value = select.dataset.value ?? "";
+      }
+    }
     if (!changed.has("_dialog")) {
       return;
     }
@@ -3793,6 +3946,95 @@ export class EnergyFlowMapperPanel extends LitElement {
       </div>`;
   }
 
+  /**
+   * The power (flow) sensor dialog: a picker with None; a grid or battery
+   * first chooses the variant, and two sensors get a picker each (grid:
+   * import and export, battery: discharge and charge). OK writes one change.
+   */
+  private _renderPower(dialog: PowerDialog): TemplateResult {
+    const { target } = dialog;
+    const role = target.kind === "source" ? target.role : null;
+    const label = this._t(this._tab === "electricity" ? "power_sensor" : "flow_sensor");
+    const withConfig = role !== null && POWER_CONFIG_ROLES.has(role);
+    const battery = role === "discharge" || role === "charge";
+    // From the current state: two pickers may change before the next render.
+    const update = (patch: Partial<PowerDialog>) => {
+      if (this._dialog?.kind === "power") {
+        this._dialog = { ...this._dialog, ...patch };
+      }
+    };
+    const change = this._powerChange(dialog);
+    return html`<h2>${target.kind === "device" ? this._name(target.stat, this.draft) : this._roleLabel(role!)}</h2>
+      ${target.kind === "source" ? html`<p>${this._name(target.stat)}</p>` : nothing}
+      ${withConfig
+        ? html`<div class="power-variants">
+            ${POWER_VARIANTS.map(
+              (variant) => html`<label class="check">
+                <input
+                  type="radio"
+                  name="power-variant"
+                  value=${variant}
+                  .checked=${dialog.variant === variant}
+                  @change=${() => update({ variant })}
+                />
+                ${this._t(POWER_VARIANT_KEYS[variant])}
+              </label>`,
+            )}
+          </div>`
+        : nothing}
+      ${withConfig && dialog.variant === "two"
+        ? html`${this._renderPowerPicker(target.stat, dialog.first, this._roleLabel(battery ? "discharge" : "import"), (first) =>
+            update({ first }),
+          )}
+          ${this._renderPowerPicker(target.stat, dialog.second, this._roleLabel(battery ? "charge" : "export"), (second) =>
+            update({ second }),
+          )}`
+        : this._renderPowerPicker(target.stat, dialog.first, label, (first) => update({ first }))}
+      <div class="dialog-actions">
+        <button @click=${() => this._close()}>${this._t("cancel")}</button>
+        <button
+          class="primary"
+          ?disabled=${change === null}
+          @click=${() => {
+            this._close();
+            if (change !== null && JSON.stringify(change) !== dialog.initial) {
+              this._change(change);
+            }
+          }}
+        >
+          ${this._t("ok")}
+        </button>
+      </div>`;
+  }
+
+  /** One sensor picker of the power dialog; the current sensor is offered even when HA does not list it. */
+  private _renderPowerPicker(
+    stat: string,
+    value: string,
+    label: string,
+    pick: (entityId: string) => void,
+  ): TemplateResult {
+    const options = this._powerOptions(stat);
+    if (value && !options.some((o) => o.entity_id === value)) {
+      options.unshift({ entity_id: value, sameDevice: false });
+    }
+    return html`<label
+      >${label}
+      <select
+        class="power-picker"
+        data-value=${value}
+        @change=${(e: Event) => pick((e.target as HTMLSelectElement).value)}
+      >
+        <option value="">${this._t("power_none")}</option>
+        ${options.map(
+          (o) => html`<option value=${o.entity_id} title=${o.entity_id}>
+            ${this._sensorName(o.entity_id)}${o.sameDevice ? ` · ${this._t("power_same_device")}` : ""}
+          </option>`,
+        )}
+      </select>
+    </label>`;
+  }
+
   private _renderDialogContent(dialog: Dialog): TemplateResult {
     const devices = this.draft;
     switch (dialog.kind) {
@@ -3810,6 +4052,9 @@ export class EnergyFlowMapperPanel extends LitElement {
               }}
             >
               ${this._t("rename")}
+            </button>
+            <button @click=${() => this._openPowerDialog({ kind: "device", stat: dialog.stat })}>
+              ${this._t(this._tab === "water" ? "flow_sensor" : "power_sensor")} …
             </button>
             <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
             ${this._canUseHomeMeter(dialog.stat)
@@ -4031,6 +4276,14 @@ export class EnergyFlowMapperPanel extends LitElement {
                   ${this._t(dialog.stat && assign !== "production" && assign !== "battery" ? "source_replace" : "source_assign")}
                 </button>`
               : nothing}
+            ${dialog.stat && POWER_ROLES.has(dialog.role)
+              ? html`<button
+                  @click=${() =>
+                    this._openPowerDialog({ kind: "source", stat: dialog.stat!, role: dialog.role as SourceRole })}
+                >
+                  ${this._t(dialog.role === "water" || dialog.role === "gas" ? "flow_sensor" : "power_sensor")} …
+                </button>`
+              : nothing}
             ${dialog.stat && assign
               ? html`<button
                   class="danger"
@@ -4100,6 +4353,8 @@ export class EnergyFlowMapperPanel extends LitElement {
             </button>
           </div>`;
       }
+      case "power":
+        return this._renderPower(dialog);
       case "menu":
         return html`<div class="dialog-actions column-actions">
           <button ?disabled=${!this._snapshot} @click=${() => (this._dialog = { kind: "candidates" })}>
@@ -4625,7 +4880,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       background: var(--error-color);
     }
     input[type="search"],
-    input[type="text"] {
+    input[type="text"],
+    select.power-picker {
       width: 100%;
       box-sizing: border-box;
       margin: 8px 0;

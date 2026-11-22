@@ -10,8 +10,16 @@ export interface HassEntity {
   };
 }
 
+/** An entry of Home Assistant's entity registry, as the frontend has it (minimal subset). */
+export interface EntityRegistryDisplayEntry {
+  entity_id: string;
+  device_id?: string | null;
+}
+
 export interface HomeAssistant {
   states: Record<string, HassEntity>;
+  /** The entity registry; missing in old frontends and in tests. */
+  entities?: Record<string, EntityRegistryDisplayEntry>;
   locale: {
     language: string;
     /** Number format of the user profile, e.g. "language" or "quote_decimal". */

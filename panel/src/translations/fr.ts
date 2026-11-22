@@ -318,4 +318,11 @@ export const fr: Translations = {
   tools: "Outils",
   help: "Aide",
   sum_name_exists: "Une entité nommée « {name} » existe déjà. La nouvelle entrée d’aide aurait le même nom ; choisis-en un autre pour les distinguer.",
+  power_sensor: "Capteur de puissance",
+  flow_sensor: "Capteur de débit",
+  power_variant_single: "Standard",
+  power_variant_inverted: "Inversé",
+  power_variant_two: "Deux capteurs",
+  power_none: "Aucun",
+  power_same_device: "Même appareil",
 };

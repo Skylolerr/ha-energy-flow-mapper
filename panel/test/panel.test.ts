@@ -4143,3 +4143,271 @@ describe("robustness and phone fixes", () => {
     });
   });
 });
+
+describe("power sensors", () => {
+  function sensor(entity_id: string, name: string, device_class = "power", unit = "W"): HassEntity {
+    return { entity_id, state: "1", attributes: { friendly_name: name, device_class, unit_of_measurement: unit } };
+  }
+
+  function powerMock(): Mock {
+    const mock = mockHass();
+    for (const [id, name] of [
+      ["sensor.a_power", "A power"],
+      ["sensor.grid_in", "Grid in"],
+      ["sensor.grid_out", "Grid out"],
+      ["sensor.grid_power", "Grid power"],
+      ["sensor.pv_power", "PV power"],
+      ["sensor.tv_power", "TV power"],
+    ]) {
+      mock.hass.states[id] = sensor(id, name);
+    }
+    mock.hass.states["sensor.tv_temperature"] = sensor("sensor.tv_temperature", "TV temperature", "temperature", "°C");
+    mock.hass.states["sensor.tap_flow"] = sensor("sensor.tap_flow", "Tap flow", "volume_flow_rate", "L/min");
+    return mock;
+  }
+
+  /** The picker with `index` in the open dialog. */
+  function picker(el: EnergyFlowMapperPanel, index = 0): HTMLSelectElement {
+    return root(el).querySelectorAll<HTMLSelectElement>("dialog select")[index];
+  }
+
+  function pick(select: HTMLSelectElement, value: string): void {
+    select.value = value;
+    select.dispatchEvent(new Event("change"));
+  }
+
+  async function openDevice(el: EnergyFlowMapperPanel, stat: string, label = "Power sensor"): Promise<void> {
+    node(el, stat).querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();
+    await settle(el);
+    buttonWith(el, label).click();
+    await settle(el);
+  }
+
+  async function openSource(el: EnergyFlowMapperPanel, role: string, label = "Power sensor"): Promise<void> {
+    root(el).querySelector<HTMLButtonElement>(`.block.source:not(.placeholder)[data-role="${role}"]`)!.click();
+    await settle(el);
+    buttonWith(el, label).click();
+    await settle(el);
+  }
+
+  it("power dialog writes set_rate", async () => {
+    const el = await mount(powerMock());
+    await openDevice(el, "sensor.tv");
+    // Nothing is set yet: None is preselected; only power sensors are offered.
+    expect(picker(el).value).toBe("");
+    const offered = [...picker(el).options].map((o) => o.value);
+    expect(offered).toContain("sensor.a_power");
+    expect(offered).not.toContain("sensor.tv_temperature");
+    expect(offered).not.toContain("sensor.tap_flow");
+    pick(picker(el), "sensor.a_power");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "set_rate", stat: "sensor.tv", stat_rate: "sensor.a_power" }]);
+
+    // The current sensor is preselected (also when HA does not list it as power); None clears it.
+    await openDevice(el, "sensor.server");
+    expect(picker(el).value).toBe("sensor.server_power");
+    pick(picker(el), "");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({ type: "set_rate", stat: "sensor.server", stat_rate: null });
+
+    // OK without a change adds nothing.
+    await openDevice(el, "sensor.sonos");
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toHaveLength(2);
+  });
+
+  it("water devices pick a flow sensor", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.prefs.device_consumption_water = [{ stat_consumption: "sensor.house_water" }];
+    snap.stats["sensor.house_water"] = info("sensor.house_water", "House water", { unit: "m³", device_class: "water" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el.setTab("water");
+    await settle(el);
+    await openDevice(el, "sensor.house_water", "Flow sensor");
+    const offered = [...picker(el).options].map((o) => o.value);
+    expect(offered).toEqual(["", "sensor.tap_flow"]);
+    pick(picker(el), "sensor.tap_flow");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "set_rate", stat: "sensor.house_water", stat_rate: "sensor.tap_flow", kind: "water" },
+    ]);
+  });
+
+  it("grid power dialog writes two-sensor power_config", async () => {
+    const el = await mount(powerMock());
+    await openSource(el, "import");
+    const variants = root(el).querySelectorAll<HTMLInputElement>('dialog input[type="radio"]');
+    expect([...variants].map((v) => v.closest("label")!.textContent!.trim())).toEqual([
+      "Standard",
+      "Inverted",
+      "Two sensors",
+    ]);
+    expect(variants[0].checked).toBe(true);
+    variants[2].click();
+    await settle(el);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Grid import");
+    expect(dialog.textContent).toContain("Grid export");
+    pick(picker(el, 0), "sensor.grid_in");
+    await settle(el);
+    // One of the two sensors is not enough.
+    expect(buttonWith(el, "OK").disabled).toBe(true);
+    pick(picker(el, 1), "sensor.grid_out");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      {
+        type: "set_source_rate",
+        stat: "sensor.import",
+        role: "import",
+        power_config: { stat_rate_from: "sensor.grid_in", stat_rate_to: "sensor.grid_out" },
+      },
+    ]);
+    expect(el.draftSources[0].power_config).toEqual({
+      stat_rate_from: "sensor.grid_in",
+      stat_rate_to: "sensor.grid_out",
+    });
+  });
+
+  it("power dialog preselects the inverted variant from power_config", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.prefs.energy_sources = [
+      {
+        type: "grid",
+        stat_energy_from: "sensor.import",
+        stat_energy_to: "sensor.export",
+        stat_rate: "sensor.derived_grid_power",
+        power_config: { stat_rate_inverted: "sensor.grid_power" },
+      },
+      {
+        type: "battery",
+        stat_energy_from: "sensor.discharge",
+        stat_energy_to: "sensor.charge",
+        power_config: { stat_rate_from: "sensor.grid_in", stat_rate_to: "sensor.grid_out" },
+      },
+    ];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    await openSource(el, "export");
+    const variants = root(el).querySelectorAll<HTMLInputElement>('dialog input[type="radio"]');
+    expect([...variants].map((v) => v.checked)).toEqual([false, true, false]);
+    expect(picker(el).value).toBe("sensor.grid_power");
+    // Switching to Standard keeps the sensor and writes a plain power_config.
+    variants[0].click();
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "set_source_rate", stat: "sensor.export", role: "export", power_config: { stat_rate: "sensor.grid_power" } },
+    ]);
+
+    // A battery with two sensors: discharge and charge, both preselected; None clears.
+    await openSource(el, "charge");
+    expect([...root(el).querySelectorAll<HTMLInputElement>('dialog input[type="radio"]')].map((v) => v.checked)).toEqual([
+      false,
+      false,
+      true,
+    ]);
+    const dialog = root(el).querySelector("dialog")!;
+    expect(dialog.textContent).toContain("Battery discharge");
+    expect(dialog.textContent).toContain("Battery charge");
+    expect([picker(el, 0).value, picker(el, 1).value]).toEqual(["sensor.grid_in", "sensor.grid_out"]);
+    pick(picker(el, 0), "");
+    pick(picker(el, 1), "");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({
+      type: "set_source_rate",
+      stat: "sensor.charge",
+      role: "charge",
+      power_config: null,
+    });
+  });
+
+  it("solar and water sources take one sensor as stat_rate", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.pv" });
+    snap.prefs.energy_sources.push({ type: "water", stat_energy_from: "sensor.water_main" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    await openSource(el, "production");
+    expect(root(el).querySelector('dialog input[type="radio"]')).toBeNull();
+    pick(picker(el), "sensor.pv_power");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "set_source_rate", stat: "sensor.pv", role: "production", stat_rate: "sensor.pv_power" },
+    ]);
+
+    el.setTab("water");
+    await settle(el);
+    await openSource(el, "water", "Flow sensor");
+    pick(picker(el), "sensor.tap_flow");
+    await settle(el);
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes.at(-1)).toEqual({
+      type: "set_source_rate",
+      stat: "sensor.water_main",
+      role: "water",
+      stat_rate: "sensor.tap_flow",
+    });
+  });
+
+  it("power options list same-device sensors first", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.stats["sensor.tv"] = info("sensor.tv", "TV backlight", { device_id: "dev-tv" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.entities = {
+      "sensor.tv_power": { entity_id: "sensor.tv_power", device_id: "dev-tv" },
+      "sensor.a_power": { entity_id: "sensor.a_power", device_id: "dev-other" },
+    };
+    const el = await mount(mock);
+    const options = el._powerOptions("sensor.tv");
+    expect(options[0]).toEqual({ entity_id: "sensor.tv_power", sameDevice: true });
+    expect(options.slice(1).every((o) => !o.sameDevice)).toBe(true);
+    // The rest by name; power_candidates of the backend are offered as well.
+    expect(options.map((o) => o.entity_id)).toEqual([
+      "sensor.tv_power",
+      "sensor.a_power",
+      "sensor.grid_in",
+      "sensor.grid_out",
+      "sensor.grid_power",
+      "sensor.pv_power",
+      "sensor.ups_power",
+    ]);
+    // Without a device of the meter, nothing counts as the same device.
+    expect(el._powerOptions("sensor.server").some((o) => o.sameDevice)).toBe(false);
+
+    await openDevice(el, "sensor.tv");
+    expect(picker(el).options[1].textContent).toContain("TV power · Same device");
+  });
+
+  it("power options read states by their key and skip broken ones", async () => {
+    const mock = powerMock();
+    const states = mock.hass.states as Record<string, unknown>;
+    states["sensor.bare_power"] = { state: "3", attributes: { device_class: "power" } };
+    states["sensor.broken"] = null;
+    states["switch.power"] = { state: "on", attributes: { device_class: "power" } };
+    const el = await mount(mock);
+    const ids = el._powerOptions("sensor.tv").map((o) => o.entity_id);
+    expect(ids).toContain("sensor.bare_power");
+    expect(ids).not.toContain("sensor.broken");
+    expect(ids).not.toContain("switch.power");
+  });
+});

@@ -318,4 +318,11 @@ export const it: Translations = {
   tools: "Strumenti",
   help: "Aiuto",
   sum_name_exists: "Esiste già un’entità chiamata «{name}». Il nuovo aiutante avrebbe lo stesso nome; scegline un altro per distinguerli.",
+  power_sensor: "Sensore di potenza",
+  flow_sensor: "Sensore di portata",
+  power_variant_single: "Standard",
+  power_variant_inverted: "Invertito",
+  power_variant_two: "Due sensori",
+  power_none: "Nessuno",
+  power_same_device: "Stesso dispositivo",
 };
