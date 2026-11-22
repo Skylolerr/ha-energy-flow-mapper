@@ -79,6 +79,9 @@
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
     },
+    "invalid_power_config": {
+      "message": "Le capteur de puissance ne convient pas à cette source : le réseau et la batterie demandent un capteur, un capteur inversé ou un par sens ; les autres sources un capteur."
+    },
     "home_exists": {
       "message": "Il y a déjà un compteur de la maison."
     },

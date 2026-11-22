@@ -196,6 +196,19 @@ export type Change =
   /** Remove a statistic from the sources; with `role` only from a source of
    * that role (the home meter may share the grid import's statistic). */
   | { type: "unassign_source"; stat: string; role?: UnassignRole }
+  /**
+   * Set or clear the power sensor of a source (addressed like
+   * `unassign_source`, `role` required). Grid and battery take `power_config`
+   * (exactly one of the three shapes; HA derives `stat_rate`), the others a
+   * plain `stat_rate`.
+   */
+  | {
+      type: "set_source_rate";
+      stat: string;
+      role: UnassignRole;
+      stat_rate?: string | null;
+      power_config?: PowerConfig | null;
+    }
   /** Turn an electricity device into the home meter (HA 2026.11 and newer). */
   | { type: "use_as_home_meter"; stat: string }
   | {
@@ -218,6 +231,12 @@ export type Change =
 
 /** Source roles a free sensor can be assigned to. */
 export type AssignRole = "import" | "export" | "production" | "battery" | "water" | "gas" | "home";
+
+/** HA's `power_config` of a grid or battery: exactly one of these shapes. */
+export type PowerConfig =
+  | { stat_rate: string }
+  | { stat_rate_inverted: string }
+  | { stat_rate_from: string; stat_rate_to: string };
 
 /** The role of one source statistic, as `SOURCE_ROLES` in hierarchy.py names it. */
 export type UnassignRole = "import" | "export" | "production" | "discharge" | "charge" | "gas" | "water" | "home";

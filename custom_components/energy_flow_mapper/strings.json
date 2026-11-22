@@ -79,6 +79,9 @@
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },
+    "invalid_power_config": {
+      "message": "The power sensor does not fit this source: grid and battery need one sensor, an inverted one, or two for each direction; other sources one sensor."
+    },
     "home_exists": {
       "message": "There is already a home meter."
     },

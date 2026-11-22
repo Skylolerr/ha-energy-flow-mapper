@@ -1858,3 +1858,207 @@ def test_set_rate_water_list() -> None:
         {"stat_consumption": "sensor.a", "stat_rate": "sensor.a_flow"}
     ]
     assert out["device_consumption"] == [{"stat_consumption": "sensor.a"}]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {"stat_rate": "sensor.grid_w"},
+        {"stat_rate_inverted": "sensor.grid_w"},
+        {"stat_rate_from": "sensor.imp_w", "stat_rate_to": "sensor.exp_w"},
+    ],
+)
+def test_set_source_rate_grid_variants(config: dict[str, str]) -> None:
+    """A grid's power sensor is written as power_config; HA derives stat_rate."""
+    grid = {
+        "type": "grid",
+        "stat_energy_from": "sensor.imp",
+        "stat_energy_to": "sensor.exp",
+        "stat_rate": "old",
+        "x": 1,
+    }
+    out = apply_changes(
+        prefs(energy_sources=[grid]),
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.imp",
+                "role": "import",
+                "power_config": config,
+            }
+        ],
+    )
+    result = out["energy_sources"][0]
+    assert result["power_config"] == config
+    assert "stat_rate" not in result
+    assert result["x"] == 1
+
+
+def test_set_source_rate_clear_grid_and_battery() -> None:
+    """power_config None removes power_config and stat_rate."""
+    sources = [
+        {
+            "type": "grid",
+            "stat_energy_from": "sensor.imp",
+            "stat_energy_to": None,
+            "stat_rate": "old",
+            "power_config": {"stat_rate": "old"},
+        },
+        {
+            "type": "battery",
+            "stat_energy_from": "sensor.dis",
+            "stat_energy_to": "sensor.chg",
+            "power_config": {"stat_rate_inverted": "sensor.b"},
+        },
+    ]
+    out = apply_changes(
+        prefs(energy_sources=sources),
+        [
+            {"type": "set_source_rate", "stat": "sensor.imp", "role": "import"},
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.chg",
+                "role": "charge",
+                "power_config": None,
+            },
+        ],
+    )
+    for source in out["energy_sources"]:
+        assert "power_config" not in source
+        assert "stat_rate" not in source
+
+
+def test_set_source_rate_battery_config() -> None:
+    """A battery takes power_config too."""
+    battery = {
+        "type": "battery",
+        "stat_energy_from": "sensor.dis",
+        "stat_energy_to": "sensor.chg",
+    }
+    config = {"stat_rate_from": "sensor.a", "stat_rate_to": "sensor.b"}
+    out = apply_changes(
+        prefs(energy_sources=[battery]),
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.dis",
+                "role": "discharge",
+                "power_config": config,
+            }
+        ],
+    )
+    assert out["energy_sources"][0]["power_config"] == config
+
+
+@pytest.mark.parametrize(
+    ("source", "role"),
+    [
+        ({"type": "solar", "stat_energy_from": "sensor.pv"}, "production"),
+        ({"type": "gas", "stat_energy_from": "sensor.pv"}, "gas"),
+        ({"type": "water", "stat_energy_from": "sensor.pv"}, "water"),
+        ({"type": "home", "stat_energy_to": "sensor.pv"}, "home"),
+    ],
+)
+def test_set_source_rate_plain_sources(source: dict[str, Any], role: str) -> None:
+    """Solar, gas, water and home only take stat_rate; None removes it."""
+    base = prefs(energy_sources=[{**source, "x": 1}])
+    change = {"type": "set_source_rate", "stat": "sensor.pv", "role": role}
+    out = apply_changes(base, [{**change, "stat_rate": "sensor.pv_w"}])
+    assert out["energy_sources"][0]["stat_rate"] == "sensor.pv_w"
+    assert out["energy_sources"][0]["x"] == 1
+    out = apply_changes(out, [{**change, "stat_rate": None}])
+    assert "stat_rate" not in out["energy_sources"][0]
+    with pytest.raises(ChangeError) as err:
+        apply_changes(base, [{**change, "power_config": {"stat_rate": "sensor.pv_w"}}])
+    assert err.value.code == "invalid_power_config"
+
+
+def test_set_source_rate_role_picks_grid_not_home() -> None:
+    """The home meter may share the grid import's statistic; the role decides."""
+    sources = [
+        {"type": "home", "stat_energy_to": "sensor.main"},
+        {"type": "grid", "stat_energy_from": "sensor.main", "stat_energy_to": None},
+    ]
+    base = prefs(energy_sources=sources)
+    out = apply_changes(
+        base,
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.main",
+                "role": "import",
+                "power_config": {"stat_rate": "sensor.g"},
+            }
+        ],
+    )
+    assert "stat_rate" not in out["energy_sources"][0]
+    assert out["energy_sources"][1]["power_config"] == {"stat_rate": "sensor.g"}
+    out = apply_changes(
+        base,
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.main",
+                "role": "home",
+                "stat_rate": "sensor.h",
+            }
+        ],
+    )
+    assert out["energy_sources"][0]["stat_rate"] == "sensor.h"
+    assert "power_config" not in out["energy_sources"][1]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"stat_rate": "sensor.w"},
+        {"power_config": {}},
+        {"power_config": {"stat_rate": "a", "stat_rate_inverted": "b"}},
+        {"power_config": {"stat_rate_from": "a"}},
+        {"power_config": {"stat_rate": ""}},
+        {"power_config": {"other": "a"}},
+    ],
+)
+def test_set_source_rate_rejects_bad_grid_config(change: dict[str, Any]) -> None:
+    """Grid and battery need exactly one valid power_config shape."""
+    base = prefs(
+        energy_sources=[
+            {"type": "grid", "stat_energy_from": "sensor.imp", "stat_energy_to": None}
+        ]
+    )
+    with pytest.raises(ChangeError) as err:
+        apply_changes(
+            base,
+            [
+                {
+                    "type": "set_source_rate",
+                    "stat": "sensor.imp",
+                    "role": "import",
+                    **change,
+                }
+            ],
+        )
+    assert err.value.code == "invalid_power_config"
+
+
+def test_set_source_rate_unknown_source() -> None:
+    """No source with that statistic and role raises unknown_source."""
+    base = prefs(
+        energy_sources=[
+            {"type": "grid", "stat_energy_from": "sensor.imp", "stat_energy_to": None}
+        ]
+    )
+    for stat, role in (("sensor.gone", "import"), ("sensor.imp", "export")):
+        with pytest.raises(ChangeError) as err:
+            apply_changes(
+                base,
+                [
+                    {
+                        "type": "set_source_rate",
+                        "stat": stat,
+                        "role": role,
+                        "power_config": None,
+                    }
+                ],
+            )
+        assert err.value.code == "unknown_source"

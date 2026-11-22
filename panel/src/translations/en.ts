@@ -183,6 +183,7 @@ export const en = {
   summary_source_removed: "{count} removed as source",
   issue_duplicate_source: "Used by more than one source",
   error_unknown_source: "This sensor is not a source in the energy dashboard.",
+  error_invalid_power_config: "This power sensor does not fit this source.",
   error_home_exists: "There is already a home meter.",
   error_home_not_supported: "This Home Assistant release has no home meter; it needs 2026.11 or newer.",
   error_not_a_power_candidate: "This sensor is not a power or flow sensor without a meter.",

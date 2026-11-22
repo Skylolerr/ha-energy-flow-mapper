@@ -185,6 +185,7 @@ export const fr: Translations = {
   summary_source_removed: "{count} retiré(s) comme source",
   issue_duplicate_source: "Utilisé par plusieurs sources",
   error_unknown_source: "Ce capteur n’est pas une source du tableau de bord énergie.",
+  error_invalid_power_config: "Ce capteur de puissance ne convient pas à cette source.",
   error_home_exists: "Il y a déjà un compteur de la maison.",
   error_home_not_supported: "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente.",
   error_not_a_power_candidate: "Ce capteur n’est pas un capteur de puissance ou de débit sans compteur.",

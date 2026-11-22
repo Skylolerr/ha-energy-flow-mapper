@@ -18,6 +18,7 @@ import {
   rateValue,
   sourceKind,
   sourceNow,
+  sourcePower,
   sourceRows,
   subtree,
   suggestionsFor,
@@ -27,7 +28,7 @@ import {
   homeUntracked,
   walk,
 } from "../src/draft";
-import type { Change, ChildPair, Device, HomeAssistant } from "../src/types";
+import type { Change, ChildPair, Device, HomeAssistant, Source } from "../src/types";
 
 function device(stat: string, parent?: string, extra: Partial<Device> = {}): Device {
   return {
@@ -268,25 +269,25 @@ describe("names and power", () => {
       },
     } as unknown as HomeAssistant;
     // Home Assistant's sign: positive from the grid / discharging, negative to it / charging.
-    expect(sourceNow(hass, "sensor.grid_in", "import")).toBe(300);
-    expect(sourceNow(hass, "sensor.grid_in", "export")).toBe(0);
-    expect(sourceNow(hass, "sensor.grid_out", "import")).toBe(0);
-    expect(sourceNow(hass, "sensor.grid_out", "export")).toBe(1200);
-    expect(sourceNow(hass, "sensor.battery", "discharge")).toBe(0);
-    expect(sourceNow(hass, "sensor.battery", "charge")).toBe(500);
-    expect(sourceNow(hass, "sensor.solar", "production")).toBe(800);
+    expect(sourceNow(hass, { stat_rate: "sensor.grid_in" }, "import")).toBe(300);
+    expect(sourceNow(hass, { stat_rate: "sensor.grid_in" }, "export")).toBe(0);
+    expect(sourceNow(hass, { stat_rate: "sensor.grid_out" }, "import")).toBe(0);
+    expect(sourceNow(hass, { stat_rate: "sensor.grid_out" }, "export")).toBe(1200);
+    expect(sourceNow(hass, { stat_rate: "sensor.battery" }, "discharge")).toBe(0);
+    expect(sourceNow(hass, { stat_rate: "sensor.battery" }, "charge")).toBe(500);
+    expect(sourceNow(hass, { stat_rate: "sensor.solar" }, "production")).toBe(800);
     // An inverter reporting a little standby draw at night still produces nothing.
-    expect(sourceNow(hass, "sensor.battery", "production")).toBe(0);
-    expect(sourceNow(hass, "sensor.solar", "home")).toBe(800);
-    expect(sourceNow(hass, "sensor.flow", "water")).toBe(6);
-    expect(sourceNow(hass, "sensor.na", "import")).toBeNull();
+    expect(sourceNow(hass, { stat_rate: "sensor.battery" }, "production")).toBe(0);
+    expect(sourceNow(hass, { stat_rate: "sensor.solar" }, "home")).toBe(800);
+    expect(sourceNow(hass, { stat_rate: "sensor.flow" }, "water")).toBe(6);
+    expect(sourceNow(hass, { stat_rate: "sensor.na" }, "import")).toBeNull();
     expect(sourceNow(hass, undefined, "production")).toBeNull();
-    expect(sourceNow(hass, "sensor.solar", "gas")).toBeNull();
-    expect(sourceNow(hass, "sensor.solar", "consumption")).toBeNull();
+    expect(sourceNow(hass, { stat_rate: "sensor.solar" }, "gas")).toBeNull();
+    expect(sourceNow(hass, { stat_rate: "sensor.solar" }, "consumption")).toBeNull();
     // A sensor reporting "-0" shows 0, never "-0 W".
     const zero = { states: { "sensor.z": state("-0") } } as unknown as HomeAssistant;
-    expect(Object.is(sourceNow(zero, "sensor.z", "home"), 0)).toBe(true);
-    expect(sourceNow(zero, "sensor.z", "water")).toBeNull(); // W is no flow
+    expect(Object.is(sourceNow(zero, { stat_rate: "sensor.z" }, "home"), 0)).toBe(true);
+    expect(sourceNow(zero, { stat_rate: "sensor.z" }, "water")).toBeNull(); // W is no flow
   });
 
   it("knows gigawatts and terawatts", () => {
@@ -762,5 +763,138 @@ describe("home meter from a device of the draft", () => {
       [{ type: "home", stat_energy_to: "h" }],
     );
     expect(removed).toEqual([{ stat_consumption: "c" }]);
+  });
+});
+
+describe("set_source_rate", () => {
+  const set = (sources: Source[], change: Record<string, unknown>) =>
+    applySourceChanges(sources, [{ type: "set_source_rate", ...change } as Change]);
+
+  it.each([
+    [{ stat_rate: "sensor.grid_w" }],
+    [{ stat_rate_inverted: "sensor.grid_w" }],
+    [{ stat_rate_from: "sensor.imp_w", stat_rate_to: "sensor.exp_w" }],
+  ])("writes %j as the power_config of a grid and drops stat_rate", (config) => {
+    const grid = {
+      type: "grid",
+      stat_energy_from: "sensor.imp",
+      stat_energy_to: "sensor.exp",
+      stat_rate: "old",
+      x: 1,
+    };
+    const out = set([grid], { stat: "sensor.imp", role: "import", power_config: config });
+    expect(out[0].power_config).toEqual(config);
+    expect(out[0]).not.toHaveProperty("stat_rate");
+    expect(out[0].x).toBe(1);
+  });
+
+  it("clears grid and battery with power_config null or missing", () => {
+    const sources = [
+      { type: "grid", stat_energy_from: "sensor.imp", stat_energy_to: null, stat_rate: "old", power_config: { stat_rate: "old" } },
+      { type: "battery", stat_energy_from: "sensor.dis", stat_energy_to: "sensor.chg", power_config: { stat_rate_inverted: "b" } },
+    ];
+    let out = set(sources, { stat: "sensor.imp", role: "import" });
+    out = set(out, { stat: "sensor.chg", role: "charge", power_config: null });
+    for (const source of out) {
+      expect(source).not.toHaveProperty("power_config");
+      expect(source).not.toHaveProperty("stat_rate");
+    }
+  });
+
+  it("writes a battery's power_config", () => {
+    const battery = { type: "battery", stat_energy_from: "sensor.dis", stat_energy_to: "sensor.chg" };
+    const config = { stat_rate_from: "sensor.a", stat_rate_to: "sensor.b" };
+    expect(set([battery], { stat: "sensor.dis", role: "discharge", power_config: config })[0].power_config).toEqual(config);
+  });
+
+  it.each([
+    [{ type: "solar", stat_energy_from: "sensor.pv" }, "production"],
+    [{ type: "gas", stat_energy_from: "sensor.pv" }, "gas"],
+    [{ type: "water", stat_energy_from: "sensor.pv" }, "water"],
+    [{ type: "home", stat_energy_to: "sensor.pv" }, "home"],
+  ])("sets and clears stat_rate of %j, and skips a power_config", (source, role) => {
+    const change = { stat: "sensor.pv", role };
+    const withRate = set([{ ...source, x: 1 }], { ...change, stat_rate: "sensor.pv_w" });
+    expect(withRate[0].stat_rate).toBe("sensor.pv_w");
+    expect(withRate[0].x).toBe(1);
+    expect(set(withRate, { ...change, stat_rate: null })[0]).not.toHaveProperty("stat_rate");
+    expect(set(withRate, { ...change, power_config: { stat_rate: "sensor.pv_w" } })).toEqual(withRate);
+  });
+
+  it("picks the grid or the home meter by role when they share a statistic", () => {
+    const sources = [
+      { type: "home", stat_energy_to: "sensor.main" },
+      { type: "grid", stat_energy_from: "sensor.main", stat_energy_to: null },
+    ];
+    const grid = set(sources, { stat: "sensor.main", role: "import", power_config: { stat_rate: "sensor.g" } });
+    expect(grid[0]).not.toHaveProperty("stat_rate");
+    expect(grid[1].power_config).toEqual({ stat_rate: "sensor.g" });
+    const home = set(sources, { stat: "sensor.main", role: "home", stat_rate: "sensor.h" });
+    expect(home[0].stat_rate).toBe("sensor.h");
+    expect(home[1]).not.toHaveProperty("power_config");
+  });
+
+  it.each([
+    [{ stat_rate: "sensor.w" }],
+    [{ power_config: {} }],
+    [{ power_config: { stat_rate: "a", stat_rate_inverted: "b" } }],
+    [{ power_config: { stat_rate_from: "a" } }],
+    [{ power_config: { stat_rate: "" } }],
+    [{ power_config: { other: "a" } }],
+  ])("skips an invalid grid change %j", (extra) => {
+    const sources = [{ type: "grid", stat_energy_from: "sensor.imp", stat_energy_to: null }];
+    expect(set(sources, { stat: "sensor.imp", role: "import", ...extra })).toEqual(sources);
+  });
+
+  it("skips an unknown source or role", () => {
+    const sources = [{ type: "grid", stat_energy_from: "sensor.imp", stat_energy_to: null }];
+    expect(set(sources, { stat: "sensor.gone", role: "import", power_config: null })).toEqual(sources);
+    expect(set(sources, { stat: "sensor.imp", role: "export", power_config: null })).toEqual(sources);
+  });
+
+  it("is a source change, not a device change", () => {
+    expect(changeKind({ type: "set_source_rate", stat: "x", role: "import" })).toBeNull();
+  });
+});
+
+describe("sourcePower", () => {
+  const hass = {
+    states: {
+      "sensor.a": { entity_id: "x", state: "500", attributes: { unit_of_measurement: "W" } },
+      "sensor.from": { entity_id: "x", state: "300", attributes: { unit_of_measurement: "W" } },
+      "sensor.to": { entity_id: "x", state: "100", attributes: { unit_of_measurement: "W" } },
+      "sensor.zero": { entity_id: "x", state: "0", attributes: { unit_of_measurement: "W" } },
+      "sensor.na": { entity_id: "x", state: "unavailable", attributes: {} },
+      "sensor.derived": { entity_id: "x", state: "42", attributes: { unit_of_measurement: "W" } },
+    },
+  } as unknown as HomeAssistant;
+
+  it("reads stat_rate, or the config's single sensor", () => {
+    expect(sourcePower(hass, { stat_rate: "sensor.a" })).toBe(500);
+    expect(sourcePower(hass, { power_config: { stat_rate: "sensor.a" } })).toBe(500);
+    expect(sourcePower(hass, {})).toBeNull();
+  });
+
+  it("negates an inverted sensor", () => {
+    expect(sourcePower(hass, { power_config: { stat_rate_inverted: "sensor.a" } })).toBe(-500);
+    expect(Object.is(sourcePower(hass, { power_config: { stat_rate_inverted: "sensor.zero" } }), 0)).toBe(true);
+    expect(sourcePower(hass, { power_config: { stat_rate_inverted: "sensor.na" } })).toBeNull();
+  });
+
+  it("subtracts the to sensor from the from sensor", () => {
+    expect(sourcePower(hass, { power_config: { stat_rate_from: "sensor.from", stat_rate_to: "sensor.to" } })).toBe(200);
+    expect(sourcePower(hass, { power_config: { stat_rate_from: "sensor.from", stat_rate_to: "sensor.na" } })).toBeNull();
+  });
+
+  it("prefers the derived stat_rate", () => {
+    expect(
+      sourcePower(hass, { stat_rate: "sensor.derived", power_config: { stat_rate_inverted: "sensor.a" } }),
+    ).toBe(42);
+  });
+
+  it("feeds sourceNow with the computed value", () => {
+    const source = { power_config: { stat_rate_inverted: "sensor.a" } };
+    expect(sourceNow(hass, source, "import")).toBe(0);
+    expect(sourceNow(hass, source, "export")).toBe(500);
   });
 });

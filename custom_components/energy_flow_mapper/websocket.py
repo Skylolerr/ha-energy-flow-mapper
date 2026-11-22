@@ -182,6 +182,24 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 vol.Optional("role"): vol.In(list(SOURCE_ROLE_NAMES)),
             }
         ),
+        ChangeType.SET_SOURCE_RATE.value: vol.Schema(
+            {
+                vol.Required("type"): ChangeType.SET_SOURCE_RATE.value,
+                vol.Required("stat"): str,
+                vol.Required("role"): vol.In(list(SOURCE_ROLE_NAMES)),
+                vol.Optional("stat_rate"): _OPTIONAL_TEXT,
+                # Grid and battery: exactly one of the shapes HA accepts.
+                vol.Optional("power_config"): vol.Any(
+                    None,
+                    {vol.Required("stat_rate"): str},
+                    {vol.Required("stat_rate_inverted"): str},
+                    {
+                        vol.Required("stat_rate_from"): str,
+                        vol.Required("stat_rate_to"): str,
+                    },
+                ),
+            }
+        ),
         ChangeType.USE_AS_HOME_METER.value: vol.Schema(
             {
                 vol.Required("type"): ChangeType.USE_AS_HOME_METER.value,

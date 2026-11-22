@@ -79,6 +79,9 @@
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
     },
+    "invalid_power_config": {
+      "message": "Il sensore di potenza non è adatto a questa fonte: rete e batteria richiedono un sensore, uno invertito o uno per direzione; le altre fonti un sensore."
+    },
     "home_exists": {
       "message": "C’è già un contatore della casa."
     },

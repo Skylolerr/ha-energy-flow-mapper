@@ -145,6 +145,7 @@ class ChangeType(StrEnum):
     REMOVE = "remove"
     ASSIGN_SOURCE = "assign_source"
     UNASSIGN_SOURCE = "unassign_source"
+    SET_SOURCE_RATE = "set_source_rate"
     USE_AS_HOME_METER = "use_as_home_meter"
 
 
@@ -690,6 +691,59 @@ def _unassign_source(
         del sources[index]
 
 
+# The shapes HA accepts for `power_config`: exactly one of these key sets.
+POWER_CONFIG_SHAPES: Final = (
+    frozenset({"stat_rate"}),
+    frozenset({"stat_rate_inverted"}),
+    frozenset({"stat_rate_from", "stat_rate_to"}),
+)
+
+
+def _valid_power_config(config: Any) -> bool:
+    """Return whether `config` is one of HA's power_config shapes with sensors."""
+    return (
+        isinstance(config, Mapping)
+        and frozenset(config) in POWER_CONFIG_SHAPES
+        and all(isinstance(value, str) and value for value in config.values())
+    )
+
+
+def _set_source_rate(sources: list[dict[str, Any]], change: Mapping[str, Any]) -> None:
+    """Set or clear the power sensor of the source holding `stat` as `role`.
+
+    Grid and battery take HA's `power_config` (HA derives `stat_rate` itself, so
+    it is dropped); solar, home, water and gas take a plain `stat_rate`.
+    """
+    stat = change["stat"]
+    source = next(
+        (
+            s
+            for s in sources
+            if s.get("type") in EDITABLE_SOURCE_TYPES
+            and any(
+                s.get(key) == stat and _role_matches(s, key, change["role"])
+                for key in SOURCE_ENERGY_KEYS
+            )
+        ),
+        None,
+    )
+    if source is None:
+        raise ChangeError("unknown_source", stat)
+    config = change.get("power_config")
+    if source["type"] in ("grid", "battery"):
+        if change.get(RATE) or (config is not None and not _valid_power_config(config)):
+            raise ChangeError("invalid_power_config", stat)
+        source.pop(RATE, None)
+        if config is None:
+            source.pop("power_config", None)
+        else:
+            source["power_config"] = dict(config)
+    else:
+        if config is not None:
+            raise ChangeError("invalid_power_config", stat)
+        _set_optional(source, RATE, change.get(RATE))
+
+
 def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """Return a copy of the preferences with the changes applied in order.
 
@@ -756,6 +810,8 @@ def _apply_source_change(
         _assign_source(sources, change)
     elif kind == ChangeType.UNASSIGN_SOURCE:
         _unassign_source(sources, change["stat"], change.get("role"))
+    elif kind == ChangeType.SET_SOURCE_RATE:
+        _set_source_rate(sources, change)
     elif kind == ChangeType.USE_AS_HOME_METER:
         _use_as_home_meter(prefs, sources, change["stat"])
     else:

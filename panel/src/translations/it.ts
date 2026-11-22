@@ -185,6 +185,7 @@ export const it: Translations = {
   summary_source_removed: "{count} rimossi come fonte",
   issue_duplicate_source: "Usato da più fonti",
   error_unknown_source: "Questo sensore non è una fonte nella dashboard energia.",
+  error_invalid_power_config: "Questo sensore di potenza non è adatto a questa fonte.",
   error_home_exists: "C’è già un contatore della casa.",
   error_home_not_supported: "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva.",
   error_not_a_power_candidate: "Questo sensore non è un sensore di potenza o di portata senza contatore.",

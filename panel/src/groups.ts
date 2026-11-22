@@ -2,7 +2,7 @@
 // edited before anything is sent; the backend checks again on save. Like
 // `applyChanges` in draft.ts it skips changes that do not fit instead of throwing.
 
-import { applyChanges, applyDraft, applySourceChanges, changeKind, type TreeNode } from "./draft";
+import { applyChanges, applyDraft, applySourceChanges, changeKind, isSourceChange, type TreeNode } from "./draft";
 import type { Change, Device, DeviceKind, Group, Source, StatInfo } from "./types";
 
 /** Prefix of the ids of group blocks (selection, layout), as in `group:<id>`. */
@@ -479,7 +479,7 @@ export function applyAllChanges(
   let groups: Group[] = structuredClone(groupsBefore);
   let sources: Source[] = structuredClone(sourcesBefore);
   for (const change of changes) {
-    if (change.type === "assign_source" || change.type === "unassign_source") {
+    if (isSourceChange(change)) {
       sources = applySourceChanges(sources, [change]);
       continue;
     }

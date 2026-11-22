@@ -3152,3 +3152,52 @@ async def test_card_names_devices_with_several_meters_after_the_entity(
         "sensor.pro_em_channel_1_energy": "Pro EM Channel 1 energy",
         "sensor.pro_em_channel_2_energy": "Pro EM Channel 2 energy",
     }
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_set_source_rate_schema_and_errors(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """set_source_rate takes HA's power_config shapes only."""
+    change = {
+        "type": "set_source_rate",
+        "stat": "sensor.grid_import",
+        "role": "import",
+    }
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[{**change, "power_config": {"stat_rate": "sensor.grid_power"}}],
+    )
+    assert response["success"], response
+    for bad in (
+        {"power_config": {"stat_rate_from": "sensor.a"}},
+        {"power_config": {"stat_rate": "a", "stat_rate_inverted": "b"}},
+    ):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/validate",
+            base_hash=base_hash,
+            changes=[{**change, **bad}],
+        )
+        assert response["error"]["code"] == "invalid_format"
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[{**change, "stat_rate": "sensor.grid_power"}],
+    )
+    assert response["error"]["translation_key"] == "invalid_power_config"
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=[{**change, "stat": "sensor.gone", "power_config": None}],
+    )
+    assert response["error"]["translation_key"] == "unknown_source"

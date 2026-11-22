@@ -79,6 +79,9 @@
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },
+    "invalid_power_config": {
+      "message": "Der Leistungssensor passt nicht zu dieser Quelle: Netz und Batterie brauchen einen Sensor, einen invertierten oder je einen pro Richtung; andere Quellen einen Sensor."
+    },
     "home_exists": {
       "message": "Es gibt schon einen Hauszähler."
     },

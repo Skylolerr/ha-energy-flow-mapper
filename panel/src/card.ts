@@ -325,7 +325,7 @@ export class EnergyFlowMapperCardView extends LitElement {
     let value: number | null = null;
     if (block.stat && role !== undefined && role !== "battery" && role !== "consumption") {
       if (this.config?.period === "now") {
-        value = this.hass ? sourceNow(this.hass, block.source?.stat_rate, role) : null;
+        value = this.hass ? sourceNow(this.hass, block.source, role) : null;
       } else if (this._data?.home?.stale !== block.stat) {
         value = this._data?.energy?.[block.stat] ?? null;
       }

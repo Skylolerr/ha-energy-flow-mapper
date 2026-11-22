@@ -62,6 +62,8 @@ export interface SourceRow {
   name?: string;
   /** Home Assistant's power sensor of the source (signed for grid and battery). */
   stat_rate?: string;
+  /** The grid or battery's `power_config`, when it has one. */
+  power_config?: unknown;
 }
 
 function setOptional(device: Device, key: string, value: unknown): void {
@@ -83,9 +85,18 @@ const GROUP_CHANGE_TYPES: ReadonlySet<string> = new Set([
   "move_group",
 ]);
 
+type SourceChange = Of<"assign_source"> | Of<"unassign_source"> | Of<"set_source_rate">;
+
+/** Whether a change edits the sources rather than the devices. */
+export function isSourceChange(change: Change): change is SourceChange {
+  return (
+    change.type === "assign_source" || change.type === "unassign_source" || change.type === "set_source_rate"
+  );
+}
+
 /** The device list a change belongs to, or null for a source change. */
 export function changeKind(change: Change): DeviceKind | null {
-  if (change.type === "assign_source" || change.type === "unassign_source") {
+  if (isSourceChange(change)) {
     return null;
   }
   return change.type === "use_as_home_meter" ? "electricity" : (change.kind ?? "electricity");
@@ -121,7 +132,7 @@ export function applyDraft(
   const result: Device[] = structuredClone(devices);
   const current: Source[] = structuredClone(sources);
   for (const change of changes) {
-    if (change.type === "assign_source" || change.type === "unassign_source") {
+    if (isSourceChange(change)) {
       applySourceChange(current, change);
       continue;
     }
@@ -432,16 +443,60 @@ export function rateValue(
   return kind === "water" ? flowInLitresPerMinute(hass, entityId) : powerInWatts(hass, entityId);
 }
 
+/** What `sourcePower` needs of a source: its derived sensor and its `power_config`. */
+export interface PowerSource {
+  stat_rate?: unknown;
+  power_config?: unknown;
+}
+
+function sensorText(value: unknown): string | undefined {
+  return typeof value === "string" && value ? value : undefined;
+}
+
+/**
+ * The signed power of a source: its `stat_rate` (the sensor HA derives from
+ * `power_config`), or, before HA has created that sensor, computed from the
+ * config: minus the inverted sensor, or the from sensor minus the to sensor.
+ * Null while a needed value is unknown.
+ */
+export function sourcePower(
+  hass: HomeAssistant,
+  source: PowerSource,
+  kind: DeviceKind = "electricity",
+): number | null {
+  const rate = sensorText(source.stat_rate);
+  if (rate !== undefined) {
+    return rateValue(hass, rate, kind);
+  }
+  const config = (source.power_config ?? {}) as Record<string, unknown>;
+  const single = sensorText(config.stat_rate);
+  if (single !== undefined) {
+    return rateValue(hass, single, kind);
+  }
+  const inverted = sensorText(config.stat_rate_inverted);
+  if (inverted !== undefined) {
+    const value = rateValue(hass, inverted, kind);
+    return value === null || value === 0 ? value : -value;
+  }
+  const from = rateValue(hass, sensorText(config.stat_rate_from), kind);
+  const to = rateValue(hass, sensorText(config.stat_rate_to), kind);
+  return from === null || to === null ? null : from - to;
+}
+
 /**
  * The power now of one role of a source, from Home Assistant's power sensor of
- * that source (`stat_rate`). For grid and battery it is signed: positive from
+ * that source (`stat_rate`, or computed from its `power_config`). For grid and battery it is signed: positive from
  * the grid or discharging, negative to the grid or charging; each role shows
  * its direction (0 while the flow goes the other way); solar never goes
  * below 0. Water is a flow in
  * L/min; gas and unknown roles have no power here.
  */
-export function sourceNow(hass: HomeAssistant, rate: string | undefined, role: SourceRole): number | null {
-  const value = rateValue(hass, rate, role === "water" ? "water" : "electricity");
+export function sourceNow(
+  hass: HomeAssistant,
+  source: PowerSource | undefined,
+  role: SourceRole,
+): number | null {
+  const value = source ? sourcePower(hass, source, role === "water" ? "water" : "electricity") : null;
   if (value === null) {
     return null;
   }
@@ -539,7 +594,10 @@ export function sourceRows(sources: Source[], kind?: Tab): SourceRow[] {
       continue;
     }
     const [from, to] = SOURCE_ROLES[source.type] ?? ["consumption", null];
-    const rate = typeof source.stat_rate === "string" ? { stat_rate: source.stat_rate } : {};
+    const rate = {
+      ...(typeof source.stat_rate === "string" ? { stat_rate: source.stat_rate } : {}),
+      ...(isEmpty(source.power_config) ? {} : { power_config: source.power_config }),
+    };
     if (source.stat_energy_from) {
       rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name, ...rate });
     }
@@ -575,6 +633,63 @@ function isEmpty(value: unknown): boolean {
   return !value || (typeof value === "object" && Object.keys(value).length === 0);
 }
 
+const POWER_CONFIG_SHAPES: readonly (readonly string[])[] = [
+  ["stat_rate"],
+  ["stat_rate_inverted"],
+  ["stat_rate_from", "stat_rate_to"],
+];
+
+/** Whether `config` is one of HA's power_config shapes, with a sensor in each key. */
+function validPowerConfig(config: unknown): boolean {
+  if (typeof config !== "object" || config === null || Array.isArray(config)) {
+    return false;
+  }
+  const keys = Object.keys(config);
+  return (
+    POWER_CONFIG_SHAPES.some((shape) => shape.length === keys.length && shape.every((k) => keys.includes(k))) &&
+    Object.values(config).every((value) => typeof value === "string" && value !== "")
+  );
+}
+
+/**
+ * Set or clear the power sensor of the source holding `stat` as `role`, like
+ * hierarchy.py: grid and battery take `power_config` and lose `stat_rate`
+ * (HA derives it); the other sources take `stat_rate`. Changes that do not
+ * fit are skipped.
+ */
+function setSourceRate(result: Source[], change: Of<"set_source_rate">): void {
+  const source = result.find(
+    (s) =>
+      EDITABLE_SOURCE_TYPES.includes(s.type) &&
+      ENERGY_KEYS.some((key) => s[key] === change.stat && hasRole(s, key, change.role)),
+  );
+  if (source === undefined) {
+    return;
+  }
+  const config = change.power_config ?? null;
+  if (source.type === "grid" || source.type === "battery") {
+    if (change.stat_rate || (config !== null && !validPowerConfig(config))) {
+      return;
+    }
+    delete source.stat_rate;
+    if (config === null) {
+      delete source.power_config;
+    } else {
+      source.power_config = structuredClone(config);
+    }
+    return;
+  }
+  if (config !== null) {
+    return;
+  }
+  const rate = change.stat_rate?.trim();
+  if (rate) {
+    source.stat_rate = rate;
+  } else {
+    delete source.stat_rate;
+  }
+}
+
 /**
  * Apply one change of the sources (in place), like hierarchy.py: grid
  * import/export replace the meter given as `replace`, or else that of the
@@ -585,7 +700,11 @@ function isEmpty(value: unknown): boolean {
  * meter; a grid connection loses each key holding the statistic and goes when
  * nothing is left. Changes that do not fit are skipped.
  */
-function applySourceChange(result: Source[], change: Of<"assign_source"> | Of<"unassign_source">): void {
+function applySourceChange(result: Source[], change: SourceChange): void {
+  if (change.type === "set_source_rate") {
+    setSourceRate(result, change);
+    return;
+  }
   if (change.type === "assign_source") {
     if (change.role === "home") {
       const home = result.find((s) => s.type === "home");

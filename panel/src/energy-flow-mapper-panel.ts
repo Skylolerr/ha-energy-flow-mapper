@@ -2834,7 +2834,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const value =
       this._period === "now"
         ? this.hass
-          ? sourceNow(this.hass, block.source?.stat_rate, role as SourceRole)
+          ? sourceNow(this.hass, block.source, role as SourceRole)
           : null
         : (this._energy?.energy[block.stat] ?? null);
     return value === null ? null : this._formatValue(value);

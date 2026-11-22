@@ -185,6 +185,7 @@ export const de: Translations = {
   summary_source_removed: "{count} als Quelle entfernt",
   issue_duplicate_source: "Von mehreren Quellen verwendet",
   error_unknown_source: "Dieser Sensor ist keine Quelle im Energie-Dashboard.",
+  error_invalid_power_config: "Dieser Leistungssensor passt nicht zu dieser Quelle.",
   error_home_exists: "Es gibt schon einen Hauszähler.",
   error_home_not_supported: "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer.",
   error_not_a_power_candidate: "Dieser Sensor ist kein Leistungs- oder Durchflusssensor ohne Zähler.",
