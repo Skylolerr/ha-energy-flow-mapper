@@ -10,6 +10,7 @@ import {
   homeNow,
   sourceNow,
   powerStats,
+  replaceChanges,
   suggestionsFor,
   moveTargets,
   rateValue,
@@ -139,6 +140,7 @@ type Dialog =
   | { kind: "move"; stat: string }
   | { kind: "add"; stat: string }
   | { kind: "rename"; stat: string }
+  | { kind: "replace"; stat: string }
   | { kind: "confirm"; result: ValidateResult | null }
   | { kind: "backups"; entries: BackupEntry[] }
   | { kind: "restore"; backup: BackupEntry; undo: boolean }
@@ -1966,6 +1968,30 @@ export class EnergyFlowMapperPanel extends LitElement {
     } finally {
       this._busy = false;
     }
+  }
+
+  /**
+   * Put the free sensor `newStat` in the place of the device `oldStat` as one
+   * step (one undo): same parent, group, child devices and the name the user
+   * set; `newRate` becomes its power sensor. Groups below the old meter move
+   * along to the new one, so its children keep their groups. The new meter
+   * is selected.
+   */
+  _replace(oldStat: string, newStat: string, newRate: string | null = null): void {
+    const kind = this._kind();
+    const groupOf = this._groups.find((g) => g.members.includes(oldStat))?.id ?? null;
+    const changes = replaceChanges(this.draft, groupOf, oldStat, newStat, { kind: this._deviceKind(), newRate });
+    if (changes.length === 0) {
+      return;
+    }
+    const groupMoves = this._groups
+      .filter((g) => g.parent === oldStat && g.group === null)
+      .map((g) => ({ type: "move_group" as const, id: g.id, parent: newStat, ...kind }));
+    // Before the device moves, which would take the children out of their groups.
+    const firstMove = changes.findIndex((c) => c.type === "move" || c.type === "remove");
+    changes.splice(firstMove, 0, ...groupMoves);
+    this._changeAll(changes);
+    this._selected = newStat;
   }
 
   /** Free sensors of the tab that are not added in the draft yet, matching `search`. */
@@ -4070,6 +4096,11 @@ export class EnergyFlowMapperPanel extends LitElement {
             <button @click=${() => this._openPowerDialog({ kind: "device", stat: dialog.stat })}>
               ${this._t(this._tab === "water" ? "flow_sensor" : "power_sensor")}
             </button>
+            ${this._freeCandidates("").length
+              ? html`<button @click=${() => (this._dialog = { kind: "replace", stat: dialog.stat })}>
+                  ${this._t("replace_with")}
+                </button>`
+              : nothing}
             <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
             ${this._canUseHomeMeter(dialog.stat)
               ? html`<button
@@ -4128,6 +4159,46 @@ export class EnergyFlowMapperPanel extends LitElement {
             this._close();
             this._addCandidate(dialog.stat, parent);
           })}
+          <div class="dialog-actions">
+            <button @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      }
+      case "replace": {
+        const name = this._name(dialog.stat, devices);
+        const candidates = this._freeCandidates("");
+        return html`<h2>${this._t("replace_title", { name })}</h2>
+          <p class="hint">${this._t("replace_hint")}</p>
+          ${candidates.length === 0
+            ? html`<p class="empty">${this._t(this._tabKey("no_candidates"))}</p>`
+            : html`<ul class="targets">
+                ${candidates.map(
+                  (c) => html`<li>
+                    <button
+                      class="target"
+                      data-target=${c.stat}
+                      @click=${() => {
+                        this._close();
+                        this._replace(dialog.stat, c.stat, c.power);
+                      }}
+                    >
+                      <span class="candidate-text">
+                        <span class="node-name">${c.name || c.stat}</span>
+                        <span class="sub"
+                          >${[
+                            c.area_name,
+                            c.device_name,
+                            c.power
+                              ? this._t(this._tab === "water" ? "with_flow" : "with_power", { entity: c.power })
+                              : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ") || c.stat}</span
+                        >
+                      </span>
+                    </button>
+                  </li>`,
+                )}
+              </ul>`}
           <div class="dialog-actions">
             <button @click=${() => this._close()}>${this._t("cancel")}</button>
           </div>`;

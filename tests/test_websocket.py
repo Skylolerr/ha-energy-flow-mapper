@@ -3027,6 +3027,60 @@ async def test_new_errors_still_block_next_to_old_ones(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+async def test_replace_with_source_meter_is_new_error(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Replacing a device with a solar source's meter is a new error and not saved.
+
+    The changes are those the panel's «Replace with …» sends: add the new meter
+    in the old one's place, move the children to it, remove the old one.
+    """
+    base_hash = await current_hash(hass_ws_client, hass)
+    before = await energy_access.async_get_prefs(hass)
+    changes = [
+        {
+            "type": "add",
+            "stat": "sensor.solar_energy",
+            "parent": "sensor.main_energy",
+        },
+        {
+            "type": "move",
+            "stat": "sensor.coffee_energy",
+            "parent": "sensor.solar_energy",
+        },
+        {"type": "remove", "stat": "sensor.kitchen_energy"},
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    result = response["result"]
+    assert result["valid"] is False
+    assert [
+        (i["code"], i["stat"], i["existing"])
+        for i in result["issues"]
+        if i["severity"] == "error"
+    ] == [("source_and_device", "sensor.solar_energy", False)]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    assert not response["success"]
+    assert response["error"]["translation_key"] == "invalid_changes"
+    assert response["error"]["translation_placeholders"] == {
+        "issues": "source_and_device (sensor.solar_energy)"
+    }
+    assert await energy_access.async_get_prefs(hass) == before
+    assert await current_hash(hass_ws_client, hass) == base_hash
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_import_keeps_errors_that_are_already_there(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:

@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyChanges,
+  applyDraft,
   applySourceChanges,
+  replaceChanges,
   buildTree,
   changeKind,
   coverage,
@@ -207,6 +209,71 @@ describe("applyChanges", () => {
       { type: "remove", stat: "unknown" },
     ]);
     expect(result).toEqual(deep());
+  });
+});
+
+describe("replaceChanges", () => {
+  it("replaceChanges keeps place, children, group and user name", () => {
+    const devices: Device[] = [
+      { stat_consumption: "p" },
+      { stat_consumption: "old", included_in_stat: "p", name: "F11", stat_rate: "old_w" },
+      { stat_consumption: "c1", included_in_stat: "old" },
+    ];
+    const changes = replaceChanges(devices, "g1", "old", "new", { kind: "electricity", newRate: "new_w" });
+    const out = applyDraft(devices, [], changes).devices;
+    expect(out.find((d) => d.stat_consumption === "new")).toEqual({
+      stat_consumption: "new",
+      included_in_stat: "p",
+      name: "F11",
+      stat_rate: "new_w",
+    });
+    expect(out.find((d) => d.stat_consumption === "c1")?.included_in_stat).toBe("new");
+    expect(out.some((d) => d.stat_consumption === "old")).toBe(false);
+    expect(changes.some((c) => c.type === "set_group")).toBe(true);
+  });
+
+  it("replaceChanges without user name keeps the new meter's own name", () => {
+    const devices: Device[] = [{ stat_consumption: "old", stat_rate: "old_w" }];
+    const changes = replaceChanges(devices, null, "old", "new", { kind: "electricity" });
+    // No name and no power sensor of the old meter; no group.
+    expect(changes).toEqual([
+      { type: "add", stat: "new", parent: null },
+      { type: "remove", stat: "old" },
+    ]);
+    expect(applyDraft(devices, [], changes).devices).toEqual([{ stat_consumption: "new" }]);
+  });
+
+  it("returns add, set_group, one move per child and remove, in this order", () => {
+    const changes = replaceChanges(deep(), "g1", "kitchen", "new", { kind: "electricity", newRate: null });
+    expect(changes).toEqual([
+      { type: "add", stat: "new", parent: "main" },
+      { type: "set_group", stat: "new", group: "g1" },
+      { type: "move", stat: "coffee", parent: "new" },
+      { type: "remove", stat: "kitchen" },
+    ]);
+    const out = applyChanges(deep(), changes);
+    expect(out.find((d) => d.stat_consumption === "coffee")?.included_in_stat).toBe("new");
+    // The grandchild stays below its own parent.
+    expect(out.find((d) => d.stat_consumption === "grinder")?.included_in_stat).toBe("coffee");
+  });
+
+  it("names the water list", () => {
+    const devices: Device[] = [{ stat_consumption: "tap", name: "Tap" }, { stat_consumption: "hose", included_in_stat: "tap" }];
+    const changes = replaceChanges(devices, null, "tap", "meter", { kind: "water", newRate: "meter_flow" });
+    expect(changes).toEqual([
+      { type: "add", stat: "meter", parent: null, name: "Tap", stat_rate: "meter_flow", kind: "water" },
+      { type: "move", stat: "hose", parent: "meter", kind: "water" },
+      { type: "remove", stat: "tap", kind: "water" },
+    ]);
+    expect(applyChanges(devices, changes, "water")).toEqual([
+      { stat_consumption: "hose", included_in_stat: "meter" },
+      { stat_consumption: "meter", name: "Tap", stat_rate: "meter_flow" },
+    ]);
+  });
+
+  it("gives nothing for an unknown device or the same meter", () => {
+    expect(replaceChanges(deep(), null, "unknown", "new", { kind: "electricity" })).toEqual([]);
+    expect(replaceChanges(deep(), null, "kitchen", "kitchen", { kind: "electricity" })).toEqual([]);
   });
 });
 

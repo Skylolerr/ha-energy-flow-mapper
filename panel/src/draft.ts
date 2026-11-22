@@ -259,6 +259,44 @@ export function buildTree(devices: Device[]): TreeNode[] {
   return roots;
 }
 
+/**
+ * The changes that put `newStat` in the place of the device `oldStat` of one
+ * list (`opts.kind`), in this order: add the new meter at the old one's
+ * parent, with the old one's name only if the user set one and `newRate` as
+ * its power sensor (the old meter's is never copied); put it into the old
+ * one's group (`groupOf`, when set); move each child of the old meter to the
+ * new one; remove the old one. Nothing for an unknown device or the same meter.
+ */
+export function replaceChanges(
+  devices: Device[],
+  groupOf: string | null,
+  oldStat: string,
+  newStat: string,
+  opts: { kind: DeviceKind; newRate?: string | null },
+): Change[] {
+  const old = devices.find((d) => d.stat_consumption === oldStat);
+  if (old === undefined || oldStat === newStat) {
+    return [];
+  }
+  const kind = opts.kind === "water" ? { kind: "water" as const } : {};
+  const children = devices
+    .filter((d) => d.included_in_stat === oldStat && d.stat_consumption !== oldStat)
+    .map((d) => d.stat_consumption);
+  return [
+    {
+      type: "add",
+      stat: newStat,
+      parent: old.included_in_stat ?? null,
+      ...(old.name ? { name: old.name } : {}),
+      ...(opts.newRate ? { stat_rate: opts.newRate } : {}),
+      ...kind,
+    },
+    ...(groupOf !== null ? [{ type: "set_group" as const, stat: newStat, group: groupOf, ...kind }] : []),
+    ...children.map((stat) => ({ type: "move" as const, stat, parent: newStat, ...kind })),
+    { type: "remove", stat: oldStat, ...kind },
+  ];
+}
+
 /** All nodes depth-first. */
 export function walk(nodes: TreeNode[]): TreeNode[] {
   return nodes.flatMap((node) => [node, ...walk(node.children)]);

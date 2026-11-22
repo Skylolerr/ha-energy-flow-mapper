@@ -3829,6 +3829,100 @@ describe("groups", () => {
     el._undoChange();
     expect(el._changes).toEqual([]);
   });
+
+  // --- replace a device -------------------------------------------------------
+
+  it("replaces a grouped device with a free sensor in one step", async () => {
+    const el = await mount(groupMock());
+    el._dialog = { kind: "actions", stat: "sensor.sonos" };
+    await settle(el);
+    dialogButton(el, "Replace with …").click();
+    await settle(el);
+    expect(dialogEl(el).querySelector("h2")!.textContent).toContain("Replace Sonos amp with …");
+    expect(dialogEl(el).textContent).toContain("Takes over place, child devices, group and the name you set");
+    // The free sensors of the tab, with the suggested power sensor.
+    const offered = [...dialogEl(el).querySelectorAll<HTMLElement>("button.target")].map((b) => b.dataset.target);
+    expect(offered).toEqual(["sensor.printer", "sensor.attic", "portal:import"]);
+    expect(dialogEl(el).textContent).toContain("Power sensor: sensor.printer_power");
+    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.printer"]')!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.printer", parent: "sensor.server", stat_rate: "sensor.printer_power" },
+      { type: "set_group", stat: "sensor.printer", group: "g1" },
+      { type: "remove", stat: "sensor.sonos" },
+    ]);
+    expect(el._groups.map((g) => [g.id, g.members])).toEqual([["g1", ["sensor.printer"]]]);
+    expect(el._selected).toBe("sensor.printer");
+    // One undo takes back the whole replacement.
+    el._undoChange();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+  });
+
+  it("replaces a parent: its children and their groups follow", async () => {
+    const el = await mount(groupMock());
+    el._replace("sensor.server", "sensor.attic");
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.attic", parent: null },
+      { type: "move_group", id: "g1", parent: "sensor.attic" },
+      { type: "move", stat: "sensor.sonos", parent: "sensor.attic" },
+      { type: "move", stat: "sensor.nas", parent: "sensor.attic" },
+      { type: "remove", stat: "sensor.server" },
+    ]);
+    expect(el._groups.map((g) => [g.id, g.parent, g.members])).toEqual([["g1", "sensor.attic", ["sensor.sonos"]]]);
+    const parents = Object.fromEntries(el.draft.map((d) => [d.stat_consumption, d.included_in_stat ?? null]));
+    expect(parents).toEqual({
+      "sensor.attic": null,
+      "sensor.sonos": "sensor.attic",
+      "sensor.nas": "sensor.attic",
+      "sensor.tv": null,
+    });
+  });
+
+  it("keeps the name the user set, not the old power sensor", async () => {
+    const el = await mount(mockHass());
+    el._replace("sensor.tv", "sensor.attic", null);
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.attic", parent: null, name: "TV" },
+      { type: "remove", stat: "sensor.tv" },
+    ]);
+    expect(el.draft.find((d) => d.stat_consumption === "sensor.attic")).toEqual({
+      stat_consumption: "sensor.attic",
+      name: "TV",
+    });
+  });
+
+  it("replaces a water device with a free water meter and its flow sensor", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption_water = [{ stat_consumption: "sensor.old_tap", name: "Garden" }];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el.setTab("water");
+    el._dialog = { kind: "replace", stat: "sensor.old_tap" };
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("Flow sensor: sensor.tap_flow");
+    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.tap"]')!.click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.tap", parent: null, name: "Garden", stat_rate: "sensor.tap_flow", kind: "water" },
+      { type: "remove", stat: "sensor.old_tap", kind: "water" },
+    ]);
+  });
+
+  it("offers no replacement without free sensors", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.candidates = [];
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    expect(() => dialogButton(el, "Replace with …")).toThrow();
+  });
 });
 
 describe("robustness and phone fixes", () => {
