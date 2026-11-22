@@ -149,6 +149,14 @@ CHANGE_SCHEMA = cv.key_value_schemas(
                 _KIND: _KINDS,
             }
         ),
+        ChangeType.SET_RATE.value: vol.Schema(
+            {
+                vol.Required("type"): ChangeType.SET_RATE.value,
+                vol.Required("stat"): str,
+                vol.Required("stat_rate"): _OPTIONAL_TEXT,
+                _KIND: _KINDS,
+            }
+        ),
         ChangeType.REMOVE.value: vol.Schema(
             {
                 vol.Required("type"): ChangeType.REMOVE.value,

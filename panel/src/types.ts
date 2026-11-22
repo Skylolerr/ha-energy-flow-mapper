@@ -182,6 +182,7 @@ export type Change =
     }
   | { type: "move"; stat: string; parent: string | null; kind?: DeviceKind }
   | { type: "rename"; stat: string; name: string | null; kind?: DeviceKind }
+  | { type: "set_rate"; stat: string; stat_rate: string | null; kind?: DeviceKind }
   | { type: "remove"; stat: string; kind?: DeviceKind }
   | {
       type: "assign_source";

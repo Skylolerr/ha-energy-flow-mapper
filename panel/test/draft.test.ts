@@ -179,6 +179,26 @@ describe("applyChanges", () => {
     expect(changeKind({ type: "unassign_source", stat: "x" })).toBeNull();
   });
 
+  it("sets and clears a device's power sensor", () => {
+    const base = [{ stat_consumption: "a", x_unknown: 1 }];
+    const set = applyChanges(base, [{ type: "set_rate", stat: "a", stat_rate: "sensor.a_power" }]);
+    expect(set[0]).toEqual({ stat_consumption: "a", x_unknown: 1, stat_rate: "sensor.a_power" });
+    const cleared = applyChanges(set, [{ type: "set_rate", stat: "a", stat_rate: null }]);
+    expect(cleared[0]).toEqual({ stat_consumption: "a", x_unknown: 1 });
+  });
+
+  it("skips set_rate for an unknown device", () => {
+    expect(applyChanges([], [{ type: "set_rate", stat: "x", stat_rate: null }])).toEqual([]);
+  });
+
+  it("sets the power sensor in the water list only", () => {
+    const change = { type: "set_rate", stat: "a", stat_rate: "sensor.a_flow", kind: "water" } as const;
+    expect(applyChanges([{ stat_consumption: "a" }], [change], "water")).toEqual([
+      { stat_consumption: "a", stat_rate: "sensor.a_flow" },
+    ]);
+    expect(applyChanges([{ stat_consumption: "a" }], [change])).toEqual([{ stat_consumption: "a" }]);
+  });
+
   it("skips changes that do not fit", () => {
     const result = applyChanges(deep(), [
       { type: "add", stat: "main" },

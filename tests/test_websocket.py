@@ -311,6 +311,30 @@ async def test_water_unit_warning_and_unknown_kind(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+async def test_save_set_rate(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A set_rate change writes the power sensor of a device."""
+    base_hash = await current_hash(hass_ws_client, hass)
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=[
+            {
+                "type": "set_rate",
+                "stat": "sensor.garage_energy",
+                "stat_rate": "sensor.garage_power",
+            }
+        ],
+    )
+    assert response["success"], response
+    devices = device_list(await energy_access.async_get_prefs(hass))
+    assert devices["sensor.garage_energy"]["stat_rate"] == "sensor.garage_power"
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_save_with_backup_and_restore(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,

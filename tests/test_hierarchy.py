@@ -1807,3 +1807,54 @@ def test_ambiguous_devices_share_a_label_within_one_list() -> None:
     # A user-set name counts towards a collision, but never gives way.
     assert ambiguous_devices(devices[2:4] + devices[:1], labels) == {"sensor.ch1"}
     assert ambiguous_devices(devices[3:], labels) == set()
+
+
+def test_set_rate_sets_and_clears() -> None:
+    """A power sensor is set on a device, trimmed away when empty, others stay."""
+    prefs = {"device_consumption": [{"stat_consumption": "sensor.a", "x_unknown": 1}]}
+    out = apply_changes(
+        prefs, [{"type": "set_rate", "stat": "sensor.a", "stat_rate": "sensor.a_power"}]
+    )
+    assert out["device_consumption"][0] == {
+        "stat_consumption": "sensor.a",
+        "x_unknown": 1,
+        "stat_rate": "sensor.a_power",
+    }
+    out = apply_changes(
+        out, [{"type": "set_rate", "stat": "sensor.a", "stat_rate": None}]
+    )
+    assert out["device_consumption"][0] == {
+        "stat_consumption": "sensor.a",
+        "x_unknown": 1,
+    }
+
+
+def test_set_rate_unknown_device() -> None:
+    with pytest.raises(ChangeError, match="unknown_device"):
+        apply_changes(
+            {"device_consumption": []},
+            [{"type": "set_rate", "stat": "sensor.x", "stat_rate": None}],
+        )
+
+
+def test_set_rate_water_list() -> None:
+    """With kind "water" only the water list changes."""
+    prefs = {
+        "device_consumption": [{"stat_consumption": "sensor.a"}],
+        "device_consumption_water": [{"stat_consumption": "sensor.a"}],
+    }
+    out = apply_changes(
+        prefs,
+        [
+            {
+                "type": "set_rate",
+                "stat": "sensor.a",
+                "stat_rate": "sensor.a_flow",
+                "kind": "water",
+            }
+        ],
+    )
+    assert out["device_consumption_water"] == [
+        {"stat_consumption": "sensor.a", "stat_rate": "sensor.a_flow"}
+    ]
+    assert out["device_consumption"] == [{"stat_consumption": "sensor.a"}]

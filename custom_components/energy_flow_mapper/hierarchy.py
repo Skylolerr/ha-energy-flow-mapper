@@ -141,6 +141,7 @@ class ChangeType(StrEnum):
     ADD = "add"
     MOVE = "move"
     RENAME = "rename"
+    SET_RATE = "set_rate"
     REMOVE = "remove"
     ASSIGN_SOURCE = "assign_source"
     UNASSIGN_SOURCE = "unassign_source"
@@ -722,6 +723,8 @@ def apply_changes(prefs: Prefs, changes: Sequence[Mapping[str, Any]]) -> dict[st
             _set_optional(devices[index], PARENT, change.get("parent"))
         elif kind == ChangeType.RENAME:
             _set_optional(devices[index], NAME, change.get(NAME))
+        elif kind == ChangeType.SET_RATE:
+            _set_optional(devices[index], RATE, change.get(RATE))
         elif kind == ChangeType.REMOVE:
             removed = devices.pop(index)
             _lift_children(devices, stat, removed.get(PARENT))

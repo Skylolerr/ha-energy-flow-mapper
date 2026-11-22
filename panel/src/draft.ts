@@ -151,6 +151,8 @@ export function applyDraft(
       setOptional(result[index], "included_in_stat", change.parent);
     } else if (change.type === "rename") {
       setOptional(result[index], "name", change.name);
+    } else if (change.type === "set_rate") {
+      setOptional(result[index], "stat_rate", change.stat_rate);
     } else if (change.type === "remove" || change.type === "use_as_home_meter") {
       if (change.type === "use_as_home_meter") {
         if (current.some((s) => s.type === "home")) {
