@@ -38,8 +38,10 @@ from .candidates import (
     async_stat_info,
     async_stat_units,
     async_stats_info,
+    mark_daily_reset,
 )
 from .const import DOMAIN, PLAUSIBILITY_MIN_KWH, PLAUSIBILITY_MIN_LITERS
+from .daily_reset import async_daily_resetting
 from .energy_stats import (
     PERIODS,
     async_energy,
@@ -368,7 +370,8 @@ async def websocket_get(
     `water_candidates` and `gas_candidates` the same for water and gas,
     `power_candidates` power sensors
     without an energy meter and `flow_candidates` flow sensors without a water
-    meter.
+    meter. `stats` and the meter candidates carry `daily_reset`: the meter
+    falls back to 0 every day.
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -380,8 +383,11 @@ async def websocket_get(
         + async_external_candidates(hass, prefs, external, kind)
         for kind in (DeviceKind.ELECTRICITY, DeviceKind.WATER, DeviceKind.GAS)
     )
-    created = runtime.helpers.entries()
-    async_mark_created(hass, [*stats.values(), *candidates, *water, *gas], created)
+    meters = [*stats.values(), *candidates, *water, *gas]
+    async_mark_created(hass, meters, runtime.helpers.entries())
+    mark_daily_reset(
+        meters, await async_daily_resetting(hass, [info["stat"] for info in meters])
+    )
     issues = _issues(hass, prefs)
     validation = await energy_access.async_validation(hass)
     connection.send_result(

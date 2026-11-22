@@ -504,6 +504,12 @@ def async_mark_created(
         )
 
 
+def mark_daily_reset(infos: Collection[dict[str, Any]], daily: Collection[str]) -> None:
+    """Flag statistics that reset every day (see `daily_reset`)."""
+    for info in infos:
+        info["daily_reset"] = info["stat"] in daily
+
+
 @callback
 def async_child_pairs(
     hass: HomeAssistant,

@@ -98,6 +98,8 @@ export interface StatInfo {
   floor_name: string | null;
   /** The entity belongs to a helper created by Energy Flow Mapper. */
   created_helper?: boolean;
+  /** The meter falls back to 0 every day (hourly statistics or a daily utility meter). */
+  daily_reset?: boolean;
   /** What the statistic comes from: a kind of helper, an external statistic, or a device's sensor (null). */
   stat_type?: StatType | null;
 }
