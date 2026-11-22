@@ -4398,6 +4398,42 @@ describe("power sensors", () => {
     expect(picker(el).options[1].textContent).toContain("TV power · Same device");
   });
 
+  it("explains each power variant for grid and battery", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "battery", stat_energy_from: "sensor.discharge", stat_energy_to: "sensor.charge" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    root(el).querySelector<HTMLButtonElement>('.block.source:not(.placeholder)[data-role="import"]')!.click();
+    await settle(el);
+    // The ellipsis of the menu entry comes from the translation.
+    expect(buttonWith(el, "Power sensor").textContent!.trim()).toBe("Power sensor …");
+    buttonWith(el, "Power sensor").click();
+    await settle(el);
+    const hints = () => [...root(el).querySelectorAll("dialog .power-variant-hint")].map((h) => h.textContent!.trim());
+    expect(hints()).toEqual([
+      "One sensor: positive while drawing from the grid, negative while returning to it.",
+      "One sensor with the opposite sign: positive while returning to the grid, negative while drawing from it.",
+      "One sensor for import power and one for export power, each positive.",
+    ]);
+    buttonWith(el, "Cancel").click();
+    await settle(el);
+
+    await openSource(el, "discharge");
+    expect(hints()).toEqual([
+      "One sensor: positive while discharging, negative while charging.",
+      "One sensor with the opposite sign: positive while charging, negative while discharging.",
+      "One sensor for discharge power and one for charge power, each positive.",
+    ]);
+    buttonWith(el, "Cancel").click();
+    await settle(el);
+
+    // Devices: the menu entry with its ellipsis; one picker, no variants.
+    node(el, "sensor.tv").querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();
+    await settle(el);
+    expect(buttonWith(el, "Power sensor").textContent!.trim()).toBe("Power sensor …");
+  });
+
   it("power options read states by their key and skip broken ones", async () => {
     const mock = powerMock();
     const states = mock.hass.states as Record<string, unknown>;

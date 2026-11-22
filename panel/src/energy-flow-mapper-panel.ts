@@ -186,6 +186,19 @@ const POWER_VARIANT_KEYS = {
   inverted: "power_variant_inverted",
   two: "power_variant_two",
 } as const;
+/** One sentence under each variant: what the sensor measures and which sign means what. */
+const POWER_VARIANT_HINTS = {
+  grid: {
+    single: "power_variant_single_grid",
+    inverted: "power_variant_inverted_grid",
+    two: "power_variant_two_grid",
+  },
+  battery: {
+    single: "power_variant_single_battery",
+    inverted: "power_variant_inverted_battery",
+    two: "power_variant_two_battery",
+  },
+} as const;
 
 /** Source roles with a power (flow) sensor; grid and battery roles take a `power_config`. */
 const POWER_ROLES: ReadonlySet<string> = new Set([
@@ -3954,7 +3967,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _renderPower(dialog: PowerDialog): TemplateResult {
     const { target } = dialog;
     const role = target.kind === "source" ? target.role : null;
-    const label = this._t(this._tab === "electricity" ? "power_sensor" : "flow_sensor");
+    const label = this._t(this._tab === "electricity" ? "power_sensor_label" : "flow_sensor_label");
     const withConfig = role !== null && POWER_CONFIG_ROLES.has(role);
     const battery = role === "discharge" || role === "charge";
     // From the current state: two pickers may change before the next render.
@@ -3978,7 +3991,8 @@ export class EnergyFlowMapperPanel extends LitElement {
                   @change=${() => update({ variant })}
                 />
                 ${this._t(POWER_VARIANT_KEYS[variant])}
-              </label>`,
+              </label>
+              <p class="hint power-variant-hint">${this._t(POWER_VARIANT_HINTS[battery ? "battery" : "grid"][variant])}</p>`,
             )}
           </div>`
         : nothing}
@@ -4054,7 +4068,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               ${this._t("rename")}
             </button>
             <button @click=${() => this._openPowerDialog({ kind: "device", stat: dialog.stat })}>
-              ${this._t(this._tab === "water" ? "flow_sensor" : "power_sensor")} …
+              ${this._t(this._tab === "water" ? "flow_sensor" : "power_sensor")}
             </button>
             <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
             ${this._canUseHomeMeter(dialog.stat)
@@ -4281,7 +4295,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                   @click=${() =>
                     this._openPowerDialog({ kind: "source", stat: dialog.stat!, role: dialog.role as SourceRole })}
                 >
-                  ${this._t(dialog.role === "water" || dialog.role === "gas" ? "flow_sensor" : "power_sensor")} …
+                  ${this._t(dialog.role === "water" || dialog.role === "gas" ? "flow_sensor" : "power_sensor")}
                 </button>`
               : nothing}
             ${dialog.stat && assign
@@ -5015,6 +5029,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       gap: 8px;
       align-items: center;
       margin: 8px 0;
+    }
+    .power-variant-hint {
+      margin: 0 0 8px 24px;
     }
     .periods button.active,
     .coverage-toggle.active,
