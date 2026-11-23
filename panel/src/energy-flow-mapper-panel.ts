@@ -76,9 +76,11 @@ import type {
   Device,
   DeviceKind,
   DiffEntry,
+  DismissedHint,
   EnergyResult,
   Group,
   HaIssue,
+  Hint,
   HomeAssistant,
   HomeResult,
   Issue,
@@ -87,6 +89,8 @@ import type {
   PowerConfig,
   SaveResult,
   Snapshot,
+  SolarMeterKind,
+  SolarPreview,
   Source,
   Tab,
   StatInfo,
@@ -183,7 +187,31 @@ type Dialog =
    * two-sensor variant of a grid or battery. `initial` is the change the
    * dialog would write unchanged, so OK without a change adds nothing.
    */
-  | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string };
+  | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string }
+  /**
+   * "Solar feeds in here" for the electricity device `stat`: the chosen solar
+   * source, the meter kind (null: the suggested one), the backend's preview
+   * (null while it loads) or its error, and the names of the helpers
+   * (filled with defaults once the first preview arrives).
+   */
+  | {
+      kind: "solar";
+      stat: string;
+      solar: string | null;
+      meterKind: SolarMeterKind | null;
+      preview: SolarPreview | null;
+      error: string | null;
+      names: SolarNames | null;
+    };
+
+/** Names of the helpers of the solar setup; `integrals` by power sensor. */
+interface SolarNames {
+  energy: string;
+  power: string;
+  integrals: Record<string, string>;
+}
+
+type SolarDialog = Extract<Dialog, { kind: "solar" }>;
 
 type SumDialog = Extract<Dialog, { kind: "sum" }>;
 type PowerDialog = Extract<Dialog, { kind: "power" }>;
@@ -399,6 +427,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _typeMarks: { state: true },
     _freeCollapsed: { state: true },
     _ignored: { state: true },
+    _dismissed: { state: true },
     _energy: { state: true },
     _tab: { state: true },
     _find: { state: true },
@@ -453,6 +482,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _freeCollapsed: boolean;
   /** Suggestions an admin ignored, stored in Home Assistant. */
   declare _ignored: ChildPair[];
+  /** Hints an admin dismissed for good, stored in Home Assistant. */
+  declare _dismissed: DismissedHint[];
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
   /** The tab shown: electricity, water or gas. */
@@ -473,6 +504,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _draftChecked = false;
   private _validateRequest = 0;
   private _energyRequest = 0;
+  private _solarRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   /** The diagram follows the viewport size until the user zooms or pans. */
@@ -509,6 +541,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._typeMarks = savedTypeMarks();
     this._freeCollapsed = savedFreeCollapsed();
     this._ignored = [];
+    this._dismissed = [];
     this._energy = null;
     this._tab = "electricity";
     this._find = "";
@@ -582,6 +615,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._snapshot = await this.hass.callWS<Snapshot>({ type: `${DOMAIN}/get` });
       this._loadError = null;
       this._ignored = this._snapshot.ignored_suggestions ?? [];
+      this._dismissed = this._snapshot.dismissed_hints ?? [];
       this._collapseGroups(this._snapshot);
       this._restoreDraft(this._snapshot.hash);
       // A draft kept over a reload (conflict) now belongs to the new settings.
@@ -1030,17 +1064,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Show the ignored suggestions of this tab again. */
+  /** Show the ignored suggestions and dismissed hints of this tab again. */
   async _clearIgnored(): Promise<void> {
     if (!this.hass) {
       return;
     }
+    const kind = this._tab;
     try {
       const result = await this.hass.callWS<{ ignored: ChildPair[] }>({
         type: `${DOMAIN}/clear_suggestions`,
-        kind: this._deviceKind(),
+        kind,
       });
       this._ignored = result.ignored;
+      // The answer only lists the suggestions; the tab's hints are back too.
+      this._dismissed = this._dismissed.filter((d) => d.kind !== kind);
     } catch (err) {
       this._showToast(errorText(this.hass, err));
     }
@@ -1070,6 +1107,114 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _issuesFor(stat: string): Issue[] {
     return this._issues().filter(
       (issue) => issue.stat === stat && (issue.kind ?? "electricity") === this._tab,
+    );
+  }
+
+  // --- hints ------------------------------------------------------------------
+
+  /** The role a hint names (a source's power hint), or null. */
+  private _hintRole(hint: Hint): string | null {
+    const role = hint.data?.role;
+    return typeof role === "string" ? role : null;
+  }
+
+  /**
+   * Whether an admin dismissed the hint: same code, tab and statistic, and
+   * the same role (a dismissal without role only hides hints without one).
+   */
+  private _isDismissed(hint: Hint): boolean {
+    const role = this._hintRole(hint);
+    return this._dismissed.some(
+      (d) => d.code === hint.code && d.kind === hint.kind && d.stat === hint.stat && (d.role ?? null) === role,
+    );
+  }
+
+  /** Whether a hint still fits the draft (the backend computed it for the saved settings). */
+  private _hintApplies(hint: Hint): boolean {
+    if (hint.code === "returned_energy") {
+      return this._hasSolar();
+    }
+    if (hint.code !== "power_available") {
+      return true;
+    }
+    const role = this._hintRole(hint);
+    if (role === null) {
+      const device = this.draft.find((d) => d.stat_consumption === hint.stat);
+      return device !== undefined && !device.stat_rate;
+    }
+    const row = sourceRows(this.draftSources).find((r) => r.stat === hint.stat && r.role === role);
+    return row !== undefined && !row.stat_rate && !row.power_config;
+  }
+
+  /**
+   * The hints of a block of the current tab that are not dismissed and still
+   * fit the draft. For a source block (`role`), a hint that names another
+   * role is left out.
+   */
+  _hintsFor(stat: string, role?: string): Hint[] {
+    return (this._snapshot?.hints ?? []).filter((hint) => {
+      const hintRole = this._hintRole(hint);
+      return (
+        hint.stat === stat &&
+        hint.kind === this._tab &&
+        (role === undefined ? hintRole === null : hintRole === null || hintRole === role) &&
+        !this._isDismissed(hint) &&
+        this._hintApplies(hint)
+      );
+    });
+  }
+
+  /** Whether a dismissed hint of this tab would come back with "show ignored suggestions again". */
+  private _hasDismissedHints(): boolean {
+    return (this._snapshot?.hints ?? []).some((hint) => hint.kind === this._tab && this._isDismissed(hint));
+  }
+
+  /** The text of a hint. */
+  private _hintText(hint: Hint): string {
+    const data = hint.data ?? {};
+    const entity = typeof data.entity_id === "string" ? this._sensorName(data.entity_id) : "";
+    switch (hint.code) {
+      case "returned_energy":
+        return this._t(data.disabled === true ? "hint_returned_energy_disabled" : "hint_returned_energy", { entity });
+      case "daily_in_sum": {
+        const daily: string[] = Array.isArray(data.daily) ? data.daily.filter((s) => typeof s === "string") : [];
+        return this._t("hint_daily_in_sum", { names: daily.map((stat) => this._sensorName(stat)).join(", ") });
+      }
+      case "power_available":
+        return this._t(hint.kind === "electricity" ? "hint_power_available" : "hint_flow_available", { entity });
+      default:
+        return hint.code;
+    }
+  }
+
+  /** Hide a hint for good, for every admin; a source's hint names its role. */
+  async _dismissHint(hint: Hint): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    const role = this._hintRole(hint);
+    try {
+      const result = await this.hass.callWS<{ dismissed: DismissedHint[] }>({
+        type: `${DOMAIN}/dismiss_hint`,
+        code: hint.code,
+        kind: hint.kind,
+        stat: hint.stat,
+        ...(role !== null ? { role } : {}),
+      });
+      this._dismissed = result.dismissed;
+    } catch (err) {
+      this._showToast(errorText(this.hass, err));
+    }
+  }
+
+  /**
+   * Open an entity's settings in Home Assistant's more-info dialog. The
+   * panel's own dialog closes first, so it cannot cover HA's.
+   */
+  private _openEntitySettings(entityId: string): void {
+    this._close();
+    this.dispatchEvent(
+      new CustomEvent("hass-more-info", { detail: { entityId, view: "settings" }, bubbles: true, composed: true }),
     );
   }
 
@@ -1711,9 +1856,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   /**
    * Open the power (water, gas: flow) sensor dialog of a device or a source,
    * with the draft's current sensors preselected; a grid or battery also with
-   * the variant its `power_config` uses.
+   * the variant its `power_config` uses. `preselect` (a hint's sensor) is
+   * picked instead of the current one.
    */
-  _openPowerDialog(target: PowerTarget): void {
+  _openPowerDialog(target: PowerTarget, preselect?: string): void {
     let variant: PowerVariant = "single";
     let first = "";
     let second = "";
@@ -1734,7 +1880,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
     }
     const dialog: PowerDialog = { kind: "power", target, variant, first, second, initial: "" };
-    this._dialog = { ...dialog, initial: JSON.stringify(this._powerChange(dialog)) };
+    // A sensor a hint suggests is picked, but OK still has to write it.
+    this._dialog = {
+      ...dialog,
+      initial: JSON.stringify(this._powerChange(dialog)),
+      ...(preselect ? { first: preselect } : {}),
+    };
   }
 
   /**
@@ -2132,6 +2283,145 @@ export class EnergyFlowMapperPanel extends LitElement {
     const firstMove = changes.findIndex((c) => c.type === "move" || c.type === "remove");
     changes.splice(firstMove, 0, ...groupMoves, ...below);
     return changes;
+  }
+
+  // --- solar setup ------------------------------------------------------------
+
+  /** Whether the draft has a solar source. */
+  private _hasSolar(): boolean {
+    return this.draftSources.some((s) => s.type === "solar" && !!s.stat_energy_from);
+  }
+
+  /**
+   * The solar sources the setup can use: saved ones (the backend works on the
+   * saved settings) that the draft still has.
+   */
+  private _setupSolars(): string[] {
+    const draft = new Set(this.draftSources.filter((s) => s.type === "solar").map((s) => s.stat_energy_from));
+    return (this._snapshot?.prefs.energy_sources ?? [])
+      .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string" && draft.has(s.stat_energy_from))
+      .map((s) => s.stat_energy_from as string);
+  }
+
+  /** Whether "Solar feeds in here…" is offered for a device: electricity with a solar source. */
+  private _offersSolarSetup(stat: string): boolean {
+    return (
+      this._tab === "electricity" &&
+      this._hasSolar() &&
+      this.draft.some((d) => d.stat_consumption === stat)
+    );
+  }
+
+  /** Whether the setup can run: the device is saved (the backend reads the saved settings). */
+  private _solarDeviceSaved(stat: string): boolean {
+    return (this._snapshot?.prefs.device_consumption ?? []).some((d) => d.stat_consumption === stat);
+  }
+
+  /** Open "Solar feeds in here…" for a device; the only solar source is preselected. */
+  _openSolarSetup(stat: string): void {
+    const solars = this._setupSolars();
+    const dialog: SolarDialog = {
+      kind: "solar",
+      stat,
+      solar: null,
+      meterKind: null,
+      preview: null,
+      error: null,
+      names: null,
+    };
+    this._dialog = dialog;
+    if (solars.length === 1 && this._solarDeviceSaved(stat)) {
+      void this._loadSolarPreview(solars[0], null);
+    }
+  }
+
+  /**
+   * Ask the backend what the setup would create for a solar and meter kind
+   * (null: the suggested one). The names are filled with their defaults once
+   * and kept when the kind changes; outdated answers are ignored.
+   */
+  async _loadSolarPreview(solar: string, meterKind: SolarMeterKind | null): Promise<void> {
+    const current = this._dialog;
+    if (!this.hass || current?.kind !== "solar") {
+      return;
+    }
+    const request = ++this._solarRequest;
+    const stat = current.stat;
+    this._dialog = { ...current, solar, meterKind, preview: null, error: null };
+    let preview: SolarPreview | null = null;
+    let error: string | null = null;
+    try {
+      preview = await this.hass.callWS<SolarPreview>({
+        type: `${DOMAIN}/solar_setup_preview`,
+        stat,
+        solar,
+        ...(meterKind ? { kind: meterKind } : {}),
+      });
+    } catch (err) {
+      error = errorText(this.hass, err);
+    }
+    const dialog = this._dialog;
+    if (request !== this._solarRequest || dialog?.kind !== "solar" || dialog.stat !== stat) {
+      return;
+    }
+    const name = this._name(stat, this.draft);
+    const names: SolarNames = dialog.names ?? {
+      energy: this._t("solar_gross_name", { name }),
+      power: this._t("solar_gross_power_name", { name }),
+      integrals: {},
+    };
+    const integrals = { ...names.integrals };
+    for (const { power } of preview?.integrals ?? []) {
+      integrals[power] ??= `${this._sensorName(power)} ${this._t("energy_suffix")}`;
+    }
+    this._dialog = {
+      ...dialog,
+      preview,
+      error,
+      meterKind: preview?.kind ?? meterKind,
+      names: { ...names, integrals },
+    };
+  }
+
+  /**
+   * Create the helpers of the setup right away, then put the gross meter in
+   * the device's place in the draft (`_replace`, one undo step), with the
+   * gross power as its power sensor. The user saves as usual.
+   */
+  async _createSolarSetup(dialog: SolarDialog): Promise<void> {
+    const { preview, names, solar } = dialog;
+    if (!this.hass || !preview || !names || !solar || preview.blocked) {
+      return;
+    }
+    const name = names.energy.trim();
+    const withPower = preview.circuit_power !== null && preview.solar_power !== null;
+    this._busy = true;
+    try {
+      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
+        type: `${DOMAIN}/create_solar_setup`,
+        stat: dialog.stat,
+        solar,
+        kind: preview.kind,
+        name,
+        ...(withPower ? { power_name: names.power.trim() } : {}),
+        ...(preview.integrals.length
+          ? {
+              integral_names: Object.fromEntries(
+                preview.integrals.map(({ power }) => [power, (names.integrals[power] ?? "").trim()]),
+              ),
+            }
+          : {}),
+      });
+      const old = this._name(dialog.stat, this.draft);
+      this._dialog = null;
+      await this._load();
+      this._replace(dialog.stat, result.entity_id, result.stat_rate);
+      this._showToast(this._t("solar_setup_done", { name, old }));
+    } catch (err) {
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
   }
 
   /** Free sensors of the tab that are not added in the draft yet, matching `search`. */
@@ -2877,7 +3167,7 @@ export class EnergyFlowMapperPanel extends LitElement {
    * note. On a phone the help text shows only once asked for.
    */
   private _renderHint(): TemplateResult | typeof nothing {
-    const ignored = this._ignored.some((p) => p.kind === this._tab);
+    const ignored = this._ignored.some((p) => p.kind === this._tab) || this._hasDismissedHints();
     const help = !this.narrow || this._helpOpen;
     const loading = this._energyLoading();
     if (!ignored && !help && !loading) {
@@ -3118,6 +3408,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                 >!</span
               >`
             : nothing}
+          ${block.kind === "source" && block.stat ? this._renderHintMark(this._hintsFor(block.stat, role)) : nothing}
         </button>`;
       }
       case "untracked": {
@@ -3264,6 +3555,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       ${warned || node.problem
         ? html`<span class="badge" title=${this._badgeTitle(stat, issues)}>!</span>`
         : nothing}
+      ${this._renderHintMark(this._hintsFor(stat))}
       ${this._typeMarks && this._info(stat)?.stat_type
         ? html`<span class="type-mark" title=${this._typeText(stat) ?? nothing}>${typeIcon(this._info(stat)!.stat_type!)}</span>`
         : nothing}
@@ -3750,10 +4042,20 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${issues.length
           ? html`<h3>${this._t("detail_issues")}</h3>
               <ul class="issues">
-                ${issues.map((i) => html`<li class=${i.severity}>${this._issueText(i)}</li>`)}
+                ${issues.map(
+                  (i) => html`<li class=${i.severity}>
+                    ${this._issueText(i)}
+                    ${i.code === "children_exceed_parent" && this._offersSolarSetup(stat)
+                      ? html`<p class="hint children-solar">${this._t("hint_children_solar")}</p>
+                          <button class="link" @click=${() => this._openSolarSetup(stat)}>
+                            ${this._t("solar_setup")}
+                          </button>`
+                      : nothing}
+                  </li>`,
+                )}
               </ul>`
           : nothing}
-        ${this._renderHaIssues(stat)} ${this._renderSuggestion(stat, devices)}
+        ${this._renderHaIssues(stat)} ${this._renderHints(stat)} ${this._renderSuggestion(stat, devices)}
       </section>
     `;
   }
@@ -3832,6 +4134,58 @@ export class EnergyFlowMapperPanel extends LitElement {
       <button class="discard" @click=${() => this._askDiscard()}>${this._t("discard")}</button>
       <button class="primary" @click=${() => this._openConfirm()}>${this._t("save")}</button>
     `;
+  }
+
+  /** The info mark of a block with hints: an outline «i», unlike the «!» of checks and warnings. */
+  private _renderHintMark(hints: Hint[]): TemplateResult | typeof nothing {
+    return hints.length
+      ? html`<span class="hint-mark" title=${hints.map((h) => this._hintText(h)).join("\n")}>i</span>`
+      : nothing;
+  }
+
+  /** The button of a hint, or nothing when it has none here. */
+  private _hintAction(hint: Hint): TemplateResult | typeof nothing {
+    switch (hint.code) {
+      case "returned_energy":
+        return this._offersSolarSetup(hint.stat)
+          ? html`<button class="primary" @click=${() => this._openSolarSetup(hint.stat)}>${this._t("solar_setup")}</button>`
+          : nothing;
+      case "daily_in_sum":
+        return html`<button class="primary" @click=${() => this._openEntitySettings(hint.stat)}>
+          ${this._t("hint_open_helper")}
+        </button>`;
+      case "power_available": {
+        const entity = typeof hint.data?.entity_id === "string" ? hint.data.entity_id : undefined;
+        const role = this._hintRole(hint);
+        const target: PowerTarget =
+          role === null ? { kind: "device", stat: hint.stat } : { kind: "source", stat: hint.stat, role: role as SourceRole };
+        return html`<button class="primary" @click=${() => this._openPowerDialog(target, entity)}>
+          ${this._t(hint.kind === "electricity" ? "hint_set_power" : "hint_set_flow")}
+        </button>`;
+      }
+      default:
+        return nothing;
+    }
+  }
+
+  /** The hints of a block (a source: of its role), each with its button and Dismiss. */
+  private _renderHints(stat: string, role?: string): TemplateResult | typeof nothing {
+    const hints = this._hintsFor(stat, role);
+    if (!hints.length) {
+      return nothing;
+    }
+    return html`<h3>${this._t("hints")}</h3>
+      ${hints.map(
+        (hint) => html`<div class="hint-line" data-code=${hint.code}>
+          <p><span class="hint-mark">i</span> ${this._hintText(hint)}</p>
+          <div class="dialog-actions">
+            ${this._hintAction(hint)}
+            <button title=${this._t("hint_dismiss_title")} @click=${() => void this._dismissHint(hint)}>
+              ${this._t("hint_dismiss")}
+            </button>
+          </div>
+        </div>`,
+      )}`;
   }
 
   /** The suggestion for a device, with Apply and Ignore. */
@@ -4169,6 +4523,188 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
+   * "Solar feeds in here…": the solar source, the kind of the circuit meter
+   * (both explained, the suggested one preselected with its reason), then
+   * what is created and replaced, with editable names. A blocked setup says
+   * why and offers no *Set up*.
+   */
+  private _renderSolar(dialog: SolarDialog): TemplateResult {
+    const name = this._name(dialog.stat, this.draft);
+    const solars = this._setupSolars();
+    const saved = this._solarDeviceSaved(dialog.stat);
+    const { preview, names } = dialog;
+    const update = (patch: Partial<SolarDialog>) => {
+      if (this._dialog?.kind === "solar") {
+        this._dialog = { ...this._dialog, ...patch };
+      }
+    };
+    const setName = (patch: Partial<SolarNames>) => {
+      if (this._dialog?.kind === "solar" && this._dialog.names) {
+        update({ names: { ...this._dialog.names, ...patch } });
+      }
+    };
+    const nameInput = (value: string, set: (value: string) => void) =>
+      html`<input type="text" .value=${value} @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />`;
+    const cancel = html`<div class="dialog-actions">
+      <button @click=${() => this._close()}>${this._t("cancel")}</button>
+    </div>`;
+    const head = html`<h2>${this._t("solar_setup_title", { name })}</h2>
+      <p class="hint">${this._t("solar_setup_intro")}</p>`;
+    if (!saved || solars.length === 0) {
+      return html`${head}
+        <p class="warning solar-save-first">${this._t(saved ? "solar_setup_no_solar" : "solar_setup_save_first")}</p>
+        ${cancel}`;
+    }
+    const kind = dialog.meterKind ?? preview?.kind ?? null;
+    const returned = preview?.returned ?? null;
+    const solarName = dialog.solar ? this._name(dialog.solar) : "";
+    const meterKinds: SolarMeterKind[] = ["net", "draws"];
+    // A disabled returned sensor gets its own note with a link; the reason
+    // below names any other block.
+    const disabledNote = preview !== null && kind === "draws" && preview.returned_disabled && returned !== null;
+    const blocked =
+      preview?.blocked && !(disabledNote && preview.blocked === "returned_disabled")
+        ? errorText(this.hass, {
+            translation_key: preview.blocked,
+            translation_placeholders: {
+              entity_id: preview.blocked_entity ? this._sensorName(preview.blocked_entity) : name,
+            },
+          })
+        : null;
+    const term = (stat: string) => this._sensorName(stat);
+    const energyFormula =
+      preview === null
+        ? ""
+        : kind === "draws" && returned !== null
+          ? `${term(dialog.stat)} − ${term(returned)} + ${solarName}`
+          : `${term(dialog.stat)} + ${solarName}`;
+    const withPower = preview !== null && preview.circuit_power !== null && preview.solar_power !== null;
+    // The backend reads the saved power sensors; a draft that changes one is not used yet.
+    const rate = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
+    const savedSource = (this._snapshot?.prefs.energy_sources ?? []).find(
+      (s) => s.type === "solar" && s.stat_energy_from === dialog.solar,
+    );
+    const draftSource = this.draftSources.find((s) => s.type === "solar" && s.stat_energy_from === dialog.solar);
+    const savedDevice = (this._snapshot?.prefs.device_consumption ?? []).find((d) => d.stat_consumption === dialog.stat);
+    const draftDevice = this.draft.find((d) => d.stat_consumption === dialog.stat);
+    const unsavedPower =
+      preview !== null &&
+      (rate(savedSource?.stat_rate) !== rate(draftSource?.stat_rate) ||
+        rate(savedDevice?.stat_rate) !== rate(draftDevice?.stat_rate));
+    return html`${head}
+      <h3>${this._t("solar_setup_source")}</h3>
+      ${solars.length === 1
+        ? html`<p class="solar-source">${this._name(solars[0])}</p>`
+        : html`<div class="solar-sources">
+            ${solars.map(
+              (solar) => html`<label class="check">
+                <input
+                  type="radio"
+                  name="solar-source"
+                  value=${solar}
+                  .checked=${dialog.solar === solar}
+                  @change=${() => void this._loadSolarPreview(solar, dialog.meterKind)}
+                />
+                ${this._name(solar)}
+              </label>`,
+            )}
+          </div>`}
+      ${preview !== null && preview.solar_power === null && dialog.solar
+        ? html`<p class="hint warning solar-no-power">${this._t("solar_setup_no_solar_power")}</p>
+            <button
+              class="solar-set-power"
+              @click=${() =>
+                this._openPowerDialog({ kind: "source", stat: dialog.solar!, role: "production" })}
+            >
+              ${this._t("solar_setup_set_solar_power")}
+            </button>`
+        : nothing}
+      ${unsavedPower ? html`<p class="hint warning solar-unsaved-power">${this._t("solar_setup_unsaved_power")}</p>` : nothing}
+      ${dialog.error ? html`<p class="warning">${dialog.error}</p>` : nothing}
+      ${dialog.solar && preview === null && dialog.error === null ? html`<p>${this._t("checking")}</p>` : nothing}
+      ${preview !== null
+        ? html`<h3>${this._t("solar_setup_kind", { name })}</h3>
+            <div class="solar-kinds">
+              ${meterKinds.map(
+                (meterKind) => html`<label class="check">
+                    <input
+                      type="radio"
+                      name="solar-kind"
+                      value=${meterKind}
+                      .checked=${kind === meterKind}
+                      @change=${() => dialog.solar && void this._loadSolarPreview(dialog.solar, meterKind)}
+                    />
+                    ${this._t(meterKind === "net" ? "solar_kind_net" : "solar_kind_draws")}
+                  </label>
+                  <p class="hint solar-kind-hint">
+                    ${this._t(meterKind === "net" ? "solar_kind_net_hint" : "solar_kind_draws_hint")}
+                  </p>`,
+              )}
+            </div>
+            <p class="hint solar-suggested">
+              ${preview.suggested_kind === "draws" && returned !== null
+                ? this._t("solar_suggested_draws", { entity: term(returned) })
+                : this._t("solar_suggested_net")}
+            </p>
+            ${disabledNote
+              ? html`<p class="warning solar-returned-disabled">
+                    ${this._t("solar_setup_returned_disabled", { entity: term(returned!) })}
+                  </p>
+                  <button @click=${() => this._openEntitySettings(returned!)}>${this._t("solar_setup_open_settings")}</button>`
+              : nothing}
+            <h3>${this._t("solar_setup_preview")}</h3>
+            ${blocked !== null || disabledNote
+              ? blocked !== null
+                ? html`<p class="warning solar-blocked">${blocked}</p>`
+                : nothing
+              : html`<ul class="solar-helpers">
+                    ${preview.integrals.map(
+                      ({ stat, power }) => html`<li>
+                        <label
+                          >${this._t("solar_setup_integral", { power: term(power), meter: term(stat) })}
+                          ${nameInput(names?.integrals[power] ?? "", (value) =>
+                            setName({ integrals: { ...(names?.integrals ?? {}), [power]: value } }),
+                          )}
+                        </label>
+                      </li>`,
+                    )}
+                    <li>
+                      <label
+                        >${this._t("solar_setup_energy", { formula: energyFormula })}
+                        ${nameInput(names?.energy ?? "", (energy) => setName({ energy }))}
+                      </label>
+                    </li>
+                    ${withPower
+                      ? html`<li>
+                          <label
+                            >${this._t("solar_setup_power", {
+                              formula: `${term(preview.circuit_power!)} + ${term(preview.solar_power!)}`,
+                            })}
+                            ${nameInput(names?.power ?? "", (power) => setName({ power }))}
+                          </label>
+                        </li>`
+                      : nothing}
+                  </ul>
+                  ${preview.circuit_power === null
+                    ? html`<p class="hint solar-no-circuit-power">${this._t("solar_setup_no_circuit_power", { name })}</p>`
+                    : nothing}
+                  <p class="hint">${this._t("solar_setup_text", { name })}</p>`}`
+        : nothing}
+      <div class="dialog-actions">
+        <button @click=${() => this._close()}>${this._t("cancel")}</button>
+        ${preview !== null && blocked === null && !disabledNote
+          ? html`<button
+              class="primary"
+              ?disabled=${this._busy || !(names?.energy ?? "").trim()}
+              @click=${() => this._createSolarSetup(dialog)}
+            >
+              ${this._busy ? this._t("creating") : this._t("solar_setup_button")}
+            </button>`
+          : nothing}
+      </div>`;
+  }
+
+  /**
    * The power (flow) sensor dialog: a picker with None; a grid or battery
    * first chooses the variant, and two sensors get a picker each (grid:
    * import and export, battery: discharge and charge). OK writes one change.
@@ -4285,6 +4821,9 @@ export class EnergyFlowMapperPanel extends LitElement {
                 </button>`
               : nothing}
             <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
+            ${this._offersSolarSetup(dialog.stat)
+              ? html`<button @click=${() => this._openSolarSetup(dialog.stat)}>${this._t("solar_setup")}</button>`
+              : nothing}
             ${this._canUseHomeMeter(dialog.stat)
               ? html`<button
                   @click=${() => {
@@ -4534,6 +5073,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         return html`<h2>${dialog.label}</h2>
           ${dialog.stat ? html`<p>${this._name(dialog.stat)}</p>` : nothing}
           ${dialog.stat ? this._renderHaIssues(dialog.stat) : nothing}
+          ${dialog.stat ? this._renderHints(dialog.stat, dialog.role) : nothing}
           ${dialog.stat && assign && lastMeter ? html`<p class="hint">${this._t("source_last_meter")}</p>` : nothing}
           <div class="dialog-actions column-actions">
             ${assign
@@ -4727,6 +5267,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "sum":
         return this._renderSum(dialog);
+      case "solar":
+        return this._renderSolar(dialog);
       case "group_name": {
         const name = this._renameValue.trim();
         const parent = this._selectionParent();
@@ -5146,6 +5688,31 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .has-error .badge {
       background: var(--error-color);
+    }
+    /* A hint only explains: an outline «i», unlike the filled «!» of checks and warnings. */
+    .hint-mark {
+      display: inline-flex;
+      flex: none;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      border: 1.5px solid var(--info-color, #039be5);
+      color: var(--info-color, #039be5);
+      background: transparent;
+      font: italic 700 12px/1 Georgia, "Times New Roman", serif;
+    }
+    .hint-line p {
+      margin: 8px 0 0;
+    }
+    .hint-line p .hint-mark {
+      margin-right: 4px;
+      vertical-align: -3px;
+    }
+    .children-solar {
+      margin: 4px 0 0;
     }
     input[type="search"],
     input[type="text"],

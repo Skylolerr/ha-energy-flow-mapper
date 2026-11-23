@@ -4778,3 +4778,405 @@ describe("power sensors", () => {
     expect(ids).not.toContain("switch.power");
   });
 });
+
+describe("hints and solar setup", () => {
+  function dialogEl(el: EnergyFlowMapperPanel): HTMLDialogElement {
+    return root(el).querySelector("dialog")!;
+  }
+
+  function dialogButton(el: EnergyFlowMapperPanel, label: string): HTMLButtonElement | undefined {
+    return [...dialogEl(el).querySelectorAll("button")].find((b) => b.textContent!.includes(label));
+  }
+
+  function details(el: EnergyFlowMapperPanel): HTMLElement {
+    return root(el).querySelector<HTMLElement>(".details")!;
+  }
+
+  function detailButton(el: EnergyFlowMapperPanel, label: string): HTMLButtonElement | undefined {
+    return [...details(el).querySelectorAll("button")].find((b) => b.textContent!.includes(label));
+  }
+
+  function sensor(entity_id: string, name: string, device_class = "power", unit = "W"): HassEntity {
+    return { entity_id, state: "1", attributes: { friendly_name: name, device_class, unit_of_measurement: unit } };
+  }
+
+  /** The default setup plus a solar source with a power sensor. */
+  function solarSnapshot(): Snapshot {
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.solar", stat_rate: "sensor.solar_power" });
+    snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar");
+    return snap;
+  }
+
+  function hintMock(snap: Snapshot = solarSnapshot()): Mock {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.tv_power"] = sensor("sensor.tv_power", "TV power");
+    mock.hass.states["sensor.grid_power"] = sensor("sensor.grid_power", "Grid power");
+    mock.hass.states["sensor.solar_power"] = sensor("sensor.solar_power", "Solar power");
+    mock.hass.states["sensor.server_returned"] = sensor("sensor.server_returned", "Server returned", "energy", "kWh");
+    mock.responses["energy_flow_mapper/dismiss_hint"] = (msg: Record<string, unknown>) => ({
+      dismissed: [Object.fromEntries(Object.entries(msg).filter(([key]) => key !== "type"))],
+    });
+    mock.responses["energy_flow_mapper/clear_suggestions"] = { ignored: [] };
+    return mock;
+  }
+
+  function preview(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      suggested_kind: "draws",
+      kind: "draws",
+      returned: "sensor.server_returned",
+      returned_disabled: false,
+      circuit_power: "sensor.server_power",
+      solar_power: "sensor.solar_power",
+      daily: [],
+      integrals: [],
+      blocked: null,
+      blocked_entity: null,
+      ...extra,
+    };
+  }
+
+  async function openSetup(el: EnergyFlowMapperPanel, stat = "sensor.server"): Promise<void> {
+    node(el, stat).querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();
+    await settle(el);
+    dialogButton(el, "Solar feeds in here…")!.click();
+    await settle(el);
+  }
+
+  function kindRadio(el: EnergyFlowMapperPanel, kind: string): HTMLInputElement {
+    return dialogEl(el).querySelector<HTMLInputElement>(`input[type="radio"][name="solar-kind"][value="${kind}"]`)!;
+  }
+
+  function textInputs(el: EnergyFlowMapperPanel): HTMLInputElement[] {
+    return [...dialogEl(el).querySelectorAll<HTMLInputElement>('input[type="text"]')];
+  }
+
+  function powerHints(): Snapshot["hints"] {
+    return [
+      { code: "power_available", stat: "sensor.tv", kind: "electricity", data: { entity_id: "sensor.tv_power" } },
+      {
+        code: "power_available",
+        stat: "sensor.import",
+        kind: "electricity",
+        data: { entity_id: "sensor.grid_power", role: "import" },
+      },
+    ];
+  }
+
+  it("hint shows info mark and dismiss calls dismiss_hint", async () => {
+    const snap = solarSnapshot();
+    snap.hints = powerHints();
+    snap.dismissed_hints = [];
+    const mock = hintMock(snap);
+    const el = await mount(mock);
+    // An outline "i", not the "!" of a warning.
+    const mark = node(el, "sensor.tv").querySelector(".hint-mark")!;
+    expect(mark.textContent!.trim()).toBe("i");
+    expect(node(el, "sensor.tv").querySelector(".badge")).toBeNull();
+    expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
+    expect(root(el).querySelector('.block.source[data-role="import"] .hint-mark')).not.toBeNull();
+    expect(root(el).querySelector('.block.source[data-role="export"] .hint-mark')).toBeNull();
+
+    node(el, "sensor.tv").click();
+    await settle(el);
+    expect(details(el).textContent).toContain("Its device has a power sensor that is not set: TV power.");
+    // The button opens the power dialog with that sensor preselected.
+    detailButton(el, "Set power sensor")!.click();
+    await settle(el);
+    expect(dialogEl(el).querySelector<HTMLSelectElement>("select")!.value).toBe("sensor.tv_power");
+    dialogButton(el, "OK")!.click();
+    await settle(el);
+    expect(el._changes).toEqual([{ type: "set_rate", stat: "sensor.tv", stat_rate: "sensor.tv_power" }]);
+    // With the power sensor set in the draft, the hint is gone.
+    expect(node(el, "sensor.tv").querySelector(".hint-mark")).toBeNull();
+    el._undoChange();
+    await settle(el);
+
+    detailButton(el, "Dismiss")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/dismiss_hint")).toEqual({
+      type: "energy_flow_mapper/dismiss_hint",
+      code: "power_available",
+      kind: "electricity",
+      stat: "sensor.tv",
+    });
+    expect(node(el, "sensor.tv").querySelector(".hint-mark")).toBeNull();
+    expect(details(el).textContent).not.toContain("Its device has a power sensor");
+
+    // A source's hint is in its dialog; dismissing it names its role.
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("Its device has a power sensor that is not set: Grid power.");
+    dialogButton(el, "Dismiss")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/dismiss_hint")).toEqual({
+      type: "energy_flow_mapper/dismiss_hint",
+      code: "power_available",
+      kind: "electricity",
+      stat: "sensor.import",
+      role: "import",
+    });
+  });
+
+  it("dismissed hint is hidden", async () => {
+    const snap = solarSnapshot();
+    snap.hints = powerHints();
+    // A dismissal names the role of its hint: the home meter's does not hide the grid's.
+    snap.dismissed_hints = [
+      { code: "power_available", kind: "electricity", stat: "sensor.tv" },
+      { code: "power_available", kind: "electricity", stat: "sensor.import", role: "home" },
+    ];
+    const mock = hintMock(snap);
+    const el = await mount(mock);
+    expect(node(el, "sensor.tv").querySelector(".hint-mark")).toBeNull();
+    expect(root(el).querySelector('.block.source[data-role="import"] .hint-mark')).not.toBeNull();
+    // Without a role, a dismissal does not hide a hint that has one.
+    el._dismissed = [{ code: "power_available", kind: "electricity", stat: "sensor.import" }];
+    await settle(el);
+    expect(root(el).querySelector('.block.source[data-role="import"] .hint-mark')).not.toBeNull();
+    expect(node(el, "sensor.tv").querySelector(".hint-mark")).not.toBeNull();
+    el._dismissed = [{ code: "power_available", kind: "electricity", stat: "sensor.tv" }];
+    await settle(el);
+
+    // "Show ignored suggestions again" brings the dismissed hints of the tab back.
+    buttonWith(el, "Show ignored suggestions again").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/clear_suggestions")).toEqual({
+      type: "energy_flow_mapper/clear_suggestions",
+      kind: "electricity",
+    });
+    expect(node(el, "sensor.tv").querySelector(".hint-mark")).not.toBeNull();
+  });
+
+  it("hint buttons open the helper's settings and the setup", async () => {
+    const snap = solarSnapshot();
+    snap.hints = [
+      {
+        code: "daily_in_sum",
+        stat: "sensor.tv",
+        kind: "electricity",
+        data: { entry_id: "e1", members: ["sensor.a", "sensor.solar"], daily: ["sensor.solar"] },
+      },
+      {
+        code: "returned_energy",
+        stat: "sensor.server",
+        kind: "electricity",
+        data: { entity_id: "sensor.server_returned", disabled: false },
+      },
+    ];
+    const mock = hintMock(snap);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    const el = await mount(mock);
+    const opened: unknown[] = [];
+    el.addEventListener("hass-more-info", (e) => opened.push((e as CustomEvent).detail));
+    node(el, "sensor.tv").click();
+    await settle(el);
+    expect(details(el).textContent).toContain("Roof solar");
+    expect(details(el).textContent).toContain("start again at 0 every day");
+    detailButton(el, "Open helper settings")!.click();
+    expect(opened).toEqual([{ entityId: "sensor.tv", view: "settings" }]);
+
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(details(el).textContent).toContain("Server returned");
+    detailButton(el, "Solar feeds in here…")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
+      type: "energy_flow_mapper/solar_setup_preview",
+      stat: "sensor.server",
+      solar: "sensor.solar",
+    });
+  });
+
+  it("children warning gets solar line only with a solar source", async () => {
+    const energy = {
+      period: "week",
+      start: "2026-11-16T00:00:00+01:00",
+      end: "2026-11-23T00:00:00+01:00",
+      energy: { "sensor.server": 12.5, "sensor.sonos": 14 },
+      water_unit: "L",
+      untracked: { "sensor.server": -1.5 },
+      issues: [{ code: "children_exceed_parent", severity: "warning", stat: "sensor.server", details: {} }],
+    };
+    const plain = mockHass();
+    plain.responses["energy_flow_mapper/energy"] = energy;
+    const el = await mount(plain);
+    el.setPeriod("week");
+    node(el, "sensor.server").click();
+    await settle(el);
+    expect(details(el).textContent).toContain("Its child devices use more than this device");
+    expect(details(el).textContent).not.toContain("Maybe a solar feeds into this circuit");
+    expect(detailButton(el, "Solar feeds in here…")).toBeUndefined();
+    document.body.innerHTML = "";
+
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/energy"] = energy;
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    const solar = await mount(mock);
+    solar.setPeriod("week");
+    node(solar, "sensor.server").click();
+    await settle(solar);
+    expect(details(solar).textContent).toContain("Maybe a solar feeds into this circuit");
+    detailButton(solar, "Solar feeds in here…")!.click();
+    await settle(solar);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ stat: "sensor.server" });
+  });
+
+  it("setup preselects suggested kind and explains both", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { kind?: string }) =>
+      preview(msg.kind ? { kind: msg.kind } : {});
+    const el = await mount(mock);
+    await openSetup(el);
+    // The only solar is preselected; the first preview asks for the suggested kind.
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
+      type: "energy_flow_mapper/solar_setup_preview",
+      stat: "sensor.server",
+      solar: "sensor.solar",
+    });
+    expect(dialogEl(el).textContent).toContain("Roof solar");
+    expect(kindRadio(el, "draws").checked).toBe(true);
+    expect(kindRadio(el, "net").checked).toBe(false);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("Counts both ways");
+    expect(content).toContain("gross = meter + solar");
+    expect(content).toContain("Counts only what it draws");
+    expect(content).toContain("gross = drawn − returned + solar");
+    // The reason of the preselection names the returned sensor.
+    expect(content).toContain("Server returned");
+    // What will be created, with editable names.
+    expect(textInputs(el).map((i) => i.value)).toEqual(["Server & co gross", "Server & co gross power"]);
+    expect(content).toContain("takes the place of Server & co");
+
+    kindRadio(el, "net").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
+      type: "energy_flow_mapper/solar_setup_preview",
+      stat: "sensor.server",
+      solar: "sensor.solar",
+      kind: "net",
+    });
+    expect(kindRadio(el, "net").checked).toBe(true);
+  });
+
+  it("setup notes a disabled returned sensor and a missing solar power", async () => {
+    const snap = solarSnapshot();
+    delete snap.prefs.energy_sources.at(-1)!.stat_rate;
+    const mock = hintMock(snap);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      returned_disabled: true,
+      solar_power: null,
+      blocked: "returned_disabled",
+      blocked_entity: "sensor.server_returned",
+    });
+    const el = await mount(mock);
+    const opened: unknown[] = [];
+    el.addEventListener("hass-more-info", (e) => opened.push((e as CustomEvent).detail));
+    await openSetup(el);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("The returned energy sensor Server returned is disabled.");
+    expect(content).toContain("no live value");
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+    // The solar's power sensor can be set first, in the draft.
+    dialogButton(el, "Set power sensor of the solar")!.click();
+    await settle(el);
+    const select = dialogEl(el).querySelector<HTMLSelectElement>("select")!;
+    select.value = "sensor.solar_power";
+    select.dispatchEvent(new Event("change"));
+    await settle(el);
+    dialogButton(el, "OK")!.click();
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.solar_power" },
+    ]);
+    // The backend reads the saved settings: the dialog says so.
+    await openSetup(el);
+    expect(dialogEl(el).textContent).toContain("the setup uses the saved ones");
+    // The returned sensor's settings open in HA; the panel's dialog closes.
+    dialogButton(el, "Open its settings")!.click();
+    await settle(el);
+    expect(opened).toEqual([{ entityId: "sensor.server_returned", view: "settings" }]);
+    expect(el._dialog).toBeNull();
+    // Nothing was created or enabled.
+    expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toBeUndefined();
+  });
+
+  it("setup replaces the device with the created meter", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      daily: ["sensor.solar"],
+      integrals: [{ stat: "sensor.solar", power: "sensor.solar_power" }],
+    });
+    mock.responses["energy_flow_mapper/create_solar_setup"] = {
+      entity_id: "sensor.server_gross",
+      stat_rate: "sensor.server_gross_power",
+    };
+    const el = await mount(mock);
+    await openSetup(el);
+    expect(textInputs(el).map((i) => i.value)).toEqual([
+      "Solar power Energy",
+      "Server & co gross",
+      "Server & co gross power",
+    ]);
+    const name = textInputs(el)[1];
+    name.value = "Circuit F11 gross";
+    name.dispatchEvent(new Event("input"));
+    await settle(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toEqual({
+      type: "energy_flow_mapper/create_solar_setup",
+      stat: "sensor.server",
+      solar: "sensor.solar",
+      kind: "draws",
+      name: "Circuit F11 gross",
+      power_name: "Server & co gross power",
+      integral_names: { "sensor.solar_power": "Solar power Energy" },
+    });
+    // One step: the gross meter takes the server's place and its children.
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.server_gross", parent: null, stat_rate: "sensor.server_gross_power" },
+      { type: "move", stat: "sensor.sonos", parent: "sensor.server_gross" },
+      { type: "remove", stat: "sensor.server" },
+    ]);
+    expect(el._dialog).toBeNull();
+    expect(el._selected).toBe("sensor.server_gross");
+    el._undoChange();
+    expect(el._changes).toEqual([]);
+  });
+
+  it("blocked setup offers no set up button", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      suggested_kind: "net",
+      kind: "net",
+      returned: null,
+      daily: ["sensor.server"],
+      circuit_power: null,
+      blocked: "daily_without_power",
+      blocked_entity: "sensor.server",
+    });
+    const el = await mount(mock);
+    await openSetup(el);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("starts again at 0 every day and has no power sensor");
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+    expect(dialogButton(el, "Cancel")).toBeDefined();
+  });
+
+  it("offers the setup only for electricity devices with a solar source", async () => {
+    const el = await mount(mockHass());
+    node(el, "sensor.server").querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();
+    await settle(el);
+    expect(dialogButton(el, "Solar feeds in here…")).toBeUndefined();
+    document.body.innerHTML = "";
+    const snap = solarSnapshot();
+    snap.hints = [{ code: "power_available", stat: "sensor.tv", kind: "electricity", data: { entity_id: "sensor.tv_power" } }];
+    const solar = await mount(hintMock(snap));
+    solar.setTab("water");
+    await settle(solar);
+    expect(root(solar).querySelector(".hint-mark")).toBeNull();
+  });
+});

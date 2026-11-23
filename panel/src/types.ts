@@ -155,6 +155,49 @@ export interface ChildPair {
   parent: string;
 }
 
+/** The hints the panel shows at the blocks (computed in the backend's `hints.py`). */
+export type HintCode = "returned_energy" | "daily_in_sum" | "power_available";
+
+/**
+ * A hint at a block. `data` by code: `returned_energy` {entity_id, disabled};
+ * `daily_in_sum` {entry_id, members, daily}; `power_available` {entity_id}
+ * and, for a source, `role` (a grid and the home meter may share a statistic).
+ */
+export interface Hint {
+  code: HintCode | string;
+  stat: string;
+  kind: Tab;
+  data: Record<string, unknown>;
+}
+
+/** A hint dismissed for good; `role` only for a hint whose `data` names one. */
+export interface DismissedHint {
+  code: string;
+  kind: Tab;
+  stat: string;
+  role?: string;
+}
+
+/** What "Solar feeds in here" would create (`solar_setup_preview`). */
+export interface SolarPreview {
+  suggested_kind: SolarMeterKind;
+  kind: SolarMeterKind;
+  returned: string | null;
+  returned_disabled: boolean;
+  circuit_power: string | null;
+  solar_power: string | null;
+  /** Inputs of the gross energy that reset every day. */
+  daily: string[];
+  /** Each daily input and the power sensor whose integral replaces it. */
+  integrals: { stat: string; power: string }[];
+  /** Why the setup cannot be done (an error key), or null. */
+  blocked: string | null;
+  blocked_entity: string | null;
+}
+
+/** How a circuit meter counts: both ways (net), or only what it draws. */
+export type SolarMeterKind = "net" | "draws";
+
 export interface Snapshot {
   prefs: Prefs;
   hash: string;
@@ -178,6 +221,9 @@ export interface Snapshot {
   ignored_suggestions?: ChildPair[];
   /** The groups of devices (display only, not part of the energy settings). */
   groups?: Groups;
+  /** Hints at blocks, and the ones an admin dismissed. */
+  hints?: Hint[];
+  dismissed_hints?: DismissedHint[];
 }
 
 /** Device changes name their list; without `kind` they change electricity. */
