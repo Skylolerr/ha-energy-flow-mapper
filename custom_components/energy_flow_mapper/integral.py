@@ -10,7 +10,13 @@ from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.config_entries import SOURCE_USER
-from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, CONF_METHOD, CONF_NAME
+from homeassistant.const import (
+    ATTR_UNIT_OF_MEASUREMENT,
+    CONF_METHOD,
+    CONF_NAME,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
@@ -31,22 +37,44 @@ INTEGRAL_OPTIONS = {
 }
 
 
+def entity_unit(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return the unit of the state, or of the registry entry without one."""
+    state = hass.states.get(entity_id)
+    if state is not None and (unit := state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)):
+        return str(unit)
+    entry = er.async_get(hass).async_get(entity_id)
+    return entry.unit_of_measurement if entry is not None else None
+
+
+def energy_unit(power_unit: str | None) -> str:
+    """Return the unit the integral of a power sensor counts in.
+
+    W gets the prefix k (kWh); a unit that has a prefix already counts in its
+    own (kW gives kWh, not "kkWh" in steps of 1 kWh). Without a unit, W.
+    """
+    if power_unit in (None, UnitOfPower.WATT):
+        return UnitOfEnergy.KILO_WATT_HOUR
+    return f"{power_unit}h"
+
+
 def _options(hass: HomeAssistant, source: str, kind: DeviceKind) -> dict[str, Any]:
     """Return the helper options: kWh for power, the flow's volume for water.
 
-    A flow is integrated over the time unit of its own unit and without a
-    prefix, so L/min becomes L and m³/h becomes m³.
+    A power in W gets the prefix k; any other power unit has its own prefix
+    and gets none. A flow is integrated over the time unit of its own unit
+    and without a prefix, so L/min becomes L and m³/h becomes m³.
     """
+    without_prefix = {
+        key: value for key, value in INTEGRAL_OPTIONS.items() if key != "unit_prefix"
+    }
     if kind is DeviceKind.ELECTRICITY:
-        return INTEGRAL_OPTIONS
+        unit = entity_unit(hass, source)
+        return INTEGRAL_OPTIONS if unit in (None, UnitOfPower.WATT) else without_prefix
     state = hass.states.get(source)
     unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
     if unit not in FLOW_TIME_UNITS:
         raise _failed()
-    options = {
-        key: value for key, value in INTEGRAL_OPTIONS.items() if key != "unit_prefix"
-    }
-    return options | {"unit_time": FLOW_TIME_UNITS[unit]}
+    return without_prefix | {"unit_time": FLOW_TIME_UNITS[unit]}
 
 
 def _failed() -> HomeAssistantError:

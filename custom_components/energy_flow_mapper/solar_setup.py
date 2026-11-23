@@ -23,17 +23,13 @@ first. Without that power sensor the setup stops with a reason.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
-from homeassistant.const import (
-    ATTR_FRIENDLY_NAME,
-    ATTR_UNIT_OF_MEASUREMENT,
-    UnitOfEnergy,
-    UnitOfPower,
-)
+from homeassistant.const import ATTR_FRIENDLY_NAME, UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
@@ -44,8 +40,10 @@ from .created_helpers import CreatedHelpers
 from .daily_reset import async_daily_resetting
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
 from .hints import returned_sensor
-from .integral import async_create_integral
+from .integral import async_create_integral, energy_unit, entity_unit
 from .template_meter import TemplateKind, async_create_template
+
+_LOGGER = logging.getLogger(__name__)
 
 ENERGY_DECIMALS: Final = 3
 POWER_DECIMALS: Final = 1
@@ -142,26 +140,33 @@ def gross_power_template(
     return _template(terms, POWER_DECIMALS, factors or {})
 
 
-def _unit(hass: HomeAssistant, entity_id: str) -> str | None:
-    """Return the unit of the state, or of the registry entry without one."""
-    state = hass.states.get(entity_id)
-    if state is not None and (unit := state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)):
-        return str(unit)
-    entry = er.async_get(hass).async_get(entity_id)
-    return entry.unit_of_measurement if entry is not None else None
-
-
 def _factor(hass: HomeAssistant, entity_id: str, kind: TemplateKind) -> float | None:
     """Return the factor of an input a template can read, or None."""
     if not valid_entity_id(entity_id):
         return None
-    return unit_factor(_unit(hass, entity_id), kind)
+    return unit_factor(entity_unit(hass, entity_id), kind)
 
 
-def _friendly_name(hass: HomeAssistant, entity_id: str) -> str | None:
+def _integral_factor(hass: HomeAssistant, power: str) -> float | None:
+    """Return the factor to kWh of the integral of `power`, or None.
+
+    The integral counts in `integral.energy_unit` of the power's unit: kWh
+    for W and kW, MWh for MW. A power without an energy unit (BTU/h) or
+    without a unit at all cannot be integrated into kWh.
+    """
+    if not valid_entity_id(power) or (unit := entity_unit(hass, power)) is None:
+        return None
+    return unit_factor(energy_unit(unit), "energy")
+
+
+def _name(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return the friendly name, else the registry's name, else None."""
     state = hass.states.get(entity_id)
     name = state.attributes.get(ATTR_FRIENDLY_NAME) if state is not None else None
-    return str(name) if name else None
+    if name:
+        return str(name)
+    entry = er.async_get(hass).async_get(entity_id)
+    return (entry.name or entry.original_name) if entry is not None else None
 
 
 @dataclass
@@ -184,6 +189,8 @@ class Plan:
     integrals: dict[str, str] = field(default_factory=dict)
     # Entity ID -> factor to kWh (energy inputs) or W (power sensors).
     factors: dict[str, float] = field(default_factory=dict)
+    # Power sensor -> factor to kWh of its integral.
+    integral_factors: dict[str, float] = field(default_factory=dict)
     blocked: Blocked | None = None
     blocked_entity: str | None = None
 
@@ -277,7 +284,7 @@ async def async_plan(
         suggested_kind=suggested,
         meter=stat,
         solar=solar,
-        meter_name=device.get(NAME) or _friendly_name(hass, stat) or stat,
+        meter_name=device.get(NAME) or _name(hass, stat) or stat,
         returned=found[0] if found else None,
         returned_disabled=found[1] if found else False,
         circuit_power=device.get(RATE),
@@ -295,14 +302,35 @@ async def async_plan(
         plan.daily.append(entity)
         if power is None:
             plan.block(Blocked.DAILY_WITHOUT_POWER, entity)
+        elif (factor := _integral_factor(hass, power)) is None:
+            plan.block(Blocked.UNSUPPORTED_INPUT, power)
         else:
             plan.integrals[entity] = power
-            _check_power(hass, plan, power)
+            plan.integral_factors[power] = factor
     if plan.circuit_power is not None and plan.solar_power is not None:
         for power in (plan.circuit_power, plan.solar_power):
-            if power not in plan.factors:
-                _check_power(hass, plan, power)
+            _check_power(hass, plan, power)
     return plan
+
+
+async def _async_undo(
+    hass: HomeAssistant, helpers: CreatedHelpers, entry_ids: list[str]
+) -> None:
+    """Remove and forget the helpers, newest first; log what fails.
+
+    Every helper is tried, so one failure leaves no others behind. A helper
+    that cannot be removed stays recorded: it still exists and was made here.
+    """
+    for entry_id in reversed(entry_ids):
+        try:
+            await hass.config_entries.async_remove(entry_id)
+        except Exception:
+            _LOGGER.exception("Removing the helper %s again failed", entry_id)
+            continue
+        try:
+            await helpers.async_discard(entry_id)
+        except Exception:
+            _LOGGER.exception("Forgetting the helper %s failed", entry_id)
 
 
 @dataclass(frozen=True)
@@ -343,12 +371,11 @@ async def async_create(
                 hass,
                 power,
                 (names.integrals.get(power) or "").strip()
-                or f"{_friendly_name(hass, power) or power} energy",
+                or f"{_name(hass, power) or power} energy",
             )
             await record(entry_id)
             inputs[stat] = entity_id
-            # The integral counts in k<power unit>h: kWh for W, MWh for kW.
-            factors[entity_id] = plan.factors[power]
+            factors[entity_id] = plan.integral_factors[power]
         entry_id, gross = await async_create_template(
             hass,
             name,
@@ -375,8 +402,6 @@ async def async_create(
             await record(entry_id)
     except Exception:
         # Nobody uses them yet; a retry would meet them.
-        for entry_id in reversed(created):
-            await hass.config_entries.async_remove(entry_id)
-            await helpers.async_discard(entry_id)
+        await _async_undo(hass, helpers, created)
         raise
     return gross, stat_rate

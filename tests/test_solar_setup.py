@@ -547,6 +547,57 @@ async def test_create_solar_setup_uses_integral_for_daily_solar(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+async def test_create_integral_of_a_kw_solar_counts_kwh(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    daily: set[str],
+) -> None:
+    """The integral of a kW solar counts in kWh, so the gross needs no factor."""
+    daily.add(SOLAR)
+    hass.states.async_set(
+        SOLAR_POWER, "0.3", {"device_class": "power", "unit_of_measurement": "kW"}
+    )
+    response = await create(hass_ws_client, hass)
+    assert response["success"], response
+    integral = next(
+        e
+        for e in hass.config_entries.async_entries("integration")
+        if e.options.get("source") == SOLAR_POWER
+    )
+    assert "unit_prefix" not in integral.options
+    integral_entity = _entity_of(hass, integral.entry_id)
+    templates = _template_entries(hass)
+    assert templates["Main gross"].options["state"] == gross_energy_template(
+        MeterKind.NET, "sensor.main_energy", integral_entity, None
+    )
+    assert templates["Main gross power"].options["state"] == gross_power_template(
+        "sensor.main_power", SOLAR_POWER, factors={SOLAR_POWER: 1000.0}
+    )
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize("unit", ["BTU/h", None])
+async def test_preview_blocks_a_power_without_energy_unit(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    daily: set[str],
+    unit: str | None,
+) -> None:
+    """BTU/h is a power, but its integral is no energy unit; no unit is none."""
+    daily.add(SOLAR)
+    if unit is None:
+        hass.states.async_set(SOLAR_POWER, "1", {})
+        er.async_get(hass).async_update_entity(SOLAR_POWER, unit_of_measurement=None)
+    else:
+        hass.states.async_set(SOLAR_POWER, "1", {"unit_of_measurement": unit})
+    response = await preview(hass_ws_client, hass)
+    assert response["result"]["blocked"] == "unsupported_input"
+    assert response["result"]["blocked_entity"] == SOLAR_POWER
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
 async def test_create_draws_with_returned_in_wh(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -611,9 +662,11 @@ async def test_create_names_integrals_as_asked(
 ) -> None:
     """The panel can pass translated integral names, per power sensor."""
     daily.update({SOLAR, "sensor.main_energy"})
+    # Without a friendly name the registry's name is used, not the entity ID.
     hass.states.async_set(
         SOLAR_POWER, "300", {"device_class": "power", "unit_of_measurement": "W"}
     )
+    er.async_get(hass).async_update_entity(SOLAR_POWER, name="Balcony")
     response = await create(
         hass_ws_client,
         hass,
@@ -621,8 +674,7 @@ async def test_create_names_integrals_as_asked(
     )
     assert response["success"], response
     titles = {e.title for e in hass.config_entries.async_entries("integration")}
-    # The solar's power has no friendly name of its own: its entity ID is used.
-    assert {"Main Energie", f"{SOLAR_POWER} energy"} <= titles
+    assert {"Main Energie", "Balcony energy"} <= titles
     assert len(loaded_entry.runtime_data.helpers.entries()) == 4
 
 
@@ -670,6 +722,61 @@ async def test_solar_setup_rolls_back_on_failure(
     assert hass.config_entries.async_entries("template") == []
     assert hass.config_entries.async_entries("integration") == before
     assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+async def test_rollback_goes_on_when_a_removal_fails(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    daily: set[str],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Every helper is still removed and the first error is the one raised."""
+    daily.add(SOLAR)
+    original_template = solar_setup.async_create_template
+    calls = 0
+
+    async def power_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise template_module._failed()
+        return await original_template(*args, **kwargs)
+
+    original_remove = hass.config_entries.async_remove
+    refused: list[str] = []
+
+    async def remove(entry_id: str) -> Any:
+        entry = hass.config_entries.async_get_entry(entry_id)
+        if entry is not None and entry.domain == "template":
+            refused.append(entry_id)
+            raise RuntimeError("busy")
+        return await original_remove(entry_id)
+
+    original_discard = loaded_entry.runtime_data.helpers.async_discard
+
+    async def discard(entry_id: str) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(solar_setup, "async_create_template", power_fails)
+    monkeypatch.setattr(hass.config_entries, "async_remove", remove)
+    monkeypatch.setattr(loaded_entry.runtime_data.helpers, "async_discard", discard)
+    before = hass.config_entries.async_entries("integration")
+    response = await create(hass_ws_client, hass)
+    assert response["error"]["translation_key"] == "template_failed"
+    # The energy template could not be removed; it stays recorded as ours.
+    # The integral was removed even though forgetting it failed.
+    assert [e.entry_id for e in hass.config_entries.async_entries("template")] == (
+        refused
+    )
+    assert hass.config_entries.async_entries("integration") == before
+    assert "busy" in caplog.text
+    assert "disk full" in caplog.text
+    monkeypatch.setattr(
+        loaded_entry.runtime_data.helpers, "async_discard", original_discard
+    )
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])

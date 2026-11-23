@@ -9,6 +9,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
@@ -1058,6 +1059,44 @@ async def test_create_water_meter(
         name="UPS energy",
     )
     assert response["result"]["kind"] == "electricity"
+
+
+@pytest.mark.parametrize(
+    ("unit", "energy_unit"),
+    [("W", "kWh"), ("kW", "kWh"), ("MW", "MWh"), (None, "kWh")],
+)
+def test_energy_unit_of_an_integral(unit: str | None, energy_unit: str) -> None:
+    """A W sensor gets the prefix k; one that has a prefix counts in its own."""
+    assert integral_module.energy_unit(unit) == energy_unit
+
+
+async def test_integral_of_a_kw_sensor_counts_kwh(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """0.5 kW for an hour is 0.5 kWh, with three decimals, not whole kWh."""
+    attributes = {
+        "device_class": "power",
+        "unit_of_measurement": "kW",
+        "state_class": "measurement",
+    }
+    freezer.move_to("2026-11-23 10:00:00+00:00")
+    hass.states.async_set("sensor.heat_pump_power", "0.5", attributes)
+    entry_id, entity_id = await integral_module.async_create_integral(
+        hass, "sensor.heat_pump_power", "Heat pump energy"
+    )
+    await hass.async_block_till_done()
+    entry = hass.config_entries.async_get_entry(entry_id)
+    assert entry is not None
+    assert "unit_prefix" not in entry.options
+    freezer.tick(timedelta(hours=1))
+    hass.states.async_set(
+        "sensor.heat_pump_power", "0.5", attributes, force_update=True
+    )
+    await hass.async_block_till_done()
+    state = hass.states.get(entity_id)
+    assert state is not None
+    assert state.attributes["unit_of_measurement"] == "kWh"
+    assert float(state.state) == pytest.approx(0.5, abs=0.01)
 
 
 async def test_water_meter_needs_a_flow_unit(hass: HomeAssistant) -> None:
