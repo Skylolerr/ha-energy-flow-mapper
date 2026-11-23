@@ -882,18 +882,33 @@ def _diff_source_rates(
 ) -> list[dict[str, Any]]:
     """Return a `source_rate` entry for every source whose power changed.
 
-    A source is matched by any (role, statistic) it keeps.
+    A source is matched by any (role, statistic) it keeps and named by the
+    first one. A source that keeps none (its only meter was replaced) is
+    matched with the next unmatched old source of its type, and a source
+    without a match is new: then it is named by its first meter, and a power
+    sensor of its own is a change too.
     """
-    entries: list[dict[str, Any]] = []
-    for source in new:
+    matched: dict[int, tuple[Mapping[str, Any], tuple[str, str]]] = {}
+    for index, source in enumerate(new):
         pairs = source_roles([source])
         for before in old:
             kept = [pair for pair in pairs if pair in source_roles([before])]
             if kept:
-                if _source_power(before) != _source_power(source):
-                    role, stat = kept[0]
-                    entries.append({"type": "source_rate", "stat": stat, "role": role})
+                matched[index] = (before, kept[0])
                 break
+    rest = [b for b in old if all(b is not m for m, _ in matched.values())]
+    entries: list[dict[str, Any]] = []
+    for index, source in enumerate(new):
+        if index in matched:
+            before, (role, stat) = matched[index]
+        else:
+            if not (pairs := source_roles([source])):
+                continue
+            role, stat = pairs[0]
+            before = next((b for b in rest if b.get("type") == source.get("type")), {})
+            rest = [b for b in rest if b is not before]
+        if _source_power(before) != _source_power(source):
+            entries.append({"type": "source_rate", "stat": stat, "role": role})
     return entries
 
 

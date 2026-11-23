@@ -10,7 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.template import Template
 
-from custom_components.energy_flow_mapper import energy_access, solar_setup
+from custom_components.energy_flow_mapper import (
+    daily_reset,
+    energy_access,
+    solar_setup,
+)
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import template_meter as template_module
 from custom_components.energy_flow_mapper.const import DOMAIN
@@ -112,7 +116,7 @@ def daily(monkeypatch: pytest.MonkeyPatch) -> set[str]:
     async def fake(hass: HomeAssistant, stats: Any, days: int = 3) -> set[str]:
         return {stat for stat in stats if stat in found}
 
-    monkeypatch.setattr(solar_setup, "async_daily_resetting", fake)
+    monkeypatch.setattr(solar_setup, "async_daily_check", fake)
     return found
 
 
@@ -265,6 +269,7 @@ async def test_preview_suggests_draws_with_returned_sensor(
         "integrals": [],
         "blocked": None,
         "blocked_entity": None,
+        "unusable_power": None,
     }
 
 
@@ -566,25 +571,54 @@ async def test_preview_blocks_inputs_without_unit(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_preview_blocks_power_without_unit(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+@pytest.mark.usefixtures("daily")
+@pytest.mark.parametrize(
+    "powers",
+    [[SOLAR_POWER], ["sensor.main_power"], ["sensor.main_power", SOLAR_POWER]],
+)
+async def test_power_without_unit_gives_no_gross_power(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    powers: list[str],
 ) -> None:
-    """A power sensor without a power unit cannot be added either."""
-    hass.states.async_set(SOLAR_POWER, "1", {"unit_of_measurement": "%"})
+    """A power sensor without a power unit only leaves out the gross power.
+
+    With both unusable, the preview names the circuit's (the first found).
+    """
+    for power in powers:
+        hass.states.async_set(power, "1", {"unit_of_measurement": "%"})
     response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] == "unsupported_input"
-    assert response["result"]["blocked_entity"] == SOLAR_POWER
+    result = response["result"]
+    assert result["blocked"] is None
+    assert result["unusable_power"] == powers[0]
+    response = await create(hass_ws_client, hass)
+    assert response["success"], response
+    assert response["result"]["stat_rate"] is None
+    assert set(_template_entries(hass)) == {"Main gross"}
+    assert len(loaded_entry.runtime_data.helpers.entries()) == 1
 
 
 @pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_preview_uses_registry_unit_of_unavailable_input(
+async def test_preview_waits_for_an_unavailable_input(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """An unavailable input keeps the unit its registry entry knows."""
+    """An unavailable input keeps the unit its registry entry knows.
+
+    Its value is missing, though: the starting value of the gross meter
+    cannot be set, so the setup waits until every input reports one.
+    """
     hass.states.async_set(SOLAR, "unavailable", {})
     response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] is None
+    assert response["result"]["blocked"] == "input_not_ready"
+    assert response["result"]["blocked_entity"] == SOLAR
+    hass.states.async_remove(SOLAR)
+    response = await preview(hass_ws_client, hass)
+    assert response["result"]["blocked"] == "input_not_ready"
+    response = await create(hass_ws_client, hass)
+    assert response["error"]["translation_key"] == "input_not_ready"
+    assert response["error"]["translation_placeholders"] == {"entity_id": SOLAR}
+    assert hass.config_entries.async_entries("template") == []
 
 
 @pytest.mark.usefixtures("loaded_entry", "daily")
@@ -971,6 +1005,94 @@ async def test_solar_setup_rolls_back_a_failed_integral(
     response = await create(hass_ws_client, hass)
     assert response["error"]["translation_key"] == "integral_failed"
     assert hass.config_entries.async_entries("integration") == before
+    assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+async def test_gross_energy_template_offset(hass: HomeAssistant) -> None:
+    """A constant offset lifts the starting value; differences stay the same."""
+    template = gross_energy_template(
+        MeterKind.NET, "sensor.a", "sensor.c", None, offset=251
+    )
+    assert "{{ (meter | float + solar | float + 251) | round(3) }}" in template
+    hass.states.async_set("sensor.a", "-250")
+    hass.states.async_set("sensor.c", "0")
+    assert render(hass, template) == 1.0
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+async def test_create_gross_meter_starts_above_zero(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    daily: set[str],
+) -> None:
+    """Returned more than drawn, the solar from a fresh integral (at 0).
+
+    50 - 300 + 0 would start at -250 kWh; Home Assistant skips negative
+    states of a meter. The template adds a constant so it starts at 1 kWh.
+    """
+    _returned(hass)
+    daily.add(SOLAR)
+    hass.states.async_set("sensor.main_energy", "50", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(RETURNED, "300000", {"unit_of_measurement": "Wh"})
+    response = await create(hass_ws_client, hass, kind="draws")
+    assert response["success"], response
+    integral = next(
+        e
+        for e in hass.config_entries.async_entries("integration")
+        if e.options.get("source") == SOLAR_POWER
+    )
+    integral_entity = _entity_of(hass, integral.entry_id)
+    state = _template_entries(hass)["Main gross"].options["state"]
+    assert state == gross_energy_template(
+        MeterKind.DRAWS,
+        "sensor.main_energy",
+        integral_entity,
+        RETURNED,
+        factors={RETURNED: 0.001},
+        offset=251,
+    )
+    hass.states.async_set(integral_entity, "0")
+    assert render(hass, state) == 1.0
+
+
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_create_gross_meter_without_offset(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A gross meter that starts at 1 kWh or more gets no offset."""
+    hass.states.async_set("sensor.main_energy", "-0.5", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(SOLAR, "1.5", {"unit_of_measurement": "kWh"})
+    response = await create(hass_ws_client, hass)
+    assert response["success"], response
+    state = _template_entries(hass)["Main gross"].options["state"]
+    assert state == gross_energy_template(
+        MeterKind.NET, "sensor.main_energy", SOLAR, None
+    )
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+async def test_setup_blocked_when_the_daily_check_fails(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy recorder stops the setup with a retry reason, not silently."""
+
+    async def busy(*args: Any, **kwargs: Any) -> None:
+        return None  # the statistics query on a timeout or failure
+
+    monkeypatch.setattr(daily_reset, "async_hourly_statistics", busy)
+    hass.config.components.add("recorder")
+    response = await preview(hass_ws_client, hass)
+    result = response["result"]
+    assert result["blocked"] == "daily_check_failed"
+    assert result["blocked_entity"] == "sensor.main_energy"
+    assert result["daily"] == []
+    response = await create(hass_ws_client, hass)
+    assert response["error"]["translation_key"] == "daily_check_failed"
+    assert hass.config_entries.async_entries("template") == []
     assert loaded_entry.runtime_data.helpers.entries() == []
 
 

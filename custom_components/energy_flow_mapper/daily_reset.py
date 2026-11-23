@@ -28,10 +28,14 @@ _LOGGER = logging.getLogger(__name__)
 # waiting, the flag is extra information.
 QUERY_TIMEOUT: Final = 10
 
-# A value below this share of the hour before is a reset. A meter that only
-# grows never falls; the hourly state after a reset can already hold a large
-# part of a day (a night boiler, an EV), so the share is not near 0.
+# A value closer to 0 than this share of the hour before is a reset. A meter
+# that only grows never falls; the hourly state after a reset can already hold
+# a large part of a day (a night boiler, an EV), so the share is not near 0.
 FALL_SHARE: Final = 0.5
+# A reset is also a jump: larger than this many times the meter's usual
+# (median) change in an hour. A net meter that passes 0 at its usual pace
+# comes close to 0 too, but without a jump.
+JUMP_FACTOR: Final = 3
 # Days with a reset needed: one reset alone is a replaced meter.
 MIN_RESET_DAYS: Final = 2
 UTILITY_METER_DOMAIN: Final = "utility_meter"
@@ -44,15 +48,24 @@ def resets_daily(states: Sequence[tuple[datetime, float]]) -> bool:
     """Return True if the value falls back on at least two days.
 
     `states` are (start, state) pairs in time order, with local times. A
-    reset is a state below half of the state the hour before; it counts once
-    per day, at any time of day. A meter that goes below 0 in `states` (a net
-    meter) is never daily.
+    reset is a jump towards 0: the state is less than half as far from 0 as
+    the hour before, and it changed by more than `JUMP_FACTOR` times the
+    usual change in an hour. It counts once per day, at any time of day. A
+    per-day net meter falls back to 0 from either side; a lifetime net meter
+    that passes 0 at its usual pace does not jump.
     """
-    if any(value < 0 for _, value in states):
+    changes = sorted(
+        abs(value - before) for (_, before), (_, value) in pairwise(states)
+    )
+    if not changes:
         return False
+    usual = changes[len(changes) // 2]
     reset_days: set[date] = set()
     for (_, before), (when, value) in pairwise(states):
-        if value < FALL_SHARE * before:
+        if (
+            abs(value) < FALL_SHARE * abs(before)
+            and abs(value - before) > JUMP_FACTOR * usual
+        ):
             reset_days.add(when.date())
     return len(reset_days) >= MIN_RESET_DAYS
 
@@ -108,20 +121,36 @@ async def async_hourly_statistics(
 async def async_daily_resetting(
     hass: HomeAssistant, stats: Collection[str], days: int = 3
 ) -> set[str]:
-    """Return the statistics that reset every day.
+    """Return the statistics that reset every day, as far as known.
+
+    Like `async_daily_check`, but when the recorder fails or is too slow only
+    the utility meters are known: the flags are extra information and must
+    not stop the panel.
+    """
+    daily = await async_daily_check(hass, stats, days)
+    if daily is None:
+        return {stat for stat in stats if _daily_utility_meter(hass, stat)}
+    return daily
+
+
+async def async_daily_check(
+    hass: HomeAssistant, stats: Collection[str], days: int = 3
+) -> set[str] | None:
+    """Return the statistics that reset every day, or None if unknown.
 
     Reads the hourly states of the last `days` days of all statistics in one
     query. External statistics and meters without data are not daily; a
-    utility meter with a daily cycle is daily without statistics. When the
-    recorder fails or is too slow, only the utility meters are known.
+    utility meter with a daily cycle is daily without statistics. Without a
+    recorder there are no statistics, so only the utility meters are daily.
+    None when the recorder fails or is too slow: the setup must not build on
+    a check that did not run.
     """
     daily = {stat for stat in stats if _daily_utility_meter(hass, stat)}
     ids = {stat for stat in stats if valid_entity_id(stat) and stat not in daily}
-    if (
-        not ids
-        or (rows := await async_hourly_statistics(hass, ids, days, {"state"})) is None
-    ):
+    if not ids or "recorder" not in hass.config.components:
         return daily
+    if (rows := await async_hourly_statistics(hass, ids, days, {"state"})) is None:
+        return None
     for stat in ids:
         states = [
             (dt_util.as_local(dt_util.utc_from_timestamp(row["start"])), state)

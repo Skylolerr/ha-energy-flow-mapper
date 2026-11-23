@@ -9,6 +9,8 @@ from typing import Any
 
 import pytest
 
+from custom_components.energy_flow_mapper.solar_setup import Blocked
+
 BASE = Path(__file__).parent.parent / "custom_components" / "energy_flow_mapper"
 PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -63,3 +65,9 @@ def test_group_loop_mentions_devices(language: str, word: str) -> None:
     # move_group below one of the group's own devices is a loop too.
     translation = load(BASE / "translations" / f"{language}.json")
     assert word in translation["exceptions.group_loop.message"]
+
+
+def test_every_setup_reason_has_a_message() -> None:
+    # Each reason the solar setup is blocked for is also an exception key.
+    missing = [r for r in Blocked if f"exceptions.{r}.message" not in STRINGS]
+    assert missing == []

@@ -18,12 +18,20 @@ setup time; the helpers are fixed at kWh and W.
 
 An input that falls back to 0 every day would make the gross meter jump down
 once a day, so it is replaced by an integral helper of its own power, created
-first. Without that power sensor the setup stops with a reason.
+first. Without that power sensor the setup stops with a reason, and so it
+does when the check for daily inputs could not run.
+
+The gross meter is `total_increasing`, and Home Assistant skips the negative
+states of such a meter. A circuit that returned more than it drew so far, or
+a solar from a fresh integral, would start it below 0: the template then adds
+a constant, read from the inputs at setup time, so it starts at 1 kWh or
+more. A constant does not change what the meter counts.
 """
 
 from __future__ import annotations
 
 import logging
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -39,7 +47,7 @@ from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 from .candidates import INTEGRATION_DOMAIN
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
-from .daily_reset import async_daily_resetting
+from .daily_reset import async_daily_check
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
 from .hints import returned_sensor, sum_members
 from .integral import async_create_integral, energy_unit, entity_unit
@@ -50,6 +58,9 @@ _LOGGER = logging.getLogger(__name__)
 ENERGY_DECIMALS: Final = 3
 POWER_DECIMALS: Final = 1
 SOLAR_STAT: Final = "stat_energy_from"
+# The lowest starting value (kWh) of a gross meter; a lower one gets an offset.
+# Not 0: an input that lags (an integral samples the power) can dip it a bit.
+START_MIN: Final = 1.0
 
 
 class MeterKind(StrEnum):
@@ -67,6 +78,8 @@ class Blocked(StrEnum):
     DAILY_WITHOUT_POWER = "daily_without_power"
     UNSUPPORTED_INPUT = "unsupported_input"
     SOLAR_ALREADY_IN_METER = "solar_already_in_meter"
+    DAILY_CHECK_FAILED = "daily_check_failed"
+    INPUT_NOT_READY = "input_not_ready"
 
 
 def _error(key: str, **placeholders: str) -> ServiceValidationError:
@@ -93,8 +106,9 @@ def _template(
     terms: list[tuple[str, str, str]],
     decimals: int,
     factors: Mapping[str, float],
+    offset: int = 0,
 ) -> str:
-    """Return a template of signed terms (sign, variable, entity ID)."""
+    """Return a template of signed terms (sign, variable, entity ID) + offset."""
     sets = "".join(
         f"{{% set {var} = states('{entity}') %}}" for _, var, entity in terms
     )
@@ -104,24 +118,28 @@ def _template(
         factor = factors.get(entity, 1.0)
         term = f"{var} | float" + ("" if factor == 1 else f" * {factor!r}")
         parts.append(term if not parts else f"{sign} {term}")
+    if offset:
+        parts.append(f"+ {offset}")
     return (
         f"{sets}{{% if {check} %}}{{{{ ({' '.join(parts)}) | round({decimals}) }}}}"
         "{% else %}{{ none }}{% endif %}"
     )
 
 
-def gross_energy_template(
+def gross_energy_template(  # noqa: PLR0913 - the inputs, then keywords
     kind: MeterKind,
     meter: str,
     solar: str,
     returned: str | None,
     *,
     factors: Mapping[str, float] | None = None,
+    offset: int = 0,
 ) -> str:
     """Return the gross energy template (kWh, 3 decimals).
 
     Net: meter + solar. Draws: meter - returned + solar. `factors` maps an
-    entity ID to the factor that turns its value into kWh (1 is left out).
+    entity ID to the factor that turns its value into kWh (1 is left out);
+    `offset` (kWh) is added to lift the starting value.
     """
     terms = [("+", "meter", meter)]
     if kind is MeterKind.DRAWS:
@@ -129,7 +147,7 @@ def gross_energy_template(
             raise ValueError("A meter that only draws needs a returned sensor")
         terms.append(("-", "returned", returned))
     terms.append(("+", "solar", solar))
-    return _template(terms, ENERGY_DECIMALS, factors or {})
+    return _template(terms, ENERGY_DECIMALS, factors or {}, offset)
 
 
 def gross_power_template(
@@ -194,6 +212,10 @@ class Plan:
     factors: dict[str, float] = field(default_factory=dict)
     # Power sensor -> factor to kWh of its integral.
     integral_factors: dict[str, float] = field(default_factory=dict)
+    # A power sensor without a usable unit: then there is no gross power.
+    unusable_power: str | None = None
+    # Added to the gross energy (kWh) so it starts at START_MIN or more.
+    offset: int = 0
     blocked: Blocked | None = None
     blocked_entity: str | None = None
 
@@ -217,14 +239,49 @@ class Plan:
             ],
             "blocked": self.blocked,
             "blocked_entity": self.blocked_entity,
+            "unusable_power": self.unusable_power,
         }
 
 
 def _check_power(hass: HomeAssistant, plan: Plan, power: str) -> None:
+    """Keep the factor of a power sensor; without one, no gross power."""
     if (factor := _factor(hass, power, "power")) is None:
-        plan.block(Blocked.UNSUPPORTED_INPUT, power)
+        if plan.unusable_power is None:
+            plan.unusable_power = power
     else:
         plan.factors[power] = factor
+
+
+def _value(hass: HomeAssistant, entity_id: str) -> float | None:
+    """Return the current value of an input, or None if it has no number."""
+    state = hass.states.get(entity_id)
+    try:
+        value = float(state.state) if state is not None else math.nan
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def _set_offset(
+    hass: HomeAssistant, plan: Plan, inputs: list[tuple[str, str | None]]
+) -> None:
+    """Set the offset that starts the gross energy at START_MIN or more.
+
+    Reads the inputs as the template will. An input replaced by a new
+    integral starts at 0. An input without a number blocks: the starting
+    value would be unknown.
+    """
+    gross = 0.0
+    for entity, _ in inputs:
+        if entity in plan.integrals:
+            continue
+        if (value := _value(hass, entity)) is None:
+            plan.block(Blocked.INPUT_NOT_READY, entity)
+            return
+        sign = -1 if entity == plan.returned else 1
+        gross += sign * value * plan.factors[entity]
+    if gross < START_MIN:
+        plan.offset = math.ceil(START_MIN - gross)
 
 
 def _solar_inputs(hass: HomeAssistant, solar: str, solar_power: str | None) -> set[str]:
@@ -331,7 +388,9 @@ async def async_plan(
     returned, not of either alone: a daily drawn or returned meter then has
     no power of its own and blocks the setup. A sum or template helper that
     already holds the solar (or its power, or an integral of its power)
-    blocks it too.
+    blocks it too, and so does a check for daily inputs that could not run
+    (the recorder is busy) or an input without a value (see `_set_offset`).
+    A power sensor without a usable unit only leaves out the gross power.
     """
     device, source = _find(prefs, stat, solar)
     found = returned_sensor(hass, stat, exclude=used_stats(prefs))
@@ -351,7 +410,10 @@ async def async_plan(
     if _holds_solar(hass, stat, _solar_inputs(hass, solar, plan.solar_power)):
         plan.block(Blocked.SOLAR_ALREADY_IN_METER, stat)
     inputs = _inputs(plan)
-    daily = await async_daily_resetting(hass, [entity for entity, _ in inputs])
+    daily = await async_daily_check(hass, [entity for entity, _ in inputs])
+    if daily is None:
+        plan.block(Blocked.DAILY_CHECK_FAILED, stat)
+        daily = set()
     for entity, power in inputs:
         if entity not in daily:
             if (factor := _factor(hass, entity, "energy")) is None:
@@ -370,6 +432,8 @@ async def async_plan(
     if plan.circuit_power is not None and plan.solar_power is not None:
         for power in (plan.circuit_power, plan.solar_power):
             _check_power(hass, plan, power)
+    if plan.blocked is None:
+        _set_offset(hass, plan, inputs)
     return plan
 
 
@@ -409,9 +473,10 @@ async def async_create(
     """Create the helpers of `plan`; return the gross meter and gross power.
 
     First the integrals of daily inputs, then the energy template, then the
-    power template when both power sensors exist. Every helper is recorded
-    as created by Energy Flow Mapper. When one fails, every helper of this
-    request is removed and forgotten again, and the error is raised.
+    power template when both power sensors exist and are usable. Every
+    helper is recorded as created by Energy Flow Mapper. When one fails,
+    every helper of this request is removed and forgotten again, and the
+    error is raised.
     """
     if plan.blocked is not None:
         raise _error(plan.blocked, entity_id=plan.blocked_entity or plan.meter)
@@ -445,18 +510,21 @@ async def async_create(
                 inputs.get(plan.solar, plan.solar),
                 plan.returned,
                 factors=factors,
+                offset=plan.offset,
             ),
             "energy",
         )
         await record(entry_id)
         stat_rate = None
-        if plan.circuit_power is not None and plan.solar_power is not None:
+        if (
+            (circuit_power := plan.circuit_power) is not None
+            and (solar_power := plan.solar_power) is not None
+            and plan.unusable_power is None
+        ):
             entry_id, stat_rate = await async_create_template(
                 hass,
                 power_name,
-                gross_power_template(
-                    plan.circuit_power, plan.solar_power, factors=factors
-                ),
+                gross_power_template(circuit_power, solar_power, factors=factors),
                 "power",
             )
             await record(entry_id)

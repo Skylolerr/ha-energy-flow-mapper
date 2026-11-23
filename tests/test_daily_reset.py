@@ -16,6 +16,7 @@ from custom_components.energy_flow_mapper import candidates as candidates_module
 from custom_components.energy_flow_mapper import daily_reset
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.daily_reset import (
+    async_daily_check,
     async_daily_resetting,
     resets_daily,
 )
@@ -83,7 +84,7 @@ def test_single_reset_not_daily() -> None:
 
 def test_several_drops_on_one_day_count_once() -> None:
     """Drops count per day: two drops on the same day are not daily."""
-    values = [10.0, 0.1, 5.0, 0.2, 6.0, 7.0]
+    values = [10.0, 0.1, 5.0, 0.2, 6.0, *[7.0] * 10]
     states = [(START + timedelta(hours=hour), v) for hour, v in enumerate(values)]
     assert not resets_daily(states)
 
@@ -112,8 +113,8 @@ def test_resets_daily_large_first_hour() -> None:
     assert resets_daily(states)
 
 
-def test_negative_net_meter_not_daily() -> None:
-    """A net meter that goes below 0 is not daily, whatever it falls to."""
+def test_net_meter_through_zero_not_daily() -> None:
+    """A net meter whose value passes 0 at its usual pace is not daily."""
 
     def net(when: datetime) -> float:
         # Grows at night, falls below 0 with the solar export during the day.
@@ -121,11 +122,35 @@ def test_negative_net_meter_not_daily() -> None:
 
     states = hourly(net)
     assert min(value for _, value in states) < 0
+    assert 0.0 in {value for _, value in states}  # it lands on 0 every day
     assert not resets_daily(states)
-    # Only one value below 0 in the window: still not daily.
+
+
+def test_lifetime_net_meter_drifting_through_zero_not_daily() -> None:
+    """A lifetime net meter near 0: +0.2 kWh an hour, -0.5 while exporting."""
+    value, states = -1.0, []
+    for hour in range(72):
+        when = START + timedelta(hours=hour)
+        value += -0.5 if 10 <= when.hour < 16 else 0.2
+        states.append((when, round(value, 3)))
+    assert min(v for _, v in states) < 0 < max(v for _, v in states)
+    assert not resets_daily(states)
+
+
+def test_daily_net_meter_resets_daily() -> None:
+    """A per-day net meter goes below 0 at noon and back to about 0 at midnight."""
+    day = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.0, 0.5, -0.2, -0.8, -1.0, -0.9]
+    day += [-0.7, -0.4, 0.0, 0.3, 0.6, 0.9, 1.2, 1.5, 1.8, 2.0, 2.2, 2.4]
+    assert resets_daily(hourly(lambda when: day[when.hour]))
+    # A day that ends below 0 falls back to 0 from below.
+    assert resets_daily(hourly(lambda when: -0.3 * when.hour))
+
+
+def test_daily_meter_with_a_stray_negative_value_is_daily() -> None:
+    """One value below 0 (a glitch) does not hide a daily meter."""
     daily = hourly(daily_total(0))
     daily[30] = (daily[30][0], -0.1)
-    assert not resets_daily(daily)
+    assert resets_daily(daily)
 
 
 class FakeRecorder:
@@ -310,3 +335,35 @@ async def test_daily_resetting_survives_a_failing_recorder(
     monkeypatch.setattr(daily_reset, "get_instance", SlowRecorder)
     monkeypatch.setattr(daily_reset, "QUERY_TIMEOUT", 0.01)
     assert await async_daily_resetting(hass, stats) == {"sensor.daily_meter"}
+
+
+async def test_daily_check_says_when_it_could_not_run(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The setup's check is None (unknown) when the recorder fails.
+
+    Without a recorder there are no statistics to wait for: only the utility
+    meters are daily, as known.
+    """
+    _, data = statistics
+    _utility_meter(hass, "sensor.daily_meter", "daily")
+    data["sensor.kitchen"] = rows(hourly(daily_total(0)))
+    stats = ["sensor.daily_meter", "sensor.kitchen"]
+    assert await async_daily_check(hass, stats) == {
+        "sensor.daily_meter",
+        "sensor.kitchen",
+    }
+
+    def fail(*args: Any) -> Rows:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(daily_reset, "statistics_during_period", fail)
+    assert await async_daily_check(hass, stats) is None
+    # Only utility meters: nothing to read, so nothing can fail.
+    assert await async_daily_check(hass, ["sensor.daily_meter"]) == {
+        "sensor.daily_meter"
+    }
+    hass.config.components.remove("recorder")
+    assert await async_daily_check(hass, stats) == {"sensor.daily_meter"}

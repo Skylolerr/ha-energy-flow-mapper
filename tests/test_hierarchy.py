@@ -1162,6 +1162,79 @@ def test_diff_source_rate() -> None:
     assert summarize(diff(old, cleared)) == {"source_rate": 1}
 
 
+def test_diff_source_rate_with_replaced_meter() -> None:
+    """A power sensor set in the same draft that replaces the meter still shows.
+
+    A source that keeps no meter is matched with the next unmatched source of
+    its type; a new source with a power sensor has none before.
+    """
+    water = {"type": "water", "stat_energy_from": "sensor.w1"}
+    grid = {"type": "grid", "stat_energy_from": "sensor.i1"}
+    old = prefs(energy_sources=[grid, water])
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "assign_source",
+                "role": "water",
+                "stat": "sensor.w2",
+                "replace": "sensor.w1",
+            },
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.w2",
+                "role": "water",
+                "stat_rate": "sensor.flow",
+            },
+            {
+                "type": "assign_source",
+                "role": "import",
+                "stat": "sensor.i2",
+                "replace": "sensor.i1",
+            },
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.i2",
+                "role": "import",
+                "power_config": {"stat_rate": "sensor.p"},
+            },
+            {"type": "assign_source", "role": "production", "stat": "sensor.pv"},
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.pv",
+                "role": "production",
+                "stat_rate": "sensor.pv_power",
+            },
+        ],
+    )
+    rates = [entry for entry in diff(old, new) if entry["type"] == "source_rate"]
+    assert rates == [
+        {"type": "source_rate", "stat": "sensor.i2", "role": "import"},
+        {"type": "source_rate", "stat": "sensor.w2", "role": "water"},
+        {"type": "source_rate", "stat": "sensor.pv", "role": "production"},
+    ]
+    # A replaced meter whose power sensor stays is no power change.
+    with_flow = prefs(energy_sources=[{**water, "stat_rate": "sensor.flow"}])
+    replaced = apply_changes(
+        with_flow,
+        [
+            {
+                "type": "assign_source",
+                "role": "water",
+                "stat": "sensor.w2",
+                "replace": "sensor.w1",
+            }
+        ],
+    )
+    assert [e["type"] for e in diff(with_flow, replaced)] == [
+        "source_added",
+        "source_removed",
+    ]
+    # A source without any meter cannot be named; it is left out.
+    unknown = prefs(energy_sources=[{"type": "unknown", "stat_rate": "sensor.z"}])
+    assert diff(prefs(), unknown) == []
+
+
 # --- home meter ---------------------------------------------------------------
 
 HOME_SOURCE: dict[str, Any] = {

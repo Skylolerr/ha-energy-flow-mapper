@@ -97,6 +97,12 @@
     "solar_already_in_meter": {
       "message": "{entity_id} somma già l’impianto solare, quindi un contatore lordo lo conterebbe due volte. Usalo così com’è, oppure togli prima l’impianto solare dalla somma."
     },
+    "daily_check_failed": {
+      "message": "Non è stato possibile verificare se i contatori di {entity_id} ripartono da 0 ogni giorno: il registratore non ha risposto in tempo. Riprova tra un momento."
+    },
+    "input_not_ready": {
+      "message": "{entity_id} al momento non ha un valore, quindi non è possibile fissare il valore iniziale del contatore lordo. Riprova quando tutti i suoi sensori indicano un valore."
+    },
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
     },

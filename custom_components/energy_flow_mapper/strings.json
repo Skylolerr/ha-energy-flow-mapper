@@ -97,6 +97,12 @@
     "solar_already_in_meter": {
       "message": "{entity_id} already adds up the solar, so a gross meter would count the solar twice. Use it as it is, or remove the solar from the sum first."
     },
+    "daily_check_failed": {
+      "message": "The check whether the meters of {entity_id} start again at 0 every day could not run: the recorder did not answer in time. Try again in a moment."
+    },
+    "input_not_ready": {
+      "message": "{entity_id} has no value right now, so the starting value of the gross meter cannot be set. Try again when all its sensors report a value."
+    },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },

@@ -97,6 +97,12 @@
     "solar_already_in_meter": {
       "message": "{entity_id} zählt die Solaranlage schon mit, ein Brutto-Zähler würde sie also doppelt zählen. Verwende ihn so, wie er ist, oder nimm die Solaranlage zuerst aus der Summe."
     },
+    "daily_check_failed": {
+      "message": "Die Prüfung, ob die Zähler von {entity_id} jeden Tag wieder bei 0 beginnen, konnte nicht laufen: Der Recorder hat nicht rechtzeitig geantwortet. Versuche es gleich noch einmal."
+    },
+    "input_not_ready": {
+      "message": "{entity_id} hat gerade keinen Wert, darum kann der Startwert des Brutto-Zählers nicht festgelegt werden. Versuche es wieder, wenn alle seine Sensoren einen Wert melden."
+    },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },

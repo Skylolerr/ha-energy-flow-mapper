@@ -97,6 +97,12 @@
     "solar_already_in_meter": {
       "message": "{entity_id} additionne déjà l’installation solaire ; un compteur brut la compterait donc deux fois. Utilise-le tel quel, ou retire d’abord l’installation solaire de la somme."
     },
+    "daily_check_failed": {
+      "message": "La vérification si les compteurs de {entity_id} repartent de 0 chaque jour n’a pas pu se faire : l’enregistreur n’a pas répondu à temps. Réessaie dans un instant."
+    },
+    "input_not_ready": {
+      "message": "{entity_id} n’a pas de valeur pour le moment, la valeur de départ du compteur brut ne peut donc pas être fixée. Réessaie quand tous ses capteurs indiquent une valeur."
+    },
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
     },
