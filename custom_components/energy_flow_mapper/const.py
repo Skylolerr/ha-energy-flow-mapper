@@ -29,7 +29,10 @@ ISSUE_UNSUPPORTED_ENERGY_API: Final = "unsupported_energy_api"
 
 HELPERS_STORAGE_VERSION: Final = 1
 HELPERS_STORAGE_KEY: Final = f"{DOMAIN}.helpers"
-SUGGESTIONS_STORAGE_VERSION: Final = 2
+SUGGESTIONS_STORAGE_VERSION: Final = 1
+# 2: dismissed hints next to the ignored suggestions. Only the minor version
+# grows, so an older release can still load the file after a downgrade.
+SUGGESTIONS_STORAGE_MINOR_VERSION: Final = 2
 SUGGESTIONS_STORAGE_KEY: Final = f"{DOMAIN}.suggestions"
 GROUPS_STORAGE_VERSION: Final = 1
 GROUPS_STORAGE_KEY: Final = f"{DOMAIN}.groups"

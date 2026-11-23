@@ -32,9 +32,11 @@ All in `.storage/`, each with its own version:
 
 - `energy_flow_mapper.backups` (`STORAGE_VERSION` / `STORAGE_MINOR_VERSION`)
 - `energy_flow_mapper.helpers`, `energy_flow_mapper.groups`
-- `energy_flow_mapper.suggestions` (version 2): ignored suggestions and dismissed hints
-  (code, kind, stat, optional source role). The migration from version 1 keeps the ignored
-  suggestions and adds an empty list of dismissed hints. Entries of meters no longer in
+- `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
+  `SUGGESTIONS_STORAGE_MINOR_VERSION` 2): ignored suggestions and dismissed hints
+  (code, kind, stat, optional source role). The migration from 1.1 keeps the ignored
+  suggestions and adds an empty list of dismissed hints. Only the minor version grew, so
+  an older release still loads the file after a downgrade. Entries of meters no longer in
   the settings are dropped on the next write. `clear_suggestions` clears both. Not part
   of backups, export or import.
 

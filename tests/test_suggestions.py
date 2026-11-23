@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.storage import Store
 
 from custom_components.energy_flow_mapper.const import SUGGESTIONS_STORAGE_KEY
 from custom_components.energy_flow_mapper.suggestions import SuggestionStore
@@ -105,12 +106,13 @@ HINT = {"code": "daily_reset", "kind": "electricity", "stat": "sensor.o1"}
 HINT_KNOWN = {("electricity", "sensor.o1")}
 
 
-async def test_store_migrates_v1(
+async def test_store_migrates_v1_1(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
-    """Version 1 files only had `ignored`; they gain an empty `dismissed`."""
+    """Version 1.1 files only had `ignored`; they gain an empty `dismissed`."""
     hass_storage[SUGGESTIONS_STORAGE_KEY] = {
         "version": 1,
+        "minor_version": 1,
         "key": SUGGESTIONS_STORAGE_KEY,
         "data": {"ignored": [PAIR]},
     }
@@ -119,11 +121,22 @@ async def test_store_migrates_v1(
     assert store.ignored() == [PAIR]
     assert store.dismissed() == []
     await store.async_dismiss(HINT, HINT_KNOWN | KNOWN)
-    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["version"] == 2
-    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
-        "ignored": [PAIR],
-        "dismissed": [HINT],
-    }
+    saved = hass_storage[SUGGESTIONS_STORAGE_KEY]
+    assert (saved["version"], saved["minor_version"]) == (1, 2)
+    assert saved["data"] == {"ignored": [PAIR], "dismissed": [HINT]}
+
+
+async def test_store_1_2_loads_in_older_releases(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Only the minor version grew, so 0.10.x (a plain version 1 store) still loads."""
+    store = SuggestionStore(hass)
+    await store.async_load()
+    await store.async_dismiss(HINT, HINT_KNOWN | KNOWN)
+    await store.async_ignore(PAIR, KNOWN)
+    older: Store[dict[str, Any]] = Store(hass, 1, SUGGESTIONS_STORAGE_KEY)
+    data = await older.async_load()
+    assert data == {"ignored": [PAIR], "dismissed": [HINT]}
 
 
 async def test_dismiss_hint_persists(
@@ -187,7 +200,8 @@ async def test_load_skips_broken_dismissals(
 ) -> None:
     """Damaged dismissals are left out, a non-string role makes one invalid."""
     hass_storage[SUGGESTIONS_STORAGE_KEY] = {
-        "version": 2,
+        "version": 1,
+        "minor_version": 2,
         "key": SUGGESTIONS_STORAGE_KEY,
         "data": {
             "ignored": [],
@@ -208,3 +222,19 @@ async def test_load_skips_broken_dismissals(
     other = SuggestionStore(hass)
     await other.async_load()
     assert other.dismissed() == []
+
+
+async def test_store_keeps_newer_minor_data(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A file from a newer minor version is loaded as it is."""
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 3,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {"ignored": [PAIR], "dismissed": [HINT]},
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.ignored() == [PAIR]
+    assert store.dismissed() == [HINT]

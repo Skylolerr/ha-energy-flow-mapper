@@ -7,7 +7,11 @@ from typing import Any, TypedDict
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
-from .const import SUGGESTIONS_STORAGE_KEY, SUGGESTIONS_STORAGE_VERSION
+from .const import (
+    SUGGESTIONS_STORAGE_KEY,
+    SUGGESTIONS_STORAGE_MINOR_VERSION,
+    SUGGESTIONS_STORAGE_VERSION,
+)
 
 _KEYS = ("kind", "stat", "parent")
 _HINT_KEYS = ("code", "kind", "stat")
@@ -21,7 +25,7 @@ class SuggestionsData(TypedDict):
 
 
 class _SuggestionsStore(Store[SuggestionsData]):
-    """Store with the migration from version 1 (no dismissed hints)."""
+    """Store with the migration from version 1.1 (no dismissed hints)."""
 
     async def _async_migrate_func(
         self,
@@ -29,8 +33,10 @@ class _SuggestionsStore(Store[SuggestionsData]):
         old_minor_version: int,
         old_data: dict[str, Any],
     ) -> dict[str, Any]:
-        """Add the empty list of dismissed hints to version 1 data."""
-        return {**old_data, "dismissed": old_data.get("dismissed", [])}
+        """Add the empty list of dismissed hints to version 1.1 data."""
+        if old_minor_version < 2:
+            return {**old_data, "dismissed": old_data.get("dismissed", [])}
+        return old_data
 
 
 def _hint_entry(raw: Any) -> dict[str, str] | None:
@@ -60,7 +66,10 @@ class SuggestionStore:
     def __init__(self, hass: HomeAssistant) -> None:
         """Create the store; call async_load before use."""
         self._store: _SuggestionsStore = _SuggestionsStore(
-            hass, SUGGESTIONS_STORAGE_VERSION, SUGGESTIONS_STORAGE_KEY
+            hass,
+            SUGGESTIONS_STORAGE_VERSION,
+            SUGGESTIONS_STORAGE_KEY,
+            minor_version=SUGGESTIONS_STORAGE_MINOR_VERSION,
         )
         self._ignored: list[dict[str, str]] = []
         self._dismissed: list[dict[str, str]] = []
