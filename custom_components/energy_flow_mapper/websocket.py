@@ -102,9 +102,11 @@ from .hierarchy import (
     validate,
 )
 from .hints import (
+    Readings,
     async_counted_returned,
     async_hints,
     async_sum_members,
+    async_watch,
     meter_powers,
     meter_stats,
 )
@@ -432,16 +434,17 @@ async def websocket_get(
     # Daily resets are read only for the meters of devices and sources and the
     # members of their sum helpers: the hints and the sum dialog need no more,
     # so free meters, power sensors and cost statistics keep `daily_reset`
-    # false. Both recorder queries (daily resets, returned energy counted
-    # lately) run at once: a busy recorder makes the panel wait for one
-    # timeout, not two.
-    daily, counted = await asyncio.gather(
+    # false. The recorder queries (daily resets, returned energy counted
+    # lately, the safety net of the gross meters) run at once: a busy
+    # recorder makes the panel wait for one timeout, not three.
+    daily, counted, watched = await asyncio.gather(
         async_daily_resetting(
             hass,
             sorted(meter_stats(prefs) | async_sum_members(hass, prefs)),
             power_of=meter_powers(prefs),
         ),
         async_counted_returned(hass, prefs),
+        async_watch(hass, prefs, runtime.helpers.records()),
     )
     mark_daily_reset(meters, daily)
     issues = _checked_issues(hass, prefs, cache)
@@ -471,7 +474,9 @@ async def websocket_get(
             ),
             "ignored_suggestions": runtime.suggestions.ignored(),
             "dismissed_hints": runtime.suggestions.dismissed(),
-            "hints": await async_hints(hass, prefs, stats, daily, counted),
+            "hints": await async_hints(
+                hass, prefs, stats, daily, Readings(counted, watched)
+            ),
             "inputs": counted_inputs(
                 hass,
                 sorted(meter_stats(prefs) | {c["stat"] for c in [*candidates, *water]}),

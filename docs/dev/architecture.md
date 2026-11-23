@@ -18,7 +18,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `energy_stats.py` | Energy per statistic in a period, from the recorder |
 | `daily_reset.py` | Recognise meters that reset periodically for `get`, the hints and the setup (the rule of `stats_probe.py`, utility meters with a cycle) |
 | `stats_probe.py` | What the statistics show: periodic counters (same-direction drop rule, explained by the meter's own power when known; utility meter cycle; changing `last_reset`), power sign, hourly sparkline; reads 5-minute statistics first, hourly where they do not cover the window, in kWh and W; the guarded recorder queries; `daily_check` |
-| `hints.py` | Hints of the panel, returned by `get`: returned energy of a circuit while solar exists, daily meters in a sum, power sensors the HA device has (entity registry incl. disabled entities, group options, recorder) |
+| `hints.py` | Hints of the panel, returned by `get`: returned energy of a circuit while solar exists, daily meters in a sum, power sensors the HA device has (electricity: of the meter's own channel), the safety net of the setup's gross meters (entity registry incl. disabled entities, group options, recorder) |
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups, helpers the panel created, ignored suggestions |
 | `integral.py`, `sum_meter.py` | Create integral helpers ("Create meter") and sensor group sums ("Create sum meter") |
@@ -102,6 +102,13 @@ hints that need it instead of blocking `get`. Daily resets are read only for the
 devices and sources and the members of their sum helpers (what the hints and the sum dialog
 use); free meters keep `daily_reset: false`. `dismiss_hint` stores a dismissal. The card
 gets no hints.
+
+The safety net (`async_watch`) watches the gross meters of the solar setup, found by their
+`gross_energy` records in the created helpers: `gross_off` (an hour off its gross power),
+`gross_unknown` (a gap of more than 1 h in the 5-minute statistics) and
+`solar_term_short` / `solar_term_high` (the solar term's last day against the solar's own
+statistic). It reads with two queries that run together with the others of `get`, and a
+failing check only loses its hint.
 
 ## Panel and card (`panel/`)
 

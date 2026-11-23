@@ -306,6 +306,14 @@ def _collect(
 
 
 @callback
+def direct_inputs(
+    hass: HomeAssistant, entity: str, cache: Cache | None = None
+) -> set[str]:
+    """Return what the helper behind `entity` reads itself (one level)."""
+    return set(_cached(hass, entity, {} if cache is None else cache).entities)
+
+
+@callback
 def meter_inputs(
     hass: HomeAssistant, entity: str, cache: Cache | None = None
 ) -> MeterInputs:
