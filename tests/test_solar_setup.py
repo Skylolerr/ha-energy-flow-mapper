@@ -2777,3 +2777,78 @@ async def test_draft_power_with_wrong_attributes_is_refused(
         **await draft(hass_ws_client, hass, set_solar_rate("sensor.dtu_power")),
     )
     assert response["error"]["translation_key"] == "not_offered"
+
+
+# --- Fix round 3 -------------------------------------------------------------
+
+
+async def test_solar_term_flapping_does_not_extend_the_hold(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Unavailable and unknown in turn for 2 h: only the first hold counts."""
+    template = await _solar_term_helpers(hass, freezer, "600")
+    await _minutes(hass, freezer, 1)
+    start = _number(hass, "sensor.gross")
+    for step in range(30):
+        _set(hass, "sensor.p", "unavailable" if step % 2 == 0 else "unknown", None)
+        await hass.async_block_till_done()
+        await _minutes(hass, freezer, 4)
+    assert _number(hass, template) == 0
+    # At most the first 10-minute hold at 600 W.
+    assert _number(hass, "sensor.gross") - start <= 0.1 + 0.001
+
+
+async def test_solar_term_unknown_is_zero_at_once(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Only `unavailable` is held; `unknown` gives 0 at once."""
+    template = await _solar_term_helpers(hass, freezer, "600")
+    await _minutes(hass, freezer, 1)
+    _set(hass, "sensor.p", "unknown", None)
+    await hass.async_block_till_done()
+    assert _number(hass, template) == 0
+
+
+async def test_solar_term_restored_state_is_zero(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A solar restored after a restart (not loaded yet) gives 0 at once."""
+    template = await _solar_term_helpers(hass, freezer, "600")
+    await _minutes(hass, freezer, 1)
+    assert _number(hass, template) == 600
+    hass.states.async_set("sensor.p", "unavailable", {"restored": True})
+    await hass.async_block_till_done()
+    assert _number(hass, template) == 0
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_draft_power_fallback_needs_a_sensor(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The registry fallback takes sensors only, not a `number` of class power."""
+    er.async_get(hass).async_get_or_create(
+        "number",
+        "test",
+        "limit-power",
+        suggested_object_id="limit_power",
+        original_device_class="power",
+        unit_of_measurement="W",
+    )
+    response = await preview(
+        hass_ws_client,
+        hass,
+        **await draft(hass_ws_client, hass, set_solar_rate("number.limit_power")),
+    )
+    assert response["error"]["translation_key"] == "not_offered"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_solar_counter_must_rise_on_two_days(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, evidence: Evidence
+) -> None:
+    """Data on two days but a rise on one only: not enough to call it lifetime."""
+    evidence[SOLAR] = lifetime(
+        series=_series([float(hour) for hour in range(24)] + [23.0] * 24)
+    )
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "solar_needs_data"

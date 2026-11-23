@@ -118,7 +118,7 @@ OFFSET_STEP: Final = 100
 OFFSET_MAX: Final = 1_000_000_000
 UNIT: Final = "unit_of_measurement"
 ENERGY_METHODS: Final = (Method.EM, Method.PLUG, Method.NET)
-# Local days of statistics a solar counter needs to be read as lifetime.
+# Local days with a rise a solar counter needs to be read as lifetime.
 MIN_DAYS: Final = 2
 # How long the solar term holds the solar's last power while it has none.
 SOLAR_HOLD_SECONDS: Final = 600
@@ -341,13 +341,19 @@ def gross_power_template(circuit: str, solar: str, *, invert: bool = False) -> s
 def solar_power_template(solar_power: str) -> str:
     """Return the solar's power in W for the solar term's integral.
 
-    While the solar has no number (a radio dropout, an inverter offline at
-    night) the template holds its own last value for SOLAR_HOLD_SECONDS,
-    then gives 0: an integral of an unavailable source turns unavailable
-    itself, and of 0 a short dropout at noon would lose energy. `now()`
-    renders it every minute, so the hold ends even if the solar stays
-    offline. Without its own value (just started) or without the solar
-    entity it is 0; a number in an unknown unit gives `none`.
+    While the solar is `unavailable` (a radio dropout, an inverter offline
+    at night) the template holds its own last value for
+    SOLAR_HOLD_SECONDS, then gives 0: an integral of an unavailable source
+    turns unavailable itself, and of 0 a short dropout at noon would lose
+    energy. `now()` renders it every minute, so the hold ends even if the
+    solar stays offline. Any other state without a number (`unknown`) gives
+    0 at once, so a solar that flaps between the two cannot extend the
+    hold; so does a state restored after a restart (attribute `restored`),
+    the solar's own value not being known yet. Without its own value (just
+    started) or without the solar entity it is 0; a number in an unknown
+    unit gives `none`. There is no bound on how long the template's own
+    value is unchanged: an inverter capped at its limit is constant for
+    hours.
     """
     sets, check, value = _w(_Term("solar", solar_power))
     entity = f"states.{solar_power}"
@@ -356,7 +362,9 @@ def solar_power_template(solar_power: str) -> str:
         "{% if solar | is_number %}"
         f"{{% if {check} %}}{{{{ ({value}) | round({POWER_DECIMALS}) }}}}"
         "{% else %}{{ none }}{% endif %}"
-        "{% elif this is defined and this.state | is_number"
+        "{% elif solar == 'unavailable'"
+        f" and state_attr('{solar_power}', 'restored') is not true"
+        " and this is defined and this.state | is_number"
         f" and {entity} is not none"
         f" and (now() - {entity}.last_changed).total_seconds()"
         f" < {SOLAR_HOLD_SECONDS} %}}"
@@ -485,11 +493,14 @@ def _state_class(hass: HomeAssistant, entity_id: str) -> str | None:
 def _rate_sensor(hass: HomeAssistant, power: str) -> bool:
     """Return True for a power sensor a draft may set.
 
-    Its state decides (`async_is_rate_sensor`). A state without device class
-    and unit (an inverter offline at night) leaves it to the registry: device
-    class power and a unit of the electricity rate units.
+    Only a sensor. Its state decides (`async_is_rate_sensor`). A state
+    without device class and unit (an inverter offline at night) leaves it
+    to the registry: device class power and a unit of the electricity rate
+    units.
     """
     state = hass.states.get(power)
+    if not power.startswith("sensor."):
+        return False
     if state is not None and (
         ATTR_DEVICE_CLASS in state.attributes or UNIT in state.attributes
     ):
@@ -835,7 +846,7 @@ class _Inputs:
     def counter(self, entity: str) -> Blocked | None:
         """Return why a counter cannot be read as lifetime, or None if it can.
 
-        Lifetime needs statistics on two local days or more that rise, no
+        Lifetime needs statistics that rise on two local days or more, no
         reset signal and no drop at all; the user can only mark it daily.
         """
         found = self.evidence.get(entity)
@@ -843,13 +854,14 @@ class _Inputs:
             found is not None and (found.periodic or found.certain or found.drops)
         ):
             return Blocked.SOLAR_NEEDS_POWER
-        values = [value for _, value in found.series] if found is not None else []
-        if (
-            found is None
-            or found.periodic is None
-            or len({when.date() for when, _ in found.series}) < MIN_DAYS
-            or not any(after > before for before, after in pairwise(values))
-        ):
+        rising_days = {
+            when.date()
+            for (_, before), (when, after) in pairwise(
+                found.series if found is not None else []
+            )
+            if after > before
+        }
+        if found is None or found.periodic is None or len(rising_days) < MIN_DAYS:
             return Blocked.SOLAR_NEEDS_DATA
         return None
 
