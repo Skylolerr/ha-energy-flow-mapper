@@ -28,6 +28,7 @@ from homeassistant.helpers import entity_registry as er
 
 from .candidates import METER_CLASSES, rate_sensor
 from .daily_reset import async_hourly_statistics
+from .device_rules import is_returned
 from .hierarchy import (
     DEVICE_KEYS,
     EDITABLE_SOURCE_TYPES,
@@ -55,59 +56,10 @@ class HintCode(StrEnum):
     POWER_AVAILABLE = "power_available"
 
 
-# Translation keys of returned (exported) energy sensors, checked in HA 2026.10
-# and 2026.11. The registry keeps them for disabled entities too.
-# - `energy_returned`: Shelly, every returned sensor (Gen1 `emeter`
-#   `energyReturned`; Gen2+ `ret_aenergy` of switches and PM1, `emdata`
-#   `total_act_ret` and per phase, `em1data` `total_act_ret_energy`);
-#   `energy_returned_with_channel_name` when the channel has a name.
-# - `energy_exported`: Matter (cumulative energy exported), SolarEdge Modbus
-#   meters, Homevolt.
-# - `energy_return`: Powerfox, Powerfox Local.
-RETURNED_TRANSLATION_KEYS: Final = frozenset(
-    {
-        "energy_returned",
-        "energy_returned_with_channel_name",
-        "energy_exported",
-        "energy_return",
-    }
-)
-# Shelly's unique IDs end in the key of the sensor description
-# (`<mac>-<channel>-<key>`); this finds an entry stored without translation key.
-SHELLY_RETURNED_KEYS: Final = frozenset(
-    {
-        "energyReturned",
-        "ret_energy",
-        "ret_energy_pm1",
-        "total_act_ret",
-        "total_act_ret_energy",
-        "a_total_act_ret_energy",
-        "b_total_act_ret_energy",
-        "c_total_act_ret_energy",
-    }
-)
-# Fallback for other integrations: words in the entity name (the user's name or
-# the integration's). The registry stores `original_name` in the language of
-# the instance, so this only works where Home Assistant runs in English;
-# elsewhere the translation keys above are needed.
-RETURNED_NAME_WORDS: Final = ("returned", "export")
 # Days in which a returned sensor must have counted energy.
 COUNTED_DAYS: Final = 3
 
 GROUP_DOMAIN: Final = "group"
-
-
-def _is_returned(entry: er.RegistryEntry) -> bool:
-    """Return True for a registry entry of a returned energy sensor."""
-    if entry.translation_key in RETURNED_TRANSLATION_KEYS:
-        return True
-    if (
-        entry.platform == "shelly"
-        and entry.unique_id.rsplit("-", 1)[-1] in SHELLY_RETURNED_KEYS
-    ):
-        return True
-    name = (entry.name or entry.original_name or "").casefold()
-    return any(word in name for word in RETURNED_NAME_WORDS)
 
 
 def returned_sensors(
@@ -135,7 +87,7 @@ def returned_sensors(
         and entry.domain == "sensor"
         and (entry.device_class or entry.original_device_class)
         == SensorDeviceClass.ENERGY
-        and _is_returned(entry)
+        and is_returned(entry)
     ]
     return [
         (entry.entity_id, entry.disabled)
