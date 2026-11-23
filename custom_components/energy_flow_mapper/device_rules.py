@@ -125,10 +125,10 @@ IOTAWATT_INPUT: Final = re.compile(r"^(.+-input-[^-]+)-(?:Watts|WattHours)$")
 # OpenDTU and AhoyDTU: `{serial}_ch{N}_{Field}` (ch0 is AC).
 DTU_CHANNEL: Final = re.compile(r"^([0-9A-Fa-f]+_ch(\d+))_(.+)$")
 DTU_AC: Final = "0"
-# DC power fields of ch0 (OpenDTU `PowerDC`, AhoyDTU `P_DC`): they never pair
-# with the AC yield.
-DTU_DC_POWER: Final = frozenset({"PowerDC", "P_DC"})
-DTU_DC: Final = "dc"
+# The ch0 fields that form the AC channel: its power (OpenDTU `Power`, AhoyDTU
+# `P_AC`) and its yields. Any other ch0 field (`PowerDC`, `P_DC`, `MaxPower`
+# ...) gets a key of its own, so it never pairs with the AC yield.
+DTU_AC_FIELDS: Final = frozenset({"Power", "P_AC", "YieldTotal", "YieldDay"})
 # Zigbee2MQTT: `{ieee}_{property}_zigbee2mqtt`; channels end in `_a`, `_l1` ...
 Z2M_SUFFIX: Final = "_zigbee2mqtt"
 Z2M_CHANNEL: Final = re.compile(r"_(a|b|c|l1|l2|l3)$")
@@ -234,8 +234,8 @@ def _mqtt_channel(entry: er.RegistryEntry) -> Hashable | None:
     if (match := DTU_CHANNEL.match(unique_id)) is None:
         return None
     channel, number, field = match.groups()
-    if number == DTU_AC and field in DTU_DC_POWER:
-        return channel, DTU_DC
+    if number == DTU_AC and field not in DTU_AC_FIELDS:
+        return channel, field
     return channel
 
 
@@ -371,9 +371,16 @@ def preselect_returned(
     The first of `returned_candidates`, only when it is trusted: a meter with
     a channel key needs a candidate of its own channel (a Pro 3EM phase never
     gets the total's returned sensor); a meter without one needs a sole
-    candidate.
+    candidate. Once the meter's own device has a returned sensor (used or
+    not), only the own device counts: a used own sensor never hands over to a
+    parent's (a hub's or the grid export).
     """
-    channel, found = _returned(hass, energy_entity_id, used)
+    channel, found = _returned(hass, energy_entity_id, ())
+    if channel is None:
+        meter = er.async_get(hass).async_get(energy_entity_id)
+        device_id = meter.device_id if meter is not None else None
+        found = [e for e in found if e.device_id == device_id] or found
+    found = [entry for entry in found if entry.entity_id not in used]
     if channel is not None:
         if found and _channel(found[0]) == channel:
             return found[0].entity_id
@@ -426,10 +433,11 @@ def classify_meter(
 def paired_power(hass: HomeAssistant, energy: str, used: Collection[str]) -> str | None:
     """Return the power sensor of an energy sensor's channel, or None.
 
-    A known integration pairs by its channel key. Otherwise the meter's own
-    device must hold exactly one unused power sensor; only when it holds none,
-    the family must. Used and disabled sensors (a disabled one has no state)
-    are never suggested.
+    A known integration pairs by its channel key. Otherwise, once the meter's
+    own device has a power sensor (used or disabled too), only the own device
+    counts; the family only when it has none. Exactly one unused, enabled
+    sensor must remain: used and disabled sensors (a disabled one has no
+    state) are never suggested.
     """
     members = family(hass, energy)
     own = next((entry for entry in members if entry.entity_id == energy), None)
@@ -439,16 +447,17 @@ def paired_power(hass: HomeAssistant, energy: str, used: Collection[str]) -> str
         entry
         for entry in members
         if entry.entity_id != energy
-        and entry.entity_id not in used
-        and not entry.disabled
         and entry.domain == "sensor"
         and _device_class(hass, entry) == SensorDeviceClass.POWER
     ]
     if (channel := _channel(own)) is not None:
         powers = [entry for entry in powers if _channel(entry) == channel]
-    elif same_device := [entry for entry in powers if entry.device_id == own.device_id]:
-        powers = same_device
-    return powers[0].entity_id if len(powers) == 1 else None
+    else:
+        powers = [e for e in powers if e.device_id == own.device_id] or powers
+    free = [
+        entry for entry in powers if entry.entity_id not in used and not entry.disabled
+    ]
+    return free[0].entity_id if len(free) == 1 else None
 
 
 def default_inverted(hass: HomeAssistant, power: str) -> bool:

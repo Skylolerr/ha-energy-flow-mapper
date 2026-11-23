@@ -510,6 +510,35 @@ async def test_preselect_returned_without_channel(hass: HomeAssistant) -> None:
     assert preselect_returned(hass, meter, {first}) == second
 
 
+async def test_preselect_returned_own_used_not_parent(hass: HomeAssistant) -> None:
+    """A used own returned sensor never hands over to the parent's."""
+    hub = _device(hass, "hub", platform="test")
+    device = _device(hass, "device", platform="test", via=hub)
+    meter = _entity(hass, "sensor.meter", device, "meter", platform="test")
+    own = _entity(
+        hass,
+        "sensor.own_returned",
+        device,
+        "own_returned",
+        platform="test",
+        translation_key="energy_returned",
+    )
+    grid = _entity(
+        hass,
+        "sensor.grid_export",
+        hub,
+        "grid_export",
+        platform="test",
+        translation_key="energy_exported",
+    )
+    assert preselect_returned(hass, meter, set()) == own
+    assert preselect_returned(hass, meter, {own}) is None
+    # Without an own returned sensor the family's sole one counts.
+    other = _device(hass, "other", platform="test", via=hub)
+    meter_2 = _entity(hass, "sensor.meter_2", other, "meter_2", platform="test")
+    assert preselect_returned(hass, meter_2, set()) == grid
+
+
 # --- paired_power -----------------------------------------------------------
 
 
@@ -640,6 +669,15 @@ async def test_pair_dtu_ac_not_dc(hass: HomeAssistant) -> None:
         )
         assert paired_power(hass, ac, ()) == ac_power
         assert paired_power(hass, ac, {ac_power}) is None
+        # Any other power field of ch0 never pairs either.
+        _power(
+            hass,
+            f"sensor.dtu_{platform_id}_max",
+            inverter,
+            f"{platform_id}_ch0_MaxPower",
+            platform="mqtt",
+        )
+        assert paired_power(hass, ac, {ac_power}) is None
 
 
 async def test_pair_prefers_own_device(hass: HomeAssistant) -> None:
@@ -655,9 +693,22 @@ async def test_pair_prefers_own_device(hass: HomeAssistant) -> None:
     _power(hass, "sensor.down_power", child, "down_power", platform="test")
     own = _power(hass, "sensor.own_power", device, "own_power", platform="test")
     assert paired_power(hass, meter, ()) == own
-    # Own device has two: no pair.
-    _power(hass, "sensor.own_2_power", device, "own_2_power", platform="test")
-    assert paired_power(hass, meter, ()) is None
+
+
+async def test_pair_own_power_used_or_disabled(hass: HomeAssistant) -> None:
+    """A used or disabled own power never hands over to the family."""
+    parent = _device(hass, "parent", platform="test")
+    device = _device(hass, "device", platform="test", via=parent)
+    meter = _entity(hass, "sensor.meter", device, "meter", platform="test")
+    own = _power(hass, "sensor.own_power", device, "own_power", platform="test")
+    _power(hass, "sensor.up_power", parent, "up_power", platform="test")
+    assert paired_power(hass, meter, {own}) is None
+    other = _device(hass, "other", platform="test")
+    child = _device(hass, "child", platform="test", via=other)
+    meter_2 = _entity(hass, "sensor.meter_2", other, "meter_2", platform="test")
+    _power(hass, "sensor.off_power", other, "off_power", platform="test", disabled=True)
+    _power(hass, "sensor.down_power", child, "down_power", platform="test")
+    assert paired_power(hass, meter_2, ()) is None
 
 
 async def test_pair_none_when_two_unused(hass: HomeAssistant) -> None:
