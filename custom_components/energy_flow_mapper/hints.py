@@ -181,15 +181,23 @@ def sum_members(hass: HomeAssistant, stat: str) -> list[str] | None:
     return helper[1] if helper is not None else None
 
 
+def meter_stats(prefs: Prefs) -> set[str]:
+    """Return the meters of all devices and the energy meters of all sources."""
+    return {
+        device[STAT] for key in DEVICE_KEYS.values() for device in prefs.get(key, [])
+    } | source_energy_stats(prefs.get(KEY_SOURCES, []))
+
+
 def async_sum_members(hass: HomeAssistant, prefs: Prefs) -> set[str]:
     """Return the members of every sum helper used as a device or source meter.
 
     `get` reads their daily resets together with the other meters'.
     """
-    meters = {
-        device[STAT] for key in DEVICE_KEYS.values() for device in prefs.get(key, [])
-    } | source_energy_stats(prefs.get(KEY_SOURCES, []))
-    return {member for stat in meters for member in sum_members(hass, stat) or []}
+    return {
+        member
+        for stat in meter_stats(prefs)
+        for member in sum_members(hass, stat) or []
+    }
 
 
 def _hint(

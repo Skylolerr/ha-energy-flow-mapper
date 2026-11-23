@@ -98,7 +98,7 @@ from .hierarchy import (
     untracked,
     validate,
 )
-from .hints import async_counted_returned, async_hints, async_sum_members
+from .hints import async_counted_returned, async_hints, async_sum_members, meter_stats
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
 from .solar_setup import MeterKind, Names, async_create, async_plan
@@ -380,8 +380,9 @@ async def websocket_get(
     `power_candidates` power sensors
     without an energy meter and `flow_candidates` flow sensors without a water
     meter. `stats` and the meter candidates carry `daily_reset`: the meter
-    falls back to 0 every day. `hints` are the hints of devices and sources
-    (see `hints`).
+    falls back to 0 every day (read for the meters of devices and sources and
+    the members of their sum helpers only; false for the others). `hints` are
+    the hints of devices and sources (see `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -395,14 +396,15 @@ async def websocket_get(
     )
     meters = [*stats.values(), *candidates, *water, *gas]
     async_mark_created(hass, meters, runtime.helpers.entries())
-    # Members of sum helpers may be neither used nor candidates; their daily
-    # resets come from the same query. Both recorder queries (daily resets,
-    # returned energy counted lately) run at once: a busy recorder makes the
-    # panel wait for one timeout, not two.
+    # Daily resets are read only for the meters of devices and sources and the
+    # members of their sum helpers: the hints and the sum dialog need no more,
+    # so free meters, power sensors and cost statistics keep `daily_reset`
+    # false. Both recorder queries (daily resets, returned energy counted
+    # lately) run at once: a busy recorder makes the panel wait for one
+    # timeout, not two.
     daily, counted = await asyncio.gather(
         async_daily_resetting(
-            hass,
-            sorted({info["stat"] for info in meters} | async_sum_members(hass, prefs)),
+            hass, sorted(meter_stats(prefs) | async_sum_members(hass, prefs))
         ),
         async_counted_returned(hass, prefs),
     )

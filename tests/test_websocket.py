@@ -72,6 +72,47 @@ async def test_get(hass: HomeAssistant, hass_ws_client: WebSocketGenerator) -> N
 
 
 @pytest.mark.usefixtures("loaded_entry")
+async def test_get_reads_daily_resets_of_used_meters_only(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only devices, source meters and sum members are read; free meters are not.
+
+    The sum dialog offers only those as members; power sensors and the free
+    meters keep `daily_reset: false`.
+    """
+    asked: list[list[str]] = []
+
+    async def fake(hass: HomeAssistant, stats: Any, days: int = 3) -> set[str]:
+        asked.append(list(stats))
+        daily = {"sensor.kitchen_energy", "sensor.attic_energy"}
+        return {stat for stat in stats if stat in daily}
+
+    monkeypatch.setattr(websocket_module, "async_daily_resetting", fake)
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    assert asked == [
+        [
+            "sensor.battery_in",
+            "sensor.battery_out",
+            "sensor.coffee_energy",
+            "sensor.garage_energy",
+            "sensor.grid_export",
+            "sensor.grid_import",
+            "sensor.grinder_energy",
+            "sensor.kitchen_energy",
+            "sensor.main_energy",
+            "sensor.solar_energy",
+        ]
+    ]
+    assert result["stats"]["sensor.kitchen_energy"]["daily_reset"] is True
+    assert result["stats"]["sensor.main_power"]["daily_reset"] is False
+    attic = next(c for c in result["candidates"] if c["stat"] == "sensor.attic_energy")
+    assert attic["daily_reset"] is False
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_get_reports_issues(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:

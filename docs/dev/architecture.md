@@ -88,7 +88,9 @@ daily meter.
 entity registry (disabled returned sensors), config entries (members of a sum helper) and
 the recorder (energy counted lately, daily resets via `daily_reset.py`), which the panel
 cannot see. The recorder queries are guarded by a timeout: a slow recorder leaves out the
-hints that need it instead of blocking `get`. `dismiss_hint` stores a dismissal. The card
+hints that need it instead of blocking `get`. Daily resets are read only for the meters of
+devices and sources and the members of their sum helpers (what the hints and the sum dialog
+use); free meters keep `daily_reset: false`. `dismiss_hint` stores a dismissal. The card
 gets no hints.
 
 ## Panel and card (`panel/`)

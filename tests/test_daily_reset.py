@@ -241,7 +241,11 @@ async def test_get_includes_daily_reset(
     statistics: tuple[list[tuple[Any, ...]], Rows],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`get` flags every statistic and every candidate, from one query."""
+    """`get` flags every statistic and every candidate, from one query.
+
+    Only the meters of devices and sources are read: free meters (here a daily
+    one) and power sensors stay false.
+    """
     calls, data = statistics
 
     async def no_external(hass: HomeAssistant, **kwargs: Any) -> list[Any]:
@@ -264,13 +268,21 @@ async def test_get_includes_daily_reset(
     lists = ("candidates", "water_candidates", "gas_candidates")
     flags = {c["stat"]: c["daily_reset"] for key in lists for c in result[key]}
     assert flags == {
-        "sensor.attic_energy": True,
+        "sensor.attic_energy": False,
         "sensor.printer_energy": False,
         "sensor.water_meter": False,
         "sensor.gas_meter": False,
     }
     assert len(calls) == 1
-    assert calls[0][3] >= set(stats) - {s for s in stats if ":" in s} | set(flags)
+    meters = {
+        device["stat_consumption"] for device in result["prefs"]["device_consumption"]
+    } | {
+        source[key]
+        for source in result["prefs"]["energy_sources"]
+        for key in ("stat_energy_from", "stat_energy_to")
+        if source.get(key)
+    }
+    assert calls[0][3] == meters
 
 
 async def test_daily_resetting_survives_a_failing_recorder(
