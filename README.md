@@ -355,12 +355,15 @@ Good to know:
 - The helpers are ordinary Home Assistant template and integral helpers under Settings →
   Helpers. They keep working without Energy Flow Mapper and stay if you undo the draft.
 - A template has no value while one of its inputs has none (for example while a sensor is
-  unavailable). The setup itself waits until every input has a value, and it asks you to
-  try again when the check for daily meters could not run (a busy recorder).
-- **The gross meter starts at 1 kWh or more.** A circuit that has returned more than it
+  unavailable). The setup itself waits until the circuit's meter (if it counts both
+  ways) or the returned energy has a value – a solar that is offline at night does not
+  stop it – and it asks you to try again when the check for daily meters could not run
+  (a busy recorder).
+- **The gross meter starts at 100 kWh or more.** A circuit that has returned more than it
   drew so far would start it below 0, and Home Assistant ignores a meter while it is
-  below 0. The template then adds a fixed number of kWh; that does not change what the
-  meter counts.
+  below 0; close to 0, a small dip would count as a meter reset. The template then adds
+  a fixed number of kWh, shown in the preview; that does not change what the meter
+  counts.
 - **Units are fixed when the helpers are created:** an input in Wh or kW is converted to
   kWh or W with a factor written into the template. If an input's unit changes later,
   the template keeps the old factor; edit the template or run the setup again.

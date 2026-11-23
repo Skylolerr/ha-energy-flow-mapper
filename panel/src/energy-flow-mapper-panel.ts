@@ -4476,6 +4476,16 @@ export class EnergyFlowMapperPanel extends LitElement {
     const replaceable = this._sumReplaceable(dialog, all);
     const daily = this._sumDailyMix(all);
     const integralPowers = new Map(daily.map((stat) => [stat, this._sumIntegralPower(stat, all)]));
+    // At most one pointer to "Solar feeds in here…", and none while the
+    // integral is offered: then this sum can be built after all.
+    const integralOffered = [...integralPowers.values()].some((power) => power !== null);
+    const setupPointer = integralOffered
+      ? null
+      : daily.length
+        ? "daily"
+        : mixed && this._sumHasSolar(all)
+          ? "mixed"
+          : null;
     const water = this._tab === "water";
     const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
@@ -4528,14 +4538,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
       ${mixed
         ? html`<p class="warning sum-mixed">
-            ${this._t("error_sum_state_classes_differ")}
-            ${this._sumHasSolar(all) ? this._t("sum_mixed_solar_setup") : nothing}
+            ${this._t("error_sum_state_classes_differ")} ${setupPointer === "mixed" ? this._t("sum_mixed_solar_setup") : nothing}
           </p>`
         : nothing}
       ${daily.length
         ? html`<p class="warning sum-daily-mix">
             ${this._t("sum_daily_mix", { names: daily.map((stat) => this._name(stat)).join(", ") })}
-            ${[...integralPowers.values()].some((power) => power !== null) ? nothing : this._t("sum_daily_mix_setup")}
+            ${setupPointer === "daily" ? this._t("sum_daily_mix_setup") : nothing}
           </p>`
         : nothing}
       ${dialog.picking
@@ -4649,6 +4658,8 @@ export class EnergyFlowMapperPanel extends LitElement {
         : kind === "draws" && returned !== null
           ? `${term(dialog.stat)} − ${term(returned)} + ${solarName}`
           : `${term(dialog.stat)} + ${solarName}`;
+    // The constant that starts the gross meter above 0 (kWh).
+    const offset = preview?.offset ?? 0;
     const withPower = preview !== null && solarWithPower(preview);
     // Every name shown is needed; an empty one would get the backend's untranslated default.
     const shownNames = [
@@ -4748,9 +4759,14 @@ export class EnergyFlowMapperPanel extends LitElement {
                     )}
                     <li>
                       <label
-                        >${this._t("solar_setup_energy", { formula: energyFormula })}
+                        >${this._t("solar_setup_energy", {
+                          formula: offset ? `${energyFormula} + ${offset} kWh` : energyFormula,
+                        })}
                         ${nameInput(names?.energy ?? "", (energy) => setName({ energy }))}
                       </label>
+                      ${offset
+                        ? html`<p class="hint solar-offset">${this._t("solar_setup_offset", { offset: String(offset) })}</p>`
+                        : nothing}
                     </li>
                     ${withPower
                       ? html`<li>

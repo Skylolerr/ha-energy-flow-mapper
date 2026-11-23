@@ -195,6 +195,8 @@ export interface SolarPreview {
   blocked_entity: string | null;
   /** A power sensor without a unit that can be read: then there is no gross power. */
   unusable_power?: string | null;
+  /** kWh added to the gross energy so it starts above 0 (0: none). */
+  offset?: number;
 }
 
 /** How a circuit meter counts: both ways (net), or only what it draws. */

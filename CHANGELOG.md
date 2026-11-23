@@ -21,10 +21,11 @@ and Home Assistant show when they offer the update.
   energy and the gross power at once, plus an integral helper for every input that starts
   again at 0 every day, and the gross meter takes the device's place in the draft. It works
   on the saved settings and never enables a disabled entity; units (Wh, kW) are converted
-  with a factor fixed when the helpers are created. The gross meter starts at 1 kWh or
-  more, even when the circuit has returned more than it drew so far. The setup waits when
-  an input has no value or the check for daily meters could not run, and a power sensor
-  without a unit it can read only leaves out the gross power.
+  with a factor fixed when the helpers are created. The gross meter starts at 100 kWh or
+  more, even when the circuit has returned more than it drew so far; the preview shows the
+  kWh it adds. The setup waits when the circuit's meter (counting both ways) or the
+  returned energy has no value, or the check for daily meters could not run, and a power
+  sensor without a unit it can read only leaves out the gross power.
 - **Power sensors in the panel:** set, change or clear the power sensor of a device (⋮ →
   *Power sensor …*, water: *Flow sensor …*) and of a source (tap it → *Power sensor …*).
   Sensors of the meter's own device come first. Grid and battery offer Home Assistant's

@@ -3914,6 +3914,30 @@ describe("groups", () => {
     expect(text).not.toContain("Solar feeds in here");
   });
 
+  it("sum points to the solar setup at most once, and not next to the integral", async () => {
+    // A daily solar without a saved power sensor and a net meter (total):
+    // both the daily and the state class warning apply.
+    const mock = solarMock(true);
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    delete snap.prefs.energy_sources.at(-1)!.stat_rate;
+    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
+    const el = await mount(mock);
+    await openSum(el, ["sensor.server", "sensor.solar"]);
+    let text = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(text).toContain("do not all have the same state class");
+    expect(text).toContain("These meters start again at 0 every day: Roof solar.");
+    expect(text.split("Solar feeds in here").length - 1).toBe(1);
+    // With the solar's power sensor the integral is offered: no pointer elsewhere.
+    document.body.innerHTML = "";
+    const withPower = solarMock(true);
+    withPower.hass.states["sensor.server"] = meter("sensor.server", "total");
+    const other = await mount(withPower);
+    await openSum(other, ["sensor.server", "sensor.solar"]);
+    text = dialogEl(other).textContent!.replace(/\s+/g, " ");
+    expect(integralButton(other, "sensor.solar")).toBeDefined();
+    expect(text).not.toContain("Solar feeds in here");
+  });
+
   it("sum with a water source makes no flow sum", async () => {
     const mock = mockHass();
     const snap = snapshot();
@@ -5397,6 +5421,24 @@ describe("hints and solar setup", () => {
     content = dialogEl(el).textContent!.replace(/\s+/g, " ");
     expect(content).toContain("the recorder did not answer in time. Try again in a moment.");
     expect(dialogButton(el, "Set up")).toBeUndefined();
+  });
+
+  it("setup shows the offset that lifts the gross meter above 0", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { kind?: string }) =>
+      preview({ offset: msg.kind === "net" ? 0 : 300 });
+    const el = await mount(mock);
+    await openSetup(el);
+    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("Server & co − Server returned + Roof solar + 300 kWh");
+    expect(content).toContain(
+      "The 300 kWh are added so the gross meter starts above 0: Home Assistant ignores a meter while it is below 0. They do not change what it counts.",
+    );
+    kindRadio(el, "net").click();
+    await settle(el);
+    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).not.toContain("kWh are added");
+    expect(content).not.toContain("+ 0 kWh");
   });
 
   it("offers the setup only for electricity devices with a solar source", async () => {
