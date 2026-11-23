@@ -44,12 +44,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from collections.abc import Awaitable, Callable, Collection, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import pairwise
 from typing import Any, Final, Literal
 
-from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.components.sensor import (
+    ATTR_STATE_CLASS,
+    SensorDeviceClass,
+    SensorStateClass,
+)
 from homeassistant.const import (
     ATTR_DEVICE_CLASS,
     ATTR_FRIENDLY_NAME,
@@ -65,7 +70,7 @@ from homeassistant.util.unit_conversion import (
     PowerConverter,
 )
 
-from .candidates import ENERGY_UNITS, POWER_UNITS
+from .candidates import ENERGY_UNITS, POWER_UNITS, async_is_rate_sensor
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .device_rules import (
@@ -78,11 +83,20 @@ from .device_rules import (
     preselect_returned,
     returned_candidates,
 )
-from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
-from .integral import async_create_integral, entity_unit
+from .hierarchy import (
+    KEY_DEVICES,
+    KEY_SOURCES,
+    NAME,
+    RATE,
+    STAT,
+    DeviceKind,
+    Prefs,
+    used_stats,
+)
+from .integral import INTEGRAL_OPTIONS, async_create_integral, entity_unit
 from .meter_inputs import Cache, meter_inputs
 from .stats_probe import StatsEvidence, async_probe
-from .template_meter import TemplateKind, async_create_template
+from .template_meter import SENSOR_OPTIONS, TemplateKind, async_create_template
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +113,8 @@ OFFSET_STEP: Final = 100
 OFFSET_MAX: Final = 1_000_000_000
 UNIT: Final = "unit_of_measurement"
 ENERGY_METHODS: Final = (Method.EM, Method.PLUG, Method.NET)
+# Local days of statistics a solar counter needs to be read as lifetime.
+MIN_DAYS: Final = 2
 
 # Kinds of the records of created helpers (`CreatedHelpers.async_add`).
 KIND_SOLAR_POWER: Final = "solar_power"
@@ -128,6 +144,8 @@ class Blocked(StrEnum):
     DAILY_CHECK_FAILED = "daily_check_failed"
     UNSUPPORTED_INPUT = "unsupported_input"
     SOLAR_NEEDS_POWER = "solar_needs_power"
+    SOLAR_NEEDS_DATA = "solar_needs_data"
+    NO_SAFE_METHOD = "no_safe_method"
     DAILY_WITHOUT_POWER = "daily_without_power"
     NOT_OFFERED = "not_offered"
     CHOOSE_RETURNED = "choose_returned"
@@ -147,6 +165,9 @@ class Reason(StrEnum):
     POWER_SIGNED = "power_signed"
     AGAINST_RULE = "unverified_against_rule"
     MAY_RESET = "unverified_may_reset"
+    UNVERIFIED_NET = "unverified_net"
+    NO_DATA = "unverified_no_data"
+    NET_NEEDS_SIGNED_METER = "net_needs_signed_meter"
     POWER_UNSIGNED = "unverified_power_unsigned"
     NO_RETURNED_SENSOR = "no_returned_sensor"
     DAILY_INPUT = "daily_input"
@@ -232,8 +253,13 @@ def _table(name: str, factors: Mapping[str, float]) -> str:
     return f"{{% set {name} = {{{items}}} %}}"
 
 
-def _template(terms: list[_Term], *, energy: bool, offset: int = 0) -> str:
-    """Return a template of the signed `terms` (+ offset), in kWh or W."""
+def _template(
+    terms: list[_Term], *, energy: bool, offset: int = 0, guard: str = ""
+) -> str:
+    """Return a template of the signed `terms` (+ offset), in kWh or W.
+
+    `guard` is one more condition for a number (else `none`).
+    """
     read, table, decimals = (
         (_kwh, _table("kwh", KWH), ENERGY_DECIMALS)
         if energy
@@ -251,7 +277,7 @@ def _template(terms: list[_Term], *, energy: bool, offset: int = 0) -> str:
     if offset:
         expression += f" + {offset}"
     sets = table + "".join(part[0] for part in parts)
-    check = " and ".join(part[1] for part in parts)
+    check = " and ".join([part[1] for part in parts] + ([guard] if guard else []))
     return (
         f"{sets}{{% if {check} %}}{{{{ ({expression}) | round({decimals}) }}}}"
         "{% else %}{{ none }}{% endif %}"
@@ -287,14 +313,21 @@ def gross_power_template(circuit: str, solar: str, *, invert: bool = False) -> s
     """Return the gross power template (W, 1 decimal): circuit + solar.
 
     The circuit's power is turned around with `invert` (positive on export);
-    without a number it makes the template `none`. An offline solar is 0.
+    without a number it makes the template `none`. An offline solar is 0,
+    except while the circuit feeds in: then the template is `none`, as its
+    true value is unknown. Home Assistant's integral counts no energy for an
+    unknown source and stays available, so the gross energy never falls
+    for a dropout of the solar. There is no floor at 0: a wrong sign must
+    stay visible.
     """
+    circuit_term = _Term("circuit", circuit, -1 if invert else 1)
+    circuit_w = _w(circuit_term)[2]
+    if invert:
+        circuit_w = f"-1 * {circuit_w}"
     return _template(
-        [
-            _Term("circuit", circuit, -1 if invert else 1),
-            _Term("solar", solar, zero=True),
-        ],
+        [circuit_term, _Term("solar", solar, zero=True)],
         energy=False,
+        guard=f"(solar | is_number or {circuit_w} >= 0)",
     )
 
 
@@ -410,30 +443,41 @@ def _not_offered(entity_id: str) -> ServiceValidationError:
     return _error(Blocked.NOT_OFFERED, entity_id=entity_id)
 
 
-def _check_draft_power(
-    hass: HomeAssistant, power: str, refused: Collection[str]
-) -> None:
-    """Raise `not_offered` unless `power` is a power sensor that may be used."""
-    registry_entry = er.async_get(hass).async_get(power)
-    state = hass.states.get(power)
-    device_class = (
-        state.attributes.get(ATTR_DEVICE_CLASS) if state is not None else None
-    ) or (
-        registry_entry.device_class or registry_entry.original_device_class
-        if registry_entry is not None
+def _state_class(hass: HomeAssistant, entity_id: str) -> str | None:
+    """Return the state class (state first, else the registry's)."""
+    state = hass.states.get(entity_id)
+    if state is not None and ATTR_STATE_CLASS in state.attributes:
+        return str(state.attributes[ATTR_STATE_CLASS])
+    entry = er.async_get(hass).async_get(entity_id)
+    found = (entry.capabilities or {}).get(ATTR_STATE_CLASS) if entry else None
+    return str(found) if found is not None else None
+
+
+def _ours(hass: HomeAssistant, helpers: CreatedHelpers, entity_id: str) -> bool:
+    """Return True for a gross energy or gross power helper of the setup."""
+    entry = er.async_get(hass).async_get(entity_id)
+    record = (
+        helpers.record(entry.config_entry_id)
+        if entry is not None and entry.config_entry_id
         else None
     )
-    if (
-        not valid_entity_id(power)
-        or not power.startswith("sensor.")
-        or power in refused
-        or (state is None and registry_entry is None)
-        or (
-            entity_unit(hass, power) not in WATTS
-            and device_class != SensorDeviceClass.POWER
-        )
-    ):
-        raise _not_offered(power)
+    return record is not None and record.get("kind") in (
+        KIND_GROSS_ENERGY,
+        KIND_GROSS_POWER,
+    )
+
+
+def _used_by_others(
+    prefs: Prefs, device: Mapping[str, Any], source: Mapping[str, Any]
+) -> set[str]:
+    """Return the statistics of the settings but this device and solar's power."""
+    others = dict(prefs)
+    others[KEY_DEVICES] = [d for d in prefs.get(KEY_DEVICES, []) if d is not device]
+    others[KEY_SOURCES] = [
+        {key: value for key, value in s.items() if key != RATE} if s is source else s
+        for s in prefs.get(KEY_SOURCES, [])
+    ]
+    return used_stats(others)
 
 
 # --- Plan --------------------------------------------------------------------
@@ -443,10 +487,8 @@ def _check_draft_power(
 class Choices:
     """What the panel asks for; everything is checked against the offer.
 
-    `stat` is the device, `solar` the solar source's energy statistic.
-    `draft` holds the power sensors the panel set but did not save yet
-    (`stat_rate` of the device, `solar_rate` of the solar); a key that is
-    present wins over the saved value, also None (removed in the draft).
+    `stat` is the device, `solar` the solar source's energy statistic, both
+    from the settings the plan is given (the draft's when there is one).
     `periodic` is the user's daily switch per input; a certain signal
     ignores it.
     """
@@ -457,7 +499,6 @@ class Choices:
     drawn: str | None = None
     returned: str | None = None
     invert: bool | None = None
-    draft: Mapping[str, str | None] = field(default_factory=dict)
     periodic: Mapping[str, bool] = field(default_factory=dict)
 
 
@@ -488,12 +529,14 @@ class SolarTerm:
 
     `kind` "integral": the integral of the 0-mapped template of the power
     sensor `source`, `reuse` when one of ours exists already. "counter": the
-    solar's own lifetime counter `source`. None: it cannot be built.
+    solar's own lifetime counter `source`. None: it cannot be built, for the
+    reason `missing`.
     """
 
     kind: Literal["integral", "counter"] | None
     source: str
     reuse: str | None = None
+    missing: Blocked | None = None
 
     def reads(self) -> str | None:
         """Return the entity the gross template reads now (None: a new one)."""
@@ -606,13 +649,66 @@ class Plan:
         }
 
 
-def _power(
-    draft: Mapping[str, str | None], key: str, saved: str | None
-) -> tuple[str | None, str | None]:
-    """Return a power sensor of the draft or the settings, and where it is from."""
-    if key in draft:
-        return draft[key], "draft" if draft[key] is not None else None
-    return saved, "saved" if saved is not None else None
+@dataclass(frozen=True)
+class _Powers:
+    """Reads the device's and the solar's power from the settings (or draft).
+
+    A power that differs from the saved settings comes from the draft and
+    must be a power sensor not used by anything else, and none of the
+    setup's own gross helpers. A power the draft removed means no power;
+    only a device or solar that never had one gets its own device's single
+    power sensor (`paired_power`).
+    """
+
+    hass: HomeAssistant
+    helpers: CreatedHelpers
+    used: set[str]
+    refused: set[str]
+
+    def read(
+        self, key: str, entry: Mapping[str, Any], saved: Mapping[str, Any] | None
+    ) -> tuple[str | None, str | None]:
+        """Return (power, where it is from) of a device or source."""
+        power = entry.get(RATE)
+        saved_power = saved.get(RATE) if saved is not None else None
+        if power is None:
+            # Removed in the draft: no power, and no other one paired.
+            return None, "removed" if saved_power is not None else None
+        if power == saved_power:
+            return power, "saved"
+        if (
+            power in self.refused
+            or power in self.used
+            or not async_is_rate_sensor(self.hass, power, DeviceKind.ELECTRICITY)
+            or _ours(self.hass, self.helpers, power)
+        ):
+            raise _not_offered(power)
+        return power, key
+
+    def pair(
+        self, found: tuple[str | None, str | None], energy: str, skip: set[str]
+    ) -> tuple[str | None, str | None]:
+        """Return `found`, or the energy's paired power when it never had one."""
+        if found[0] is not None or found[1] == "removed":
+            return found[0], None if found[1] == "removed" else found[1]
+        paired = paired_power(self.hass, energy, self.used | skip)
+        return (paired, "paired") if paired is not None else (None, None)
+
+
+def _find_saved(
+    saved: Prefs, stat: str, solar: str
+) -> tuple[Mapping[str, Any] | None, Mapping[str, Any] | None]:
+    """Return the device and solar source of the saved settings, if there."""
+    device = next((d for d in saved.get(KEY_DEVICES, []) if d[STAT] == stat), None)
+    source = next(
+        (
+            s
+            for s in saved.get(KEY_SOURCES, [])
+            if s.get("type") == "solar" and s.get(SOLAR_STAT) == solar
+        ),
+        None,
+    )
+    return device, source
 
 
 def _reusable_solar_term(
@@ -621,8 +717,8 @@ def _reusable_solar_term(
     """Return our integral of `solar_power`'s 0-mapped template, or None.
 
     Only a pair exactly as the setup builds it now: our template of the
-    solar power, unchanged, and our left integral of it, both enabled. A
-    helper the user changed is never reused.
+    solar power with our options, and our left integral of it with our
+    options, both enabled. A helper the user changed is never reused.
     """
     registry = er.async_get(hass)
     entries = hass.config_entries
@@ -637,6 +733,9 @@ def _reusable_solar_term(
             return None
         return found[0].entity_id, entry.options
 
+    template_options = {"state": solar_power_template(solar_power)} | SENSOR_OPTIONS[
+        "power"
+    ]
     for entry_id, record in reversed(helpers.records().items()):
         if (
             record.get("kind") != KIND_SOLAR_ENERGY
@@ -648,9 +747,9 @@ def _reusable_solar_term(
         if (
             template is not None
             and integral is not None
-            and template[1].get("state") == solar_power_template(solar_power)
+            and all(template[1].get(k) == v for k, v in template_options.items())
             and integral[1].get("source") == template[0]
-            and integral[1].get("method") == "left"
+            and all(integral[1].get(k) == v for k, v in INTEGRAL_OPTIONS.items())
         ):
             return integral[0]
     return None
@@ -663,6 +762,8 @@ class _Inputs:
     hass: HomeAssistant
     drawn: str
     returned: str | None
+    # The returned sensor the device's rule trusts (`preselect_returned`).
+    trusted_returned: str | None
     has_returned: bool
     evidence: dict[str, StatsEvidence]
     periodic: Mapping[str, bool]
@@ -676,16 +777,31 @@ class _Inputs:
             return self.periodic[entity]
         return bool(found is not None and found.periodic)
 
-    def lifetime(self, entity: str) -> bool:
-        """Return True for a counter certainly never reset (no drop at all)."""
+    def unknown(self, entity: str) -> bool:
+        """Return True for a counter without statistics the user did not judge."""
         found = self.evidence.get(entity)
-        return (
-            found is not None
-            and found.periodic is False
-            and not found.certain
-            and not found.drops
-            and not self.periodic.get(entity, False)
-        )
+        return (found is None or found.periodic is None) and entity not in self.periodic
+
+    def counter(self, entity: str) -> Blocked | None:
+        """Return why a counter cannot be read as lifetime, or None if it can.
+
+        Lifetime needs statistics on two local days or more that rise, no
+        reset signal and no drop at all; the user can only mark it daily.
+        """
+        found = self.evidence.get(entity)
+        if self.periodic.get(entity, False) or (
+            found is not None and (found.periodic or found.certain or found.drops)
+        ):
+            return Blocked.SOLAR_NEEDS_POWER
+        values = [value for _, value in found.series] if found is not None else []
+        if (
+            found is None
+            or found.periodic is None
+            or len({when.date() for when, _ in found.series}) < MIN_DAYS
+            or not any(after > before for before, after in pairwise(values))
+        ):
+            return Blocked.SOLAR_NEEDS_DATA
+        return None
 
 
 def _energy_problem(inputs: _Inputs, method: Method) -> tuple[Reason, str] | None:
@@ -701,31 +817,45 @@ def _energy_problem(inputs: _Inputs, method: Method) -> tuple[Reason, str] | Non
             return Reason.UNSUPPORTED_INPUT, entity
         if inputs.is_periodic(entity):
             return Reason.DAILY_INPUT, entity
+    if (
+        method is Method.NET
+        and _state_class(inputs.hass, inputs.drawn) == SensorStateClass.TOTAL_INCREASING
+    ):
+        # Home Assistant reads every fall of such a meter as a reset: each
+        # exported kWh would count as consumption.
+        return Reason.NET_NEEDS_SIGNED_METER, inputs.drawn
     return None
 
 
 def _energy_status(inputs: _Inputs, method: Method, rule: MeterClass) -> MethodStatus:
     """Return the status of EM, Plug or Net.
 
-    Verified when the device's rule (`classify_meter`) gives this method.
-    Against a rule of a known meter, or for an unknown one (whose counter may
-    start at 0 after a power cut), it is offered unverified.
+    Verified when the device's rule (`classify_meter`) gives this method, with
+    the returned sensor the rule trusts, and the inputs have statistics.
+    Otherwise it is offered unverified, with the reason why.
     """
     if (problem := _energy_problem(inputs, method)) is not None:
         reason, entity = problem
         return MethodStatus(
             method, offered=False, verified=False, reason=reason, entity=entity
         )
-    if rule.method is method:
+    inputs_used = [inputs.drawn]
+    if method is not Method.NET and inputs.returned is not None:
+        inputs_used.append(inputs.returned)
+    unverified: Reason
+    if any(inputs.unknown(entity) for entity in inputs_used):
+        unverified = Reason.NO_DATA
+    elif rule.method is method and (
+        method is Method.NET or inputs.returned == inputs.trusted_returned
+    ):
         return MethodStatus(method, offered=True, verified=True, reason=rule.rule)
-    return MethodStatus(
-        method,
-        offered=True,
-        verified=False,
-        reason=Reason.AGAINST_RULE
-        if rule.method in (Method.EM, Method.PLUG)
-        else Reason.MAY_RESET,
-    )
+    elif method is Method.NET:
+        unverified = Reason.UNVERIFIED_NET
+    elif rule.method in (Method.EM, Method.PLUG):
+        unverified = Reason.AGAINST_RULE
+    else:
+        unverified = Reason.MAY_RESET
+    return MethodStatus(method, offered=True, verified=False, reason=unverified)
 
 
 def _power_status(
@@ -790,6 +920,7 @@ def _live(
     if circuit_w is not None and invert:
         circuit_w = -circuit_w
     solar_w: float | None = None
+    offline = False
     if solar_power is not None:
         # Offline (not a number) is 0, like in the template.
         state = hass.states.get(solar_power)
@@ -797,7 +928,9 @@ def _live(
         solar_w = 0.0 if offline else _value(hass, solar_power, "power")
     gross_w = (
         round(circuit_w + solar_w, POWER_DECIMALS)
-        if circuit_w is not None and solar_w is not None
+        if circuit_w is not None
+        and solar_w is not None
+        and not (offline and circuit_w < 0)
         else None
     )
     return {"circuit_w": circuit_w, "solar_w": solar_w, "gross_w": gross_w}
@@ -815,9 +948,11 @@ def _solar_term(
         return SolarTerm(
             "integral", solar_power, _reusable_solar_term(hass, helpers, solar_power)
         )
-    if _usable(hass, solar, "energy") and inputs.lifetime(solar):
-        return SolarTerm("counter", solar)
-    return SolarTerm(None, solar)
+    if not _usable(hass, solar, "energy"):
+        return SolarTerm(None, solar, missing=Blocked.UNSUPPORTED_INPUT)
+    if (missing := inputs.counter(solar)) is not None:
+        return SolarTerm(None, solar, missing=missing)
+    return SolarTerm("counter", solar)
 
 
 def _block_inputs(hass: HomeAssistant, plan: Plan, solar: str) -> None:
@@ -836,10 +971,8 @@ def _block_inputs(hass: HomeAssistant, plan: Plan, solar: str) -> None:
     elif solar_power is not None and _disabled(hass, solar_power):
         # Its template would read 0 for good: the solar would go missing.
         plan.block(Blocked.INPUT_DISABLED, solar_power)
-    elif solar_power is None and not _usable(hass, solar, "energy"):
-        plan.block(Blocked.UNSUPPORTED_INPUT, solar)
-    elif plan.solar_term.kind is None:
-        plan.block(Blocked.SOLAR_NEEDS_POWER, solar)
+    elif plan.solar_term.missing is not None:
+        plan.block(plan.solar_term.missing, solar)
 
 
 def _block_method(plan: Plan) -> None:
@@ -847,12 +980,11 @@ def _block_method(plan: Plan) -> None:
     offered = {status.method for status in plan.statuses if status.offered}
     if not offered:
         status = plan.status(Method.NET)
-        plan.block(
-            Blocked.UNSUPPORTED_INPUT
-            if status.reason == Reason.UNSUPPORTED_INPUT
-            else Blocked.DAILY_WITHOUT_POWER,
-            status.entity or plan.stat,
-        )
+        reason = {
+            Reason.UNSUPPORTED_INPUT: Blocked.UNSUPPORTED_INPUT,
+            Reason.DAILY_INPUT: Blocked.DAILY_WITHOUT_POWER,
+        }.get(Reason(str(status.reason)), Blocked.NO_SAFE_METHOD)
+        plan.block(reason, status.entity or plan.stat)
     method = plan.method
     if method is None:
         return
@@ -868,38 +1000,42 @@ def _block_method(plan: Plan) -> None:
 
 
 async def async_plan(
-    hass: HomeAssistant, prefs: Prefs, helpers: CreatedHelpers, choices: Choices
+    hass: HomeAssistant,
+    prefs: Prefs,
+    helpers: CreatedHelpers,
+    choices: Choices,
+    saved: Prefs | None = None,
 ) -> Plan:
     """Return what the setup would create for a device and a solar source.
 
-    `choices.stat` must be an electricity device of the settings and
-    `choices.solar` the energy statistic of a solar source. A drawn or
-    returned sensor, or a draft power, that the setup would not offer raises
-    `not_offered`. A device or solar without power gets the single power
-    sensor of its own device (`paired_power`). The method defaults to the
-    suggested one: the device's rule, else "From power", else none.
-    `blocked` is the first reason the chosen method cannot be built, with the
-    entity it is about.
+    `prefs` are the settings to plan on: the saved ones, or a draft with the
+    `saved` ones beside it. `choices.stat` must be an electricity device and
+    `choices.solar` the energy statistic of a solar source there. A drawn or
+    returned sensor, or a power from the draft, that the setup would not
+    offer raises `not_offered`. The method defaults to the suggested one:
+    the device's rule, else "From power", else none. `blocked` is the first
+    reason the chosen method cannot be built, with the entity it is about.
     """
     stat, solar = choices.stat, choices.solar
     device, source = _find(prefs, stat, solar)
-    # Sensors used by other things; the meter's own powers are no reason to
-    # skip a sensor of its own.
-    own = {rate for rate in (device.get(RATE), source.get(RATE)) if rate}
-    used = used_stats(prefs) - {stat} - own
-    for key in ("stat_rate", "solar_rate"):
-        if (power := choices.draft.get(key)) is not None:
-            _check_draft_power(hass, power, {stat, solar})
-    circuit = _power(choices.draft, "stat_rate", device.get(RATE))
-    if circuit[0] is None and (paired := paired_power(hass, stat, used)) is not None:
-        circuit = paired, "paired"
-    solar_power = _power(choices.draft, "solar_rate", source.get(RATE))
-    if solar_power[0] is None and (
-        paired := paired_power(hass, solar, used | {circuit[0] or ""})
-    ):
-        solar_power = paired, "paired"
+    saved_device, saved_source = _find_saved(
+        prefs if saved is None else saved, stat, solar
+    )
+    used = _used_by_others(prefs, device, source)
+    powers = _Powers(hass, helpers, used, {stat, solar})
+    circuit = powers.read("draft", device, saved_device)
+    solar_power = powers.read("draft", source, saved_source)
     if circuit[0] is not None and circuit[0] == solar_power[0]:
         raise _not_offered(circuit[0])
+    circuit = powers.pair(circuit, stat, {solar_power[0] or ""})
+    solar_power = powers.pair(solar_power, solar, {circuit[0] or ""})
+    if (
+        circuit[1] == "paired"
+        and circuit[0] is not None
+        and _holds_solar(hass, circuit[0], solar, solar_power[0])
+    ):
+        # It would only feed the gross power; better none than counted twice.
+        circuit = None, None
     drawn_list = drawn_candidates(hass, stat, used)
     returned_list = returned_candidates(hass, stat, used)
     drawn = choices.drawn or stat
@@ -907,7 +1043,8 @@ async def async_plan(
         raise _not_offered(drawn)
     if choices.returned is not None and choices.returned not in dict(returned_list):
         raise _not_offered(choices.returned)
-    returned = choices.returned or preselect_returned(hass, stat, used)
+    trusted = preselect_returned(hass, stat, used)
+    returned = choices.returned or trusted
 
     found = await async_probe(
         hass,
@@ -924,7 +1061,13 @@ async def async_plan(
         },
     )
     inputs = _Inputs(
-        hass, drawn, returned, bool(returned_list), found or {}, choices.periodic
+        hass,
+        drawn,
+        returned,
+        trusted,
+        bool(returned_list),
+        found or {},
+        choices.periodic,
     )
     rule = classify_meter(hass, drawn, inputs.evidence.get(drawn))
     circuit_evidence = inputs.evidence.get(circuit[0] or "")

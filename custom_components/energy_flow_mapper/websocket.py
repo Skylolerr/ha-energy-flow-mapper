@@ -827,14 +827,27 @@ _SETUP_CHOICES: dict[Any, Any] = {
     vol.Optional("drawn"): str,
     vol.Optional("returned"): str,
     vol.Optional("invert"): bool,
-    # Power sensors set in the panel but not saved yet; None: removed there.
-    vol.Optional("draft"): {
-        vol.Optional("stat_rate"): _OPTIONAL_TEXT,
-        vol.Optional("solar_rate"): _OPTIONAL_TEXT,
-    },
+    # The panel's draft: the setup plans on the settings with these changes.
+    vol.Inclusive(ATTR_BASE_HASH, "draft"): str,
+    vol.Inclusive(ATTR_CHANGES, "draft"): [CHANGE_SCHEMA],
     # The user's daily switch per input.
     vol.Optional("periodic"): {str: bool},
 }
+
+
+async def _async_setup_prefs(
+    hass: HomeAssistant, runtime: EnergyFlowMapperData, msg: dict[str, Any]
+) -> tuple[Prefs, Prefs]:
+    """Return the settings to plan on (the draft's, if given) and the saved.
+
+    A draft on settings that changed meanwhile is refused (`conflict`).
+    """
+    if ATTR_CHANGES not in msg:
+        prefs = await energy_access.async_get_prefs(hass)
+        return prefs, prefs
+    current, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
+    prefs, _ = _apply(current, groups, msg[ATTR_CHANGES])
+    return prefs, current
 
 
 def _choices(msg: dict[str, Any]) -> Choices:
@@ -845,7 +858,6 @@ def _choices(msg: dict[str, Any]) -> Choices:
         drawn=msg.get("drawn"),
         returned=msg.get("returned"),
         invert=msg.get("invert"),
-        draft=msg.get("draft", {}),
         periodic=msg.get("periodic", {}),
     )
 
@@ -872,8 +884,8 @@ async def websocket_solar_setup_preview(
     is refused with `not_offered`.
     """
     runtime = _runtime(hass)
-    prefs = await energy_access.async_get_prefs(hass)
-    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg))
+    prefs, saved = await _async_setup_prefs(hass, runtime, msg)
+    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg), saved)
     connection.send_result(msg["id"], plan.as_dict(hass))
 
 
@@ -901,8 +913,8 @@ async def websocket_create_solar_setup(
     panel, per helper role; an empty one gets the default.
     """
     runtime = _runtime(hass)
-    prefs = await energy_access.async_get_prefs(hass)
-    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg))
+    prefs, saved = await _async_setup_prefs(hass, runtime, msg)
+    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg), saved)
     entity_id, stat_rate = await async_create(
         hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
     )

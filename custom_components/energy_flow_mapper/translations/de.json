@@ -103,6 +103,12 @@
     "solar_needs_power": {
       "message": "Die Solaranlage {entity_id} braucht einen Leistungssensor: Ihr Energiezähler allein kann nur verwendet werden, wenn seine Statistik sicher zeigt, dass er nie wieder bei 0 beginnt. Lege zuerst den Leistungssensor der Solaranlage fest."
     },
+    "solar_needs_data": {
+      "message": "Noch zu wenig Daten, um zu wissen, ob der Energiezähler der Solaranlage {entity_id} je wieder bei 0 beginnt. Versuche es nach zwei Tagen Statistik wieder, oder lege den Leistungssensor der Solaranlage fest."
+    },
+    "no_safe_method": {
+      "message": "Für {entity_id} gibt es keinen sicheren Weg zu einem Brutto-Zähler: Es braucht einen Sensor für zurückgespeiste Energie, einen Leistungssensor für den Kreis und die Solaranlage oder einen Zähler, der beim Einspeisen rückwärts zählt."
+    },
     "not_offered": {
       "message": "{entity_id} kann so nicht für den Brutto-Zähler verwendet werden. Öffne die Einrichtung erneut und wähle einen der angebotenen Wege und Sensoren."
     },

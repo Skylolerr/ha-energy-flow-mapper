@@ -103,6 +103,12 @@
     "solar_needs_power": {
       "message": "L’installation solaire {entity_id} a besoin d’un capteur de puissance : son compteur d’énergie seul ne peut être utilisé que si ses statistiques montrent avec certitude qu’il ne repart jamais de 0. Définis d’abord le capteur de puissance de l’installation solaire."
     },
+    "solar_needs_data": {
+      "message": "Il n’y a pas encore assez de données pour savoir si le compteur d’énergie de l’installation solaire {entity_id} repart un jour de 0. Réessaie après deux jours de statistiques, ou définis le capteur de puissance de l’installation solaire."
+    },
+    "no_safe_method": {
+      "message": "Il n’y a pas de façon sûre de créer un compteur brut pour {entity_id} : il faut un capteur d’énergie réinjectée, un capteur de puissance pour le circuit et l’installation solaire, ou un compteur qui compte à rebours pendant la réinjection."
+    },
     "not_offered": {
       "message": "{entity_id} ne peut pas être utilisé ainsi pour le compteur brut. Rouvre la configuration et choisis l’une des façons et l’un des capteurs proposés."
     },

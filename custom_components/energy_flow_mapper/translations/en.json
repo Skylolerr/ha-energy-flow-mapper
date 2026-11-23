@@ -103,6 +103,12 @@
     "solar_needs_power": {
       "message": "The solar {entity_id} needs a power sensor: its energy counter alone can only be used when its statistics show for certain that it never starts again at 0. Set the solar's power sensor first."
     },
+    "solar_needs_data": {
+      "message": "There is not enough data yet to know whether the energy counter of the solar {entity_id} ever starts again at 0. Try again after two days of statistics, or set the solar's power sensor."
+    },
+    "no_safe_method": {
+      "message": "There is no safe way to build a gross meter for {entity_id}: it needs a returned energy sensor, a power sensor for the circuit and the solar, or a meter that counts backwards while feeding in."
+    },
     "not_offered": {
       "message": "{entity_id} cannot be used this way to build the gross meter. Open the setup again and choose one of the offered ways and sensors."
     },

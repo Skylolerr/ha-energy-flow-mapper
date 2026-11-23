@@ -103,6 +103,12 @@
     "solar_needs_power": {
       "message": "L’impianto solare {entity_id} ha bisogno di un sensore di potenza: il suo contatore di energia da solo può essere usato solo se le sue statistiche mostrano con certezza che non riparte mai da 0. Imposta prima il sensore di potenza dell’impianto solare."
     },
+    "solar_needs_data": {
+      "message": "Non ci sono ancora abbastanza dati per sapere se il contatore di energia dell’impianto solare {entity_id} riparte mai da 0. Riprova dopo due giorni di statistiche, oppure imposta il sensore di potenza dell’impianto solare."
+    },
+    "no_safe_method": {
+      "message": "Non c’è un modo sicuro per creare un contatore lordo per {entity_id}: serve un sensore dell’energia immessa, un sensore di potenza per il circuito e l’impianto solare, oppure un contatore che conta all’indietro durante l’immissione."
+    },
     "not_offered": {
       "message": "{entity_id} non può essere usato in questo modo per il contatore lordo. Riapri la configurazione e scegli uno dei modi e dei sensori proposti."
     },
