@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from .backups import BackupStore
 from .created_helpers import CreatedHelpers
 from .group_store import GroupStore
+from .stats_probe import ReadingCache
 from .suggestions import SuggestionStore
 
 
@@ -36,6 +37,8 @@ class EnergyFlowMapperData:
     validation_cache: tuple[float, str, dict[str, Any] | None] | None = None
     # The validation that is running for the cards: (hash, task).
     validation_running: tuple[str, asyncio.Task[dict[str, Any] | None]] | None = None
+    # The last statistics reading of the hints' safety net.
+    watch_cache: ReadingCache = field(default_factory=ReadingCache)
 
 
 type EnergyFlowMapperConfigEntry = ConfigEntry[EnergyFlowMapperData]

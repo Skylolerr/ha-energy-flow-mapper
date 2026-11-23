@@ -444,7 +444,7 @@ async def websocket_get(
             power_of=meter_powers(prefs),
         ),
         async_counted_returned(hass, prefs),
-        async_watch(hass, prefs, runtime.helpers.records()),
+        async_watch(hass, prefs, runtime.helpers.records(), runtime.watch_cache),
     )
     mark_daily_reset(meters, daily)
     issues = _checked_issues(hass, prefs, cache)

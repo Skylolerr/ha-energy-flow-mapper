@@ -19,15 +19,20 @@ members of a sum helper) and the recorder (energy counted lately).
 The safety net watches the gross meters the solar setup created (recorded as
 `gross_energy` in the created helpers), only by reading their statistics:
 
-- `gross_off`: an hour whose change differs from the gross power's energy by
-  more than max(0.5 kWh, 30 %), either way (`direction` fall or jump); without
-  a gross power only a fall below -0.5 kWh. The two-hour windows around it
-  must agree, so a meter that only counts late (a lag dip made up in the next
-  hour) or catches up after a gap is no step. `input` names the input whose
-  counter fell in that hour, if one did.
+- `gross_off`: in the last week, an hour whose change differs from the gross
+  power's energy by more than max(0.5 kWh, 30 %), either way (`direction`
+  fall or jump), or went below -0.5 kWh; without a gross power only such a
+  fall. The two-hour windows around it must agree, so a meter that only
+  counts late (a lag dip made up in the next hour) or catches up after a gap
+  is no step. Hours around a downtime of Home Assistant are skipped: the
+  recorder fills it with the last power and no energy. `input` names the
+  input whose counter fell in that hour, if one did; `cause` the likely
+  cause.
 - `gross_unknown`: more than 1 h without a value in the last day's 5-minute
-  statistics, while other watched statistics had values (else Home Assistant
-  itself was off). `input` names the input that had no value either.
+  statistics (From power: of the gross power), not counting Home
+  Assistant's downtime. `input` names the input that had no value either. A
+  gross meter on the solar's own counter pauses at night (only the solar's
+  counter had no value): no hint.
 - `solar_term_short` / `solar_term_high`: the solar term (our integral of the
   solar's power) counted less or more than the solar's own energy statistic
   over the last full local day, by more than max(0.5 kWh, 15 %): dropouts
@@ -39,10 +44,9 @@ hint: hints never break `get`.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from bisect import bisect_left
-from collections.abc import Callable, Collection, Iterator, Mapping
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import timedelta
 from enum import StrEnum
@@ -57,7 +61,7 @@ from homeassistant.util import dt as dt_util
 
 from .candidates import METER_CLASSES, rate_sensor
 from .daily_reset import async_hourly_statistics
-from .device_rules import is_returned, paired_power
+from .device_rules import Method, is_returned, paired_power
 from .hierarchy import (
     DEVICE_KEYS,
     EDITABLE_SOURCE_TYPES,
@@ -77,7 +81,16 @@ from .hierarchy import (
 )
 from .meter_inputs import Cache, direct_inputs
 from .solar_setup import KIND_GROSS_ENERGY, KIND_SOLAR_ENERGY
-from .stats_probe import HOURLY, SHORT_TERM, async_statistics
+from .stats_probe import (
+    HOURLY,
+    SHORT_TERM,
+    Downtime,
+    Query,
+    Reading,
+    ReadingCache,
+    StatType,
+    async_read,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -101,21 +114,36 @@ class Direction(StrEnum):
     JUMP = "jump"
 
 
+class Cause(StrEnum):
+    """The likely cause of a gross_off step, for the panel's text."""
+
+    # An input's counter fell: reset or replaced (`input` names it).
+    INPUT = "input"
+    # A jump without a fallen input, or a fall while the gross power was
+    # below 0: a wrong sign (invert), or something feeding in.
+    SIGN = "sign"
+    # Less than the power, nothing fell: the solar term lost energy.
+    SOLAR_TERM = "solar_term"
+
+
 # Days in which a returned sensor must have counted energy, and how much (kWh;
 # the recorder converts the statistics to kWh).
 COUNTED_DAYS: Final = 3
 COUNTED_KWH: Final = 0.01
 
-# gross_off: hourly statistics of the last days; a step is more than
-# max(OFF_KWH, OFF_SHARE of the power's energy) away from it.
-WATCH_DAYS: Final = 3
+# gross_off: hourly statistics of the last week (a reset's offset stays); a
+# step is more than max(OFF_KWH, OFF_SHARE of the power's energy) away from it.
+WATCH_DAYS: Final = 7
 OFF_KWH: Final = 0.5
 OFF_SHARE: Final = 0.3
-HOURLY_TYPES: Final = {"change", "mean", "state"}
+HOURLY_TYPES: Final[frozenset[StatType]] = frozenset({"change", "mean", "state"})
 # gross_unknown: 5-minute statistics of the last day; a gap is longer than this.
 GAP_DAYS: Final = 1
 GAP_SECONDS: Final = 3600.0
-SHORT_TYPES: Final = {"state", "mean"}
+SHORT_TYPES: Final[frozenset[StatType]] = frozenset({"state", "mean"})
+# The rows of the two queries in a reading.
+HOURLY_ROWS: Final = 0
+SHORT_ROWS: Final = 1
 HOUR_SECONDS: Final = 3600.0
 SHORT_SECONDS: Final = 300.0
 # The solar term's day differs from its source by more than max(TERM_KWH,
@@ -453,12 +481,25 @@ class _Gross:
     """A gross meter of the solar setup that is a device in the settings."""
 
     stat: str
+    # The setup's method (`em`, `plug`, `net`, `power`), as recorded.
+    method: str | None
     # Our gross power, if the gross meter has one.
     power: str | None
     # The user's sensors it reads (From power: through the gross power).
     inputs: list[str]
     # Our solar terms it reads -> the solar power each one integrates.
     terms: dict[str, str]
+
+    @property
+    def gaps_of(self) -> str:
+        """Return the statistic whose 5-minute rows show the meter unknown.
+
+        From power: the gross power. Its integral keeps writing rows while
+        the power is unknown; it only stops counting.
+        """
+        if self.method == Method.POWER and self.power is not None:
+            return self.power
+        return self.stat
 
 
 def _gross_meters(
@@ -500,6 +541,7 @@ def _gross_meters(
         grosses.append(
             _Gross(
                 stat,
+                gross.get("method"),
                 power,
                 [entity for entity, found in ours.items() if not found],
                 {
@@ -513,6 +555,28 @@ def _gross_meters(
     return grosses
 
 
+def _solars(prefs: Prefs) -> list[Mapping[str, Any]]:
+    return [
+        source
+        for source in prefs.get(KEY_SOURCES, [])
+        if source.get("type") == "solar" and isinstance(source.get(FROM), str)
+    ]
+
+
+def _solar_sensors(hass: HomeAssistant, prefs: Prefs) -> tuple[set[str], set[str]]:
+    """Return the solar sources' energy meters, and those with their powers.
+
+    A solar without a power in the settings counts its paired power.
+    """
+    used = used_stats(prefs)
+    solars = _solars(prefs)
+    meters = {source[FROM] for source in solars}
+    powers = {
+        source.get(RATE) or paired_power(hass, source[FROM], used) for source in solars
+    }
+    return meters, meters | {power for power in powers if isinstance(power, str)}
+
+
 def _term_sources(
     hass: HomeAssistant, prefs: Prefs, grosses: list[_Gross]
 ) -> dict[str, str]:
@@ -523,11 +587,7 @@ def _term_sources(
     term that fits no source or several is not checked; of several terms for
     one source, the first by entity ID is.
     """
-    solars = [
-        source
-        for source in prefs.get(KEY_SOURCES, [])
-        if source.get("type") == "solar" and isinstance(source.get(FROM), str)
-    ]
+    solars = _solars(prefs)
     used = used_stats(prefs)
     terms = {term: power for gross in grosses for term, power in gross.terms.items()}
     found: dict[str, str] = {}
@@ -555,6 +615,13 @@ def _values(rows: Rows, entity_id: str, key: str) -> dict[float, float]:
     }
 
 
+def _overlap(downtimes: Sequence[Downtime], begin: float, end: float) -> float:
+    """Return the seconds of [begin, end) Home Assistant was off."""
+    return sum(
+        max(0.0, min(end, stop) - max(begin, start)) for start, stop in downtimes
+    )
+
+
 def _fallen(inputs: list[str], rows: Rows, start: float) -> str | None:
     """Return the input whose counter fell most (at least OFF_KWH) in the hour."""
     falls = [
@@ -572,12 +639,38 @@ def _fallen(inputs: list[str], rows: Rows, start: float) -> str | None:
     return max(falls)[1] if falls else None
 
 
-def _gross_off(gross: _Gross, rows: Rows) -> dict[str, Any] | None:
-    """Return the gross_off hint of the latest hour off its power, or None.
+def _cause(
+    gross: _Gross,
+    direction: Direction,
+    fallen: str | None,
+    power_kwh: float | None,
+    change: float,
+) -> Cause | None:
+    """Return the likely cause of a gross_off step, if one can be told."""
+    if fallen is not None:
+        return Cause.INPUT
+    if direction is Direction.JUMP or (power_kwh is not None and power_kwh < 0):
+        return Cause.SIGN
+    if gross.terms and change >= 0:
+        return Cause.SOLAR_TERM
+    return None
 
-    An hour is off when it and both two-hour windows around it are off the
-    same way, so the hours before and after it need statistics too.
+
+def _gross_off(gross: _Gross, reading: Reading) -> dict[str, Any] | None:
+    """Return the gross_off hint of the latest step, or None.
+
+    An hour is a step when both two-hour windows around it are off the same
+    way, judged by the hour's own threshold, and the hour itself is off that
+    way too or (a fall) went below 0. So its neighbours need statistics, and
+    none of the three hours may overlap a downtime: the recorder fills a
+    downtime with the last power and no energy, and EM catches up after it.
+    A window that fell below -OFF_KWH is a fall in every method, also when
+    the gross power agrees: a gross consumption meter never falls (a wrong
+    invert, a battery feeding in). Without the gross power only a fall
+    counts, one the next hour does not make up (the hour before gives the
+    usual consumption).
     """
+    rows = reading.rows[HOURLY_ROWS]
     changes = _values(rows, gross.stat, "change")
     # A mean of W over an hour is that many Wh.
     energy = {
@@ -585,25 +678,40 @@ def _gross_off(gross: _Gross, rows: Rows) -> dict[str, Any] | None:
         for start, mean in _values(rows, gross.power or "", "mean").items()
     }
 
-    def off(starts: tuple[float, ...]) -> Direction | None:
+    def window(starts: tuple[float, ...], limit: float) -> Direction | None:
         change = sum(changes[start] for start in starts)
-        known = [energy[start] for start in starts if start in energy]
-        if len(known) < len(starts):
-            return Direction.FALL if change < -OFF_KWH else None
-        expected = sum(known)
-        if abs(change - expected) <= max(OFF_KWH, OFF_SHARE * abs(expected)):
+        if change < -OFF_KWH:
+            return Direction.FALL
+        expected = sum(energy[start] for start in starts)
+        if abs(change - expected) <= limit:
             return None
         return Direction.JUMP if change > expected else Direction.FALL
 
+    def step(start: float) -> Direction | None:
+        before, after = start - HOUR_SECONDS, start + HOUR_SECONDS
+        hours = (before, start, after)
+        if any(hour not in changes for hour in hours) or _overlap(
+            reading.downtimes, before, after + HOUR_SECONDS
+        ):
+            return None
+        if any(hour not in energy for hour in hours):
+            usual = max(changes[before], 0.0)
+            fell = (
+                changes[start] < -OFF_KWH
+                and changes[start] + changes[after] < 2 * usual - OFF_KWH
+            )
+            return Direction.FALL if fell else None
+        limit = max(OFF_KWH, OFF_SHARE * abs(energy[start]))
+        first = window((before, start), limit)
+        if first is None or window((start, after), limit) is not first:
+            return None
+        own = window((start,), limit)
+        went_below = first is Direction.FALL and changes[start] < 0
+        return first if own is first or went_below else None
+
     found: tuple[float, Direction] | None = None
     for start in sorted(changes):
-        before, after = start - HOUR_SECONDS, start + HOUR_SECONDS
-        if before not in changes or after not in changes:
-            continue
-        direction = off((start,))
-        if direction is not None and (
-            off((before, start)) is direction is off((start, after))
-        ):
+        if (direction := step(start)) is not None:
             found = start, direction
     if found is None:
         return None
@@ -611,12 +719,17 @@ def _gross_off(gross: _Gross, rows: Rows) -> dict[str, Any] | None:
     data: dict[str, Any] = {
         "direction": direction,
         "hour": _local_iso(start),
+        "method": gross.method,
         "change_kwh": round(changes[start], 3),
     }
     if start in energy:
         data["power_kwh"] = round(energy[start], 3)
     if (fallen := _fallen(gross.inputs, rows, start)) is not None:
         data["input"] = fallen
+    if (
+        cause := _cause(gross, direction, fallen, energy.get(start), changes[start])
+    ) is not None:
+        data["cause"] = cause
     return _hint(HintCode.GROSS_OFF, gross.stat, DeviceKind.ELECTRICITY, data)
 
 
@@ -636,37 +749,46 @@ def _any_in(starts: list[float], begin: float, end: float) -> bool:
 
 
 def _gross_unknown(
-    gross: _Gross, rows: Rows, now: float, recorded: list[float]
+    gross: _Gross, reading: Reading, solar: tuple[set[str], set[str]]
 ) -> dict[str, Any] | None:
     """Return the gross_unknown hint of the latest gap, or None.
 
-    A gap is the time without 5-minute rows between two rows, or since the
-    last row, longer than GAP_SECONDS; the time before the first row does not
-    count (the meter may be new). Home Assistant must have recorded something
-    else then (`recorded`: the sorted starts of all rows read), else it was
-    off itself.
+    A gap is the time without 5-minute rows of `gross.gaps_of` between two
+    rows, or since the last row, without Home Assistant's downtime (also the
+    minutes after a start before the missing statistics are compiled),
+    longer than GAP_SECONDS. The time before the first row does not count
+    (the meter may be new). A gap where only the solar's own energy counters
+    had no value is the documented night pause of a gross meter on the
+    solar's counter. `solar` are the solar meters and those with their
+    powers: a missing input that is none of them is named first.
     """
-    if not (starts := _starts(rows, gross.stat)):
+    rows = reading.rows[SHORT_ROWS]
+    meters, sensors = solar
+    if not (starts := _starts(rows, gross.gaps_of)):
         return None
     spans = [(before + SHORT_SECONDS, after) for before, after in pairwise(starts)]
-    spans.append((starts[-1] + SHORT_SECONDS, now))
-    gaps = [
-        (begin, end)
-        for begin, end in spans
-        if end - begin > GAP_SECONDS and _any_in(recorded, begin, end)
-    ]
-    if not gaps:
+    spans.append((starts[-1] + SHORT_SECONDS, reading.read_at))
+    found: tuple[float, float, list[str]] | None = None
+    for begin, end in spans:
+        unknown = end - begin - _overlap(reading.downtimes, begin, end)
+        if unknown <= GAP_SECONDS:
+            continue
+        missing = sorted(
+            (
+                entity
+                for entity in gross.inputs
+                if (own := _starts(rows, entity)) and not _any_in(own, begin, end)
+            ),
+            key=lambda entity: (entity in sensors, entity),
+        )
+        if missing and all(entity in meters for entity in missing):
+            continue
+        found = begin, unknown, missing
+    if found is None:
         return None
-    begin, end = gaps[-1]
-    data: dict[str, Any] = {
-        "hour": _local_iso(begin),
-        "minutes": int((end - begin) // 60),
-    }
-    if missing := [
-        entity
-        for entity in gross.inputs
-        if (own := _starts(rows, entity)) and not _any_in(own, begin, end)
-    ]:
+    begin, unknown, missing = found
+    data: dict[str, Any] = {"hour": _local_iso(begin), "minutes": int(unknown // 60)}
+    if missing:
         data["input"] = missing[0]
     return _hint(HintCode.GROSS_UNKNOWN, gross.stat, DeviceKind.ELECTRICITY, data)
 
@@ -678,15 +800,16 @@ def _last_day() -> tuple[float, float, str]:
     return day.timestamp(), today.timestamp(), day.date().isoformat()
 
 
-def _term_off(
-    term: str, source: str, rows: Rows, day: tuple[float, float, str]
-) -> dict[str, Any] | None:
+def _term_off(term: str, source: str, reading: Reading) -> dict[str, Any] | None:
     """Return the hint of a solar term that left its source's day, or None.
 
-    A day is the sum of the hourly `change` (which handles resets). No hint
-    when a side has no statistics that day, or the term began during it.
+    A day is the sum of the hourly `change` (which handles resets) of the
+    rows that start in it. No hint when a side has no statistics that day, or
+    the term has no row in its first hour: it began during the day. (In a
+    time zone with a half-hour offset the first row starts at :30.)
     """
-    start, end, date = day
+    rows = reading.rows[HOURLY_ROWS]
+    start, end, date = _last_day()
 
     def changes(entity_id: str) -> dict[float, float]:
         return {
@@ -696,7 +819,7 @@ def _term_off(
         }
 
     own, theirs = changes(term), changes(source)
-    if not own or not theirs or min(own) > start:
+    if not own or not theirs or min(own) >= start + HOUR_SECONDS:
         return None
     term_kwh, source_kwh = sum(own.values()), sum(theirs.values())
     if abs(term_kwh - source_kwh) <= max(TERM_KWH, TERM_SHARE * abs(source_kwh)):
@@ -733,21 +856,26 @@ def _add(
 
 
 async def async_watch(
-    hass: HomeAssistant, prefs: Prefs, records: Mapping[str, Mapping[str, Any]]
+    hass: HomeAssistant,
+    prefs: Prefs,
+    records: Mapping[str, Mapping[str, Any]],
+    cache: ReadingCache | None = None,
 ) -> Watched:
     """Return the safety-net hints of the gross meters of the solar setup.
 
-    `records` are the created helpers' records (entry ID -> record). Two
-    queries at once, in the recorder's executor: hourly statistics of the
-    last days (gross meters, their powers and inputs, the solar terms and
-    their sources) and 5-minute statistics of the last day (gross meters,
-    inputs, terms). Nothing is read without a gross meter in the settings;
-    nothing here ever raises.
+    `records` are the created helpers' records (entry ID -> record). One
+    executor job reads the hourly statistics of the last WATCH_DAYS (gross
+    meters, their powers and inputs, the solar terms and their sources), the
+    5-minute statistics of the last day (gross meters, the gross powers of
+    From power, inputs, terms) and Home Assistant's downtimes; a reading of
+    the same statistics younger than 5 minutes comes from `cache`. Nothing
+    is read without a gross meter in the settings; nothing here raises.
     """
     watched = Watched()
     try:
         grosses = _gross_meters(hass, prefs, records)
         sources = _term_sources(hass, prefs, grosses)
+        solar = _solar_sensors(hass, prefs)
     except Exception:
         _LOGGER.debug("Finding the gross meters failed", exc_info=True)
         return watched
@@ -756,32 +884,29 @@ async def async_watch(
     stats = {gross.stat for gross in grosses}
     inputs = {entity for gross in grosses for entity in gross.inputs}
     powers = {gross.power for gross in grosses if gross.power is not None}
+    gaps = {gross.gaps_of for gross in grosses}
     terms = {term for gross in grosses for term in gross.terms}
-    hourly, short = await asyncio.gather(
-        async_statistics(
-            hass,
-            stats | powers | inputs | set(sources) | set(sources.values()),
+    queries = (
+        Query(
+            frozenset(stats | powers | inputs | set(sources) | set(sources.values())),
             WATCH_DAYS,
             HOURLY,
             HOURLY_TYPES,
         ),
-        async_statistics(
-            hass, stats | inputs | terms, GAP_DAYS, SHORT_TERM, SHORT_TYPES
+        Query(
+            frozenset(stats | gaps | inputs | terms),
+            GAP_DAYS,
+            SHORT_TERM,
+            SHORT_TYPES,
         ),
     )
-    if hourly is not None:
-        for gross in grosses:
-            _add(watched.devices, gross.stat, partial(_gross_off, gross, hourly))
-        day = _last_day()
-        for source, term in sources.items():
-            _add(watched.sources, source, partial(_term_off, term, source, hourly, day))
-    if short is not None:
-        now = dt_util.utcnow().timestamp()
-        recorded = sorted(start for entity in short for start in _starts(short, entity))
-        for gross in grosses:
-            _add(
-                watched.devices,
-                gross.stat,
-                partial(_gross_unknown, gross, short, now, recorded),
-            )
+    if (reading := await async_read(hass, queries, cache)) is None:
+        return watched
+    for gross in grosses:
+        _add(watched.devices, gross.stat, partial(_gross_off, gross, reading))
+        _add(
+            watched.devices, gross.stat, partial(_gross_unknown, gross, reading, solar)
+        )
+    for source, term in sources.items():
+        _add(watched.sources, source, partial(_term_off, term, source, reading))
     return watched

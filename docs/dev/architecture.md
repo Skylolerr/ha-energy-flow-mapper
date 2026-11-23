@@ -107,8 +107,12 @@ The safety net (`async_watch`) watches the gross meters of the solar setup, foun
 `gross_energy` records in the created helpers: `gross_off` (an hour off its gross power),
 `gross_unknown` (a gap of more than 1 h in the 5-minute statistics) and
 `solar_term_short` / `solar_term_high` (the solar term's last day against the solar's own
-statistic). It reads with two queries that run together with the others of `get`, and a
-failing check only loses its hint.
+statistic). One recorder executor job (`stats_probe.async_read`) reads a week of hourly
+and a day of 5-minute statistics plus Home Assistant's downtimes from the recorder runs,
+together with the other queries of `get`; the reading is kept for 5 minutes per set of
+statistics (`watch_cache` in the runtime data). The recorder fills a downtime with the last
+values (flat rows, no gaps), so hours around a downtime are skipped and downtime is not
+counted as a gap. A failing check only loses its hint.
 
 ## Panel and card (`panel/`)
 

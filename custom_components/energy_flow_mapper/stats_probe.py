@@ -23,18 +23,23 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import StrEnum
 from itertools import pairwise
-from typing import Any, Final
+from typing import Any, Final, Literal
 
+from homeassistant.components.recorder.db_schema import RecorderRuns, States
+from homeassistant.components.recorder.models import process_timestamp
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.recorder import get_instance
+from homeassistant.helpers.recorder import get_instance, session_scope
 from homeassistant.util import dt as dt_util
+from sqlalchemy import func, select
 
 _LOGGER = logging.getLogger(__name__)
 
 # Longest wait for the recorder, for all queries of one request together.
 QUERY_TIMEOUT: Final = 10
+# How long a reading is kept: statistics change every 5 minutes.
+READING_SECONDS: Final = 300.0
 
 # A fall is a step to less than half the distance from 0 of the state before.
 FALL_SHARE: Final = 0.5
@@ -72,6 +77,10 @@ type Drop = tuple[datetime, float, float]
 # (start, end, mean W) of a power statistics row.
 type PowerRow = tuple[datetime, datetime, float]
 type Rows = dict[str, list[Any]]
+# (stopped, started again) of Home Assistant, UTC timestamps.
+type Downtime = tuple[float, float]
+type Period = Literal["5minute", "hour"]
+type StatType = Literal["change", "last_reset", "max", "mean", "min", "state", "sum"]
 
 
 class Reason(StrEnum):
@@ -330,6 +339,127 @@ async def async_statistics(
         # Usually the recorder is busy or not ready yet after a restart.
         _LOGGER.debug("Reading the statistics failed", exc_info=True)
         return None
+
+
+@dataclass(frozen=True)
+class Query:
+    """One statistics query of a reading: the last `days` days of `ids`."""
+
+    ids: frozenset[str]
+    days: int
+    period: Period
+    types: frozenset[StatType]
+
+
+@dataclass(frozen=True)
+class Reading:
+    """What one reading found.
+
+    The rows of each query, Home Assistant's downtimes since the earliest
+    query's start, and when it was read (UTC timestamp).
+    """
+
+    rows: tuple[Rows, ...]
+    downtimes: tuple[Downtime, ...]
+    read_at: float
+
+
+@dataclass
+class ReadingCache:
+    """The last reading and its queries, kept for READING_SECONDS."""
+
+    queries: tuple[Query, ...] | None = None
+    reading: Reading | None = None
+
+
+def read_downtimes(hass: HomeAssistant, since: float) -> list[Downtime]:
+    """Return the times Home Assistant was off that ended after `since`.
+
+    A downtime runs from the end of one recorder run to the start of the
+    next. A run that was not closed (a crash, a power cut) got the next
+    start as its end; it really ended with its last state written. While
+    Home Assistant is off, the recorder later fills the statistics with the
+    last values: flat rows, no gaps. Must run in the recorder's executor.
+    """
+    with session_scope(hass=hass, read_only=True) as session:
+        runs = session.execute(
+            select(
+                RecorderRuns.start, RecorderRuns.end, RecorderRuns.closed_incorrect
+            ).order_by(RecorderRuns.start)
+        ).all()
+        found: list[Downtime] = []
+        for (start, end, incorrect), (restart, _, _) in pairwise(runs):
+            back = process_timestamp(restart).timestamp()
+            if back <= since:
+                continue
+            begin = process_timestamp(start).timestamp()
+            if incorrect or end is None:
+                # `last_updated_ts` is indexed.
+                last = session.execute(
+                    select(func.max(States.last_updated_ts)).where(
+                        States.last_updated_ts >= begin,
+                        States.last_updated_ts < back,
+                    )
+                ).scalar()
+                stop = begin if last is None else float(last)
+            else:
+                stop = process_timestamp(end).timestamp()
+            if stop < back:
+                found.append((stop, back))
+    return found
+
+
+def _read(hass: HomeAssistant, queries: tuple[Query, ...], end: datetime) -> Reading:
+    """Run the queries and read the downtimes; in the recorder's executor."""
+    rows = tuple(
+        statistics_during_period(
+            hass,
+            end - timedelta(days=query.days),
+            end,
+            set(query.ids),
+            query.period,
+            UNITS,
+            set(query.types),
+        )
+        for query in queries
+    )
+    since = end - timedelta(days=max(query.days for query in queries))
+    return Reading(
+        rows, tuple(read_downtimes(hass, since.timestamp())), end.timestamp()
+    )
+
+
+async def async_read(
+    hass: HomeAssistant,
+    queries: tuple[Query, ...],
+    cache: ReadingCache | None = None,
+) -> Reading | None:
+    """Return the rows of `queries` and the downtimes, in one executor job.
+
+    A reading of the same queries younger than READING_SECONDS comes from
+    `cache`. None when there is no recorder, or it fails or is too slow.
+    """
+    now = dt_util.utcnow()
+    if (
+        cache is not None
+        and cache.reading is not None
+        and cache.queries == queries
+        and now.timestamp() - cache.reading.read_at < READING_SECONDS
+    ):
+        return cache.reading
+    if "recorder" not in hass.config.components:
+        return None
+    try:
+        async with asyncio.timeout(QUERY_TIMEOUT):
+            reading: Reading = await get_instance(hass).async_add_executor_job(
+                _read, hass, queries, now
+            )
+    except Exception:
+        _LOGGER.debug("Reading the statistics failed", exc_info=True)
+        return None
+    if cache is not None:
+        cache.queries, cache.reading = queries, reading
+    return reading
 
 
 async def _async_read(

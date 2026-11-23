@@ -6,16 +6,21 @@ own module.
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
+from homeassistant.components.recorder.db_schema import RecorderRuns, States
 from homeassistant.components.recorder.models import StatisticMeanType
 from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.recorder import get_instance, session_scope
 from homeassistant.util import dt as dt_util
 
-from custom_components.energy_flow_mapper.stats_probe import async_probe
+from custom_components.energy_flow_mapper.stats_probe import (
+    async_probe,
+    read_downtimes,
+)
 
 try:
     from pytest_homeassistant.components.recorder.common import (
@@ -77,3 +82,56 @@ async def test_probe_units_with_the_recorder(
     power = evidence["sensor.kw_power"]
     assert power.series[0][1] == pytest.approx(500.0)
     assert power.went_negative
+
+
+async def test_read_downtimes_with_the_recorder(
+    recorder_mock: Any, hass: HomeAssistant
+) -> None:
+    """Downtimes come from the recorder runs; a crashed run ends at its last state."""
+    now = dt_util.utcnow()
+
+    def ago(hours: float) -> datetime:
+        return now - timedelta(hours=hours)
+
+    def insert() -> None:
+        with session_scope(hass=hass) as session:
+            session.add_all(
+                [
+                    # Its downtime ended before the window.
+                    RecorderRuns(start=ago(60), end=ago(59), created=ago(60)),
+                    RecorderRuns(start=ago(58), end=ago(40), created=ago(58)),
+                    # Crashed: the end is the next start, its last state is earlier.
+                    RecorderRuns(
+                        start=ago(38),
+                        end=ago(30),
+                        closed_incorrect=True,
+                        created=ago(38),
+                    ),
+                    # Restarted at once: no downtime.
+                    RecorderRuns(start=ago(30), end=ago(20), created=ago(30)),
+                    # Crashed without writing a state.
+                    RecorderRuns(
+                        start=ago(20),
+                        end=ago(10),
+                        closed_incorrect=True,
+                        created=ago(20),
+                    ),
+                    RecorderRuns(start=ago(10), end=ago(5), created=ago(10)),
+                    States(state="1", last_updated_ts=ago(33).timestamp()),
+                    States(state="1", last_updated_ts=ago(25).timestamp()),
+                ]
+            )
+
+    instance = get_instance(hass)
+    await instance.async_add_executor_job(insert)
+    await async_wait_recording_done(hass)
+    found = await instance.async_add_executor_job(
+        read_downtimes, hass, ago(48).timestamp()
+    )
+    current = instance.recorder_runs_manager.current.start.timestamp()
+    assert found == [
+        pytest.approx((ago(40).timestamp(), ago(38).timestamp())),
+        pytest.approx((ago(33).timestamp(), ago(30).timestamp())),
+        pytest.approx((ago(20).timestamp(), ago(10).timestamp())),
+        pytest.approx((ago(5).timestamp(), current)),
+    ]

@@ -57,8 +57,16 @@ class FakeRecorder:
 
 
 @pytest.fixture
+def downtimes() -> list[tuple[float, float]]:
+    """Return the downtimes of Home Assistant the fake recorder reports."""
+    return []
+
+
+@pytest.fixture
 def statistics(
-    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+    hass: HomeAssistant,
+    monkeypatch: pytest.MonkeyPatch,
+    downtimes: list[tuple[float, float]],
 ) -> tuple[list[tuple[Any, ...]], Rows]:
     """Fake the recorder; return the calls made to it and its rows."""
     calls: list[tuple[Any, ...]] = []
@@ -66,9 +74,24 @@ def statistics(
 
     def fake(*args: Any) -> Rows:
         calls.append(args)
-        return {stat: data[stat] for stat in args[3] if stat in data}
+        _, start, end, ids, period, *_ = args
+        # 5-minute rows only exist for the last days: keep their window.
+        return {
+            stat: [
+                row
+                for row in data[stat]
+                if period != "5minute"
+                or start.timestamp() <= row["start"] < end.timestamp()
+            ]
+            for stat in ids
+            if stat in data
+        }
+
+    def fake_downtimes(hass: HomeAssistant, since: float) -> list[tuple[float, float]]:
+        return list(downtimes)
 
     monkeypatch.setattr(stats_probe, "statistics_during_period", fake)
+    monkeypatch.setattr(stats_probe, "read_downtimes", fake_downtimes)
     monkeypatch.setattr(stats_probe, "get_instance", FakeRecorder)
     hass.config.components.add("recorder")
     return calls, data
@@ -586,7 +609,8 @@ async def test_get_returns_hints(
         hass, "sensor.house_sum", ["sensor.day_meter", "sensor.garage_energy"]
     )
     data["sensor.day_meter"] = [
-        {"start": 1_700_000_000 + 3600 * h, "state": 0.5 * (h % 24)} for h in range(72)
+        {"start": float(_hour_base() + 3600 * h), "state": 0.5 * (h % 24)}
+        for h in range(72)
     ]
     client = await hass_ws_client(hass)
     await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
@@ -690,6 +714,7 @@ SAFETY_CODES = (
     HintCode.SOLAR_TERM_SHORT,
     HintCode.SOLAR_TERM_HIGH,
 )
+WATCH_TYPES = ({"change", "mean", "state"}, {"state", "mean"})
 
 
 def _helper(
@@ -709,12 +734,17 @@ def _helper(
 
 
 def _setup(
-    hass: HomeAssistant, method: str = "em", *, with_power: bool = True
+    hass: HomeAssistant,
+    method: str = "em",
+    *,
+    with_power: bool = True,
+    counter: bool = False,
 ) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     """Build a gross meter as the solar setup does; return prefs and records.
 
-    EM: drawn - returned + the solar term (our integral of our solar power
-    template). From power: our integral of our gross power template.
+    EM / Net: the meter (and returned) + the solar term, our integral of our
+    solar power template, or with `counter` the solar's own energy counter.
+    From power: our integral of our gross power template.
     """
     for entity_id in (DRAWN, RETURNED, PV_ENERGY):
         _meter(hass, entity_id)
@@ -751,13 +781,14 @@ def _setup(
     if method == "power":
         gross_entry = _helper(hass, "integration", GROSS, {"source": GROSS_POWER})
     else:
+        solar = PV_ENERGY if counter else TERM
         gross_entry = _helper(
             hass,
             "template",
             GROSS,
             {
                 "template_type": "sensor",
-                "state": gross_energy_template(Method(method), DRAWN, TERM, RETURNED),
+                "state": gross_energy_template(Method(method), DRAWN, solar, RETURNED),
             },
         )
     records[gross_entry] = {
@@ -804,12 +835,19 @@ async def _watch_hints(
     return [hint for hint in hints if hint["code"] in SAFETY_CODES]
 
 
-def _gross_off(hour: float, direction: str, **data: Any) -> dict[str, Any]:
+def _gross_off(
+    hour: float, direction: str, method: str = "em", **data: Any
+) -> dict[str, Any]:
     return {
         "code": HintCode.GROSS_OFF,
         "stat": GROSS,
         "kind": "electricity",
-        "data": {"direction": direction, "hour": _local_iso(hour), **data},
+        "data": {
+            "direction": direction,
+            "hour": _local_iso(hour),
+            "method": method,
+            **data,
+        },
     }
 
 
@@ -827,25 +865,40 @@ async def test_gross_off_on_fall_and_on_jump(
     data[DRAWN] = _hourly("state", [10, 11, 12, 13, 14, 0, 1, 2, 3, 4], base)
     data[RETURNED] = _hourly("state", [5.0] * 10, base)
     assert await _watch_hints(hass, prefs, records) == [
-        _gross_off(hour, "fall", change_kwh=-40.0, power_kwh=1.0, input=DRAWN)
+        _gross_off(
+            hour,
+            "fall",
+            change_kwh=-40.0,
+            power_kwh=1.0,
+            input=DRAWN,
+            cause="input",
+        )
     ]
     hourly = next(call for call in calls if call[4] == "hour")
     assert hourly[3] == {GROSS, GROSS_POWER, DRAWN, RETURNED, TERM, PV_ENERGY}
     assert hourly[5] == {"energy": "kWh", "power": "W"}
     assert hourly[6] == {"change", "mean", "state"}
-    assert (hourly[2] - hourly[1]).days == 3
+    # A reset stays: a week of hourly statistics.
+    assert (hourly[2] - hourly[1]).days == 7
     # The returned counter fell back to 0: the gross meter jumped.
     data[GROSS] = _hourly("change", [1, 1, 1, 1, 1, 6, 1, 1, 1, 1], base)
     data[DRAWN] = _hourly("state", [10, 11, 12, 13, 14, 15, 16, 17, 18, 19], base)
     data[RETURNED] = _hourly("state", [5, 5, 5, 5, 5, 0, 0, 0, 0, 0], base)
     assert await _watch_hints(hass, prefs, records) == [
-        _gross_off(hour, "jump", change_kwh=6.0, power_kwh=1.0, input=RETURNED)
+        _gross_off(
+            hour, "jump", change_kwh=6.0, power_kwh=1.0, input=RETURNED, cause="input"
+        )
     ]
     # A wrong sign: nothing fell, so no input is named; the latest hour wins.
     data[GROSS] = _hourly("change", [1, 1, 3, 1, 1, 3, 1, 1, 1, 1], base)
     data[RETURNED] = _hourly("state", [5.0] * 10, base)
     assert await _watch_hints(hass, prefs, records) == [
-        _gross_off(hour, "jump", change_kwh=3.0, power_kwh=1.0)
+        _gross_off(hour, "jump", change_kwh=3.0, power_kwh=1.0, cause="sign")
+    ]
+    # Less than the power and nothing fell: the solar term lost energy.
+    data[GROSS] = _hourly("change", [1, 1, 1, 1, 1, 0.2, 1, 1, 1, 1], base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(hour, "fall", change_kwh=0.2, power_kwh=1.0, cause="solar_term")
     ]
 
 
@@ -854,16 +907,19 @@ async def test_gross_off_without_power_only_on_fall(
 ) -> None:
     """Without a gross power only a fall below -0.5 kWh counts."""
     _, data = statistics
-    prefs, records = _setup(hass, "net", with_power=False)
+    prefs, records = _setup(hass, "net", with_power=False, counter=True)
     base = _hour_base()
     data[GROSS] = _hourly("change", [0.2, 0.2, -0.9, 0.0, 0.2], base)
     assert await _watch_hints(hass, prefs, records) == [
-        _gross_off(base + 7200, "fall", change_kwh=-0.9)
+        _gross_off(base + 7200, "fall", "net", change_kwh=-0.9)
     ]
     # A jump, or a lag dip the next hour makes up, is no fall.
     data[GROSS] = _hourly("change", [0.2, 0.2, 9.0, 0.2, 0.2], base)
     assert await _watch_hints(hass, prefs, records) == []
     data[GROSS] = _hourly("change", [0.2, 0.2, -0.9, 1.1, 0.2], base)
+    assert await _watch_hints(hass, prefs, records) == []
+    # A load that stops is no fall either.
+    data[GROSS] = _hourly("change", [3.0, 3.0, 0.0, 0.0, 0.0], base)
     assert await _watch_hints(hass, prefs, records) == []
 
 
@@ -897,6 +953,60 @@ async def test_gross_off_quiet_when_matching(
     assert await _watch_hints(hass, prefs, records) == []
 
 
+@pytest.mark.parametrize(
+    ("changes", "means", "with_power", "found"),
+    [
+        # A 1.0 kWh counter reset on a 2 kW circuit.
+        ([2, 2, 1, 2, 2], [2000.0] * 5, True, 1.0),
+        # A 2.5 kWh reset on a 5 kW heat pump.
+        ([5, 5, 2.5, 5, 5], [5000.0] * 5, True, 2.5),
+        # A 2 kWh reset on a 1 kW circuit, without a gross power.
+        ([1, 1, -1, 1, 1], [], False, -1.0),
+        # The solar term lags 5 minutes at 8 kW: 0.67 kWh move one hour on.
+        ([0.3, 0.3, 0.3 - 0.667, 0.3 + 0.667, 0.3], [300.0] * 5, True, None),
+    ],
+)
+async def test_gross_off_judges_by_the_hour(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    changes: list[float],
+    means: list[float],
+    with_power: bool,
+    found: float | None,
+) -> None:
+    """Both windows around an hour are judged by the hour's own threshold."""
+    _, data = statistics
+    prefs, records = _setup(hass, with_power=with_power)
+    base = _hour_base()
+    data[GROSS] = _hourly("change", changes, base)
+    data[GROSS_POWER] = _hourly("mean", means, base)
+    hints = await _watch_hints(hass, prefs, records)
+    assert [hint["data"]["change_kwh"] for hint in hints] == (
+        [] if found is None else [found]
+    )
+
+
+async def test_gross_off_falls_with_its_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A gross meter never falls, even when its power agrees (a wrong invert)."""
+    _, data = statistics
+    prefs, records = _setup(hass, "power")
+    base = _hour_base()
+    data[GROSS_POWER] = _hourly("mean", [500.0, -400.0, -400.0, -400.0, 500.0], base)
+    data[GROSS] = _hourly("change", [0.5, -0.4, -0.4, -0.4, 0.5], base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(
+            base + 7200,
+            "fall",
+            "power",
+            change_kwh=-0.4,
+            power_kwh=-0.4,
+            cause="sign",
+        )
+    ]
+
+
 async def test_gross_off_from_power(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
@@ -907,8 +1017,56 @@ async def test_gross_off_from_power(
     data[GROSS_POWER] = _hourly("mean", [500.0] * 4, base)
     data[GROSS] = _hourly("change", [0.5, 0.5, -3.0, 0.5], base)
     assert await _watch_hints(hass, prefs, records) == [
-        _gross_off(base + 7200, "fall", change_kwh=-3.0, power_kwh=0.5)
+        _gross_off(base + 7200, "fall", "power", change_kwh=-3.0, power_kwh=0.5)
     ]
+
+
+@pytest.mark.parametrize("method", ["power", "em"])
+@pytest.mark.parametrize("hours", [1, 2, 3])
+async def test_gross_off_skips_a_downtime(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+    method: str,
+    hours: int,
+) -> None:
+    """Home Assistant off: the recorder fills the hours with the last values.
+
+    The power's mean stays at 1.5 kW, the energy does not change; EM catches
+    up when its counters are read again, From power does not.
+    """
+    _, data = statistics
+    prefs, records = _setup(hass, method)
+    base = _hour_base()
+    catch_up = 1.5 * hours if method == "em" else 0.0
+    data[GROSS] = _hourly(
+        "change", [1.5, 1.5, *[0.0] * hours, 1.5 + catch_up, 1.5, 1.5], base
+    )
+    data[GROSS_POWER] = _hourly("mean", [1500.0] * (hours + 5), base)
+    # Off from 02:00 until 2 minutes into the hour of the start.
+    downtimes.append((base + 7200.0, base + 3600.0 * (2 + hours) + 120))
+    assert await _watch_hints(hass, prefs, records) == []
+    # Without knowing about it, the flat hours look like a fall (EM makes up a
+    # single hour by itself).
+    downtimes.clear()
+    assert [hint["code"] for hint in await _watch_hints(hass, prefs, records)] == (
+        [] if method == "em" and hours == 1 else [HintCode.GROSS_OFF]
+    )
+
+
+async def test_gross_off_skips_a_power_cut(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+) -> None:
+    """A power cut longer than 1 h, the counters back without catching up."""
+    _, data = statistics
+    prefs, records = _setup(hass)
+    base = _hour_base()
+    data[GROSS] = _hourly("change", [1.5, 1.5, 0.3, 0.0, 0.0, 0.9, 1.5, 1.5], base)
+    data[GROSS_POWER] = _hourly("mean", [1500.0] * 8, base)
+    downtimes.append((base + 7200.0 + 720, base + 3600.0 * 5 + 1800))
+    assert await _watch_hints(hass, prefs, records) == []
 
 
 def _last_row(now: float) -> float:
@@ -931,6 +1089,12 @@ def _unknown(start: float, minutes: int, **data: Any) -> dict[str, Any]:
     }
 
 
+EVERY = list(range(0, 600, 5))
+# No rows from 300 minutes before the last one until 210 minutes before:
+# 90 minutes without a value.
+GAP = [m for m in EVERY if not 210 < m < 305]
+
+
 async def test_gross_unknown_gap(
     hass: HomeAssistant,
     statistics: tuple[list[tuple[Any, ...]], Rows],
@@ -942,14 +1106,10 @@ async def test_gross_unknown_gap(
     prefs, records = _setup(hass)
     now = dt_util.utcnow().timestamp()
     last = _last_row(now)
-    every = list(range(0, 600, 5))
-    # No rows from 300 minutes before the last one until 210 minutes before:
-    # 90 minutes without a value.
-    gap = [m for m in every if not 210 < m < 305]
-    data[GROSS] = _five_minutes("state", gap, now)
-    data[DRAWN] = _five_minutes("state", gap, now)
-    data[RETURNED] = _five_minutes("state", every, now)
-    data[TERM] = _five_minutes("state", every, now)
+    data[GROSS] = _five_minutes("state", GAP, now)
+    data[DRAWN] = _five_minutes("state", GAP, now)
+    data[RETURNED] = _five_minutes("state", EVERY, now)
+    data[TERM] = _five_minutes("state", EVERY, now)
     gap_start = last - 60 * 305 + 300
     assert await _watch_hints(hass, prefs, records) == [
         _unknown(gap_start, 90, input=DRAWN)
@@ -959,18 +1119,13 @@ async def test_gross_unknown_gap(
     assert short[6] == {"state", "mean"}
     assert (short[2] - short[1]).days == 1
     # Both inputs had values: the input is unknown.
-    data[DRAWN] = _five_minutes("state", every, now)
+    data[DRAWN] = _five_minutes("state", EVERY, now)
     assert await _watch_hints(hass, prefs, records) == [_unknown(gap_start, 90)]
     # 55 minutes are no gap.
-    data[GROSS] = _five_minutes("state", [m for m in every if not 240 < m < 300], now)
-    assert await _watch_hints(hass, prefs, records) == []
-    # Nothing at all was recorded then: Home Assistant was off, no hint.
-    for entity_id in (GROSS, DRAWN, RETURNED, TERM):
-        data[entity_id] = _five_minutes("state", gap, now)
+    data[GROSS] = _five_minutes("state", [m for m in EVERY if not 240 < m < 300], now)
     assert await _watch_hints(hass, prefs, records) == []
     # Unknown right now, for the last two hours.
-    data[GROSS] = _five_minutes("state", [m for m in every if m >= 120], now)
-    data[TERM] = _five_minutes("state", every, now)
+    data[GROSS] = _five_minutes("state", [m for m in EVERY if m >= 120], now)
     since = last - 60 * 120 + 300
     assert await _watch_hints(hass, prefs, records) == [
         _unknown(since, int((now - since) // 60))
@@ -980,20 +1135,83 @@ async def test_gross_unknown_gap(
     assert await _watch_hints(hass, prefs, records) == []
 
 
-async def test_gross_unknown_from_power_names_the_power(
-    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+async def test_gross_unknown_while_everything_is_out(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+    freezer: FrozenDateTimeFactory,
 ) -> None:
-    """From power reads the circuit's and solar's powers through the gross power."""
+    """Everything out while Home Assistant runs is a gap; its downtime is not."""
     _, data = statistics
+    freezer.move_to("2026-11-23 12:02:30+00:00")
+    prefs, records = _setup(hass)
+    now = dt_util.utcnow().timestamp()
+    gap_start = _last_row(now) - 60 * 305 + 300
+    for entity_id in (GROSS, DRAWN, RETURNED, TERM):
+        data[entity_id] = _five_minutes("state", GAP, now)
+    assert [
+        hint["data"]["minutes"] for hint in await _watch_hints(hass, prefs, records)
+    ] == [90]
+    # Off for 50 of the 90 minutes: 40 minutes without a value are left.
+    downtimes.append((gap_start + 600, gap_start + 3600))
+    assert await _watch_hints(hass, prefs, records) == []
+    # Just started: the missing statistics are not compiled yet.
+    downtimes.clear()
+    data[GROSS] = _five_minutes("state", [m for m in EVERY if m >= 120], now)
+    downtimes.append((_last_row(now) - 60 * 120 + 400, now - 300))
+    assert await _watch_hints(hass, prefs, records) == []
+
+
+async def test_gross_unknown_from_power_watches_its_power(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """From power: the integral keeps its rows, the gross power has the gap."""
+    calls, data = statistics
+    freezer.move_to("2026-11-23 12:02:30+00:00")
     prefs, records = _setup(hass, "power")
     now = dt_util.utcnow().timestamp()
-    every = list(range(0, 600, 5))
-    gap = [m for m in every if not 210 < m < 305]
-    data[GROSS] = _five_minutes("state", gap, now)
-    data[CIRCUIT_POWER] = _five_minutes("mean", gap, now)
-    data[PV_POWER] = _five_minutes("mean", every, now)
+    gap_start = _last_row(now) - 60 * 305 + 300
+    data[GROSS] = _five_minutes("state", EVERY, now)
+    data[GROSS_POWER] = _five_minutes("mean", GAP, now)
+    data[CIRCUIT_POWER] = _five_minutes("mean", GAP, now)
+    data[PV_POWER] = _five_minutes("mean", EVERY, now)
+    assert await _watch_hints(hass, prefs, records) == [
+        _unknown(gap_start, 90, input=CIRCUIT_POWER)
+    ]
+    short = next(call for call in calls if call[4] == "5minute")
+    assert short[3] == {GROSS, GROSS_POWER, CIRCUIT_POWER, PV_POWER}
+    # Both powers out: the circuit's is named, not the solar's.
+    data[PV_POWER] = _five_minutes("mean", GAP, now)
+    assert await _watch_hints(hass, prefs, records) == [
+        _unknown(gap_start, 90, input=CIRCUIT_POWER)
+    ]
+
+
+async def test_gross_unknown_skips_the_solar_counter_at_night(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A gross meter on the solar's own counter pauses while the inverter sleeps."""
+    _, data = statistics
+    freezer.move_to("2026-11-23 12:02:30+00:00")
+    prefs, records = _setup(hass, "net", with_power=False, counter=True)
+    now = dt_util.utcnow().timestamp()
+    # 15 hours of rows; the inverter was offline for 8 of them.
+    full = list(range(0, 900, 5))
+    night = [m for m in full if not 120 < m < 605]
+    data[GROSS] = _five_minutes("state", night, now)
+    data[PV_ENERGY] = _five_minutes("state", night, now)
+    data[DRAWN] = _five_minutes("state", full, now)
+    assert await _watch_hints(hass, prefs, records) == []
+    # The net meter was out too: a gap, and it is named.
+    data[DRAWN] = _five_minutes("state", night, now)
     hints = await _watch_hints(hass, prefs, records)
-    assert [hint["data"].get("input") for hint in hints] == [CIRCUIT_POWER]
+    assert [(hint["code"], hint["data"].get("input")) for hint in hints] == [
+        (HintCode.GROSS_UNKNOWN, DRAWN)
+    ]
 
 
 def _day() -> tuple[float, float]:
@@ -1078,6 +1296,22 @@ async def test_solar_term_without_statistics(
     assert await _watch_hints(hass, prefs, records) == []
 
 
+async def test_solar_term_in_a_half_hour_time_zone(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """Hourly rows start at :30 local time in India; the day is still checked."""
+    _, data = statistics
+    await hass.config.async_set_time_zone("Asia/Kolkata")
+    prefs, records = _setup(hass)
+    start, end = _day()
+    first = start + 1800
+    data[TERM] = _day_rows(8.0, first, end)
+    data[PV_ENERGY] = _day_rows(10.0, first, end)
+    assert await _watch_hints(hass, prefs, records) == [
+        _term_hint(HintCode.SOLAR_TERM_SHORT, 8.0, 10.0)
+    ]
+
+
 async def test_solar_term_finds_its_source(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
@@ -1127,6 +1361,9 @@ async def test_watch_never_breaks_hints(
 
     monkeypatch.setattr(hints_module, "_gross_off", fail)
     assert await _watch_hints(hass, prefs, records) == []
+    # A failing recorder query.
+    monkeypatch.setattr(stats_probe, "read_downtimes", fail)
+    assert await _watch_hints(hass, prefs, records) == []
     monkeypatch.setattr(hints_module, "_gross_meters", fail)
     assert await _watch_hints(hass, prefs, records) == []
     # Without any gross meter nothing is read.
@@ -1135,16 +1372,22 @@ async def test_watch_never_breaks_hints(
     assert calls == []
 
 
-@pytest.mark.usefixtures("sensors")
-async def test_get_watches_gross_meters(
+async def _get(hass_ws_client: WebSocketGenerator, hass: HomeAssistant) -> Any:
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
+    response = await client.receive_json()
+    assert response["success"], response
+    return response["result"]
+
+
+@pytest.fixture
+async def watched_setup(
     hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
     statistics: tuple[list[tuple[Any, ...]], Rows],
     loaded_entry: MockConfigEntry,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`get` finds the gross meters by the created helpers' records."""
-    _, data = statistics
+    """Give `get` a gross meter of ours in the settings."""
 
     async def no_external(hass: HomeAssistant, **kwargs: Any) -> list[Any]:
         return []
@@ -1159,13 +1402,20 @@ async def test_get_watches_gross_meters(
         return deepcopy(prefs)
 
     monkeypatch.setattr(energy_access, "async_get_prefs", get_prefs)
+
+
+@pytest.mark.usefixtures("sensors", "watched_setup")
+async def test_get_watches_gross_meters(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+) -> None:
+    """`get` finds the gross meters by the created helpers' records."""
+    _, data = statistics
     base = _hour_base()
     data[GROSS_POWER] = _hourly("mean", [1000.0] * 4, base)
     data[GROSS] = _hourly("change", [1, 1, -9, 1], base)
-    client = await hass_ws_client(hass)
-    await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
-    response = await client.receive_json()
-    assert response["success"], response
+    result = await _get(hass_ws_client, hass)
     assert {
         "code": "gross_off",
         "stat": GROSS,
@@ -1173,10 +1423,38 @@ async def test_get_watches_gross_meters(
         "data": {
             "direction": "fall",
             "hour": _local_iso(base + 7200),
+            "method": "em",
             "change_kwh": -9.0,
             "power_kwh": 1.0,
         },
-    } in response["result"]["hints"]
+    } in result["hints"]
+
+
+@pytest.mark.usefixtures("sensors", "watched_setup")
+async def test_get_reads_the_safety_net_once_in_5_minutes(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A second `get` within 5 minutes uses the safety net's last reading."""
+    calls, data = statistics
+    base = _hour_base()
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 4, base)
+    data[GROSS] = _hourly("change", [1, 1, -9, 1], base)
+
+    def watch_queries() -> int:
+        return sum(1 for call in calls if call[6] in WATCH_TYPES)
+
+    await _get(hass_ws_client, hass)
+    assert watch_queries() == 2
+    freezer.tick(timedelta(minutes=4))
+    result = await _get(hass_ws_client, hass)
+    assert watch_queries() == 2
+    assert HintCode.GROSS_OFF in [hint["code"] for hint in result["hints"]]
+    freezer.tick(timedelta(minutes=2))
+    await _get(hass_ws_client, hass)
+    assert watch_queries() == 4
 
 
 async def test_power_hint_skips_another_channels_power(hass: HomeAssistant) -> None:
