@@ -9,8 +9,9 @@ lifetime meter with one glitch, utility meters and `last_reset`.
 from __future__ import annotations
 
 import asyncio
+import random
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -210,6 +211,122 @@ def test_periodic_reset_not_explained_by_power() -> None:
     periodic, drops = periodic_from_series(five_minute(ev), power_of(ev_power, FIVE))
     assert periodic
     assert len(drops) == 2
+
+
+FALL_BACK = datetime(2026, 10, 23, 22, 0, tzinfo=UTC)  # 3 days with 2026-10-25
+NORMAL = datetime(2026, 11, 18, 23, 0, tzinfo=UTC)
+
+
+def net_meter(
+    profile: str,
+    start: float,
+    step: int,
+    *,
+    first: datetime = NORMAL,
+    resolution: float | None = None,
+    lag: int = 0,
+    sign: Callable[[float], float] = lambda watts: watts,
+) -> tuple[list[tuple[datetime, float]], list[tuple[datetime, datetime, float]]]:
+    """Return the states and power rows of a lifetime net meter near 0.
+
+    Times are Europe/Zurich, built in UTC (so the night the clocks go back has
+    two 02:00 hours). The meter reports with `resolution` kWh and up to `lag`
+    seconds late (a fixed pseudo-random share per row); `sign` turns the
+    power into an unsigned or reversed one.
+    """
+    zone = dt_util.get_time_zone(ZURICH)
+    assert zone is not None
+    export, night = PROFILES[profile]
+    rng = random.Random(0)  # noqa: S311 - a fixed pattern, not security
+    value, states, power = start, [], []
+    for index in range(72 * 60 // step):
+        begin = first + timedelta(minutes=step * index)
+        rate = export.get(begin.astimezone(zone).hour, night)
+        value += rate * step / 60
+        reported = value - rate * lag / 3600 * rng.random()
+        if resolution:
+            reported = round(reported / resolution) * resolution
+        states.append((begin.astimezone(zone), round(reported, 6)))
+        power.append(
+            (
+                begin.astimezone(zone),
+                (begin + timedelta(minutes=step)).astimezone(zone),
+                sign(rate * 1000),
+            )
+        )
+    return states, power
+
+
+def _wrong(profile: str, step: int, **kwargs: Any) -> list[float]:
+    """Return the starts (0.1 to 6.0 kWh) a net meter near 0 is taken as periodic."""
+    return [
+        start
+        for start in STARTS
+        if periodic_from_series(*net_meter(profile, start, step, **kwargs))[0]
+    ]
+
+
+@pytest.mark.parametrize("step", [HOUR, FIVE])
+@pytest.mark.parametrize("profile", list(PROFILES))
+async def test_power_windows_in_utc_on_the_fall_back_night(
+    hass: HomeAssistant, profile: str, step: int
+) -> None:
+    """The night the clocks go back: windows are UTC, local times would shift 1 h.
+
+    In local times the shortest 5-minute step is -55 minutes (02:55 -> 02:00).
+    """
+    await hass.config.async_set_time_zone(ZURICH)
+    assert _wrong(profile, step, first=FALL_BACK) == []
+    states, _ = net_meter(profile, 1.0, step, first=FALL_BACK)
+    hours = stats_probe._hourly(states, last=True)
+    assert len(hours) == 72
+    # The two 02:00 hours stay apart.
+    assert [when.hour for when, _ in hours].count(2) == 4
+
+
+@pytest.mark.parametrize(
+    ("resolution", "lag"),
+    [(0.01, 0), (0.01, 60), (0.001, 60), (0.001, 120), (0.001, 240)],
+)
+@pytest.mark.parametrize("step", [HOUR, FIVE])
+def test_power_check_allows_resolution_and_lag(
+    resolution: float, lag: int, step: int
+) -> None:
+    """Near 0, a meter's resolution and its update lag outweigh 30 % of a fall.
+
+    The fall is explained within the shape rule's margin too, and within the
+    step widened by one row (a meter that reports late).
+    """
+    for profile in PROFILES:
+        assert _wrong(profile, step, resolution=resolution, lag=lag) == [], profile
+
+
+@pytest.mark.parametrize("step", [HOUR, FIVE])
+@pytest.mark.parametrize(
+    "sign", [abs, lambda watts: -watts], ids=["unsigned", "reversed"]
+)
+def test_unsigned_or_reversed_power_is_not_trusted(
+    sign: Callable[[float], float], step: int
+) -> None:
+    """A power that disagrees with the meter's steps does not explain its falls.
+
+    The falls of that direction go to the shape rule: never periodic, apart
+    from the 2-hour export on hourly states (the known shape limit). Resets of
+    daily meters, whose power agrees with every step, are still found.
+    """
+    for profile in PROFILES:
+        wrong = _wrong(profile, step, sign=sign)
+        if (profile, step) == ("flat 2 h", HOUR):
+            shape = [
+                start
+                for start in STARTS
+                if periodic_from_series(net_meter(profile, start, step)[0])[0]
+            ]
+            assert wrong == shape
+        else:
+            assert wrong == [], profile
+    assert periodic_from_series(five_minute(ev), power_of(ev_power, FIVE))[0]
+    assert periodic_from_series(five_minute(opendtu), power_of(opendtu_power, FIVE))[0]
 
 
 def test_power_explains_a_fall_only_when_it_matches() -> None:

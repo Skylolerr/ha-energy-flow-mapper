@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from bisect import bisect_left
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -122,16 +123,53 @@ def _usual(changes: list[float]) -> float:
     return changes[int(len(changes) * USUAL_SHARE)] if changes else 0.0
 
 
-def _power_energy(
-    power: Sequence[PowerRow], after: datetime, until: datetime
-) -> float | None:
-    """Return the kWh of the power rows that start in [after, until), or None."""
-    rows = [row for row in power if after <= row[0] < until]
-    if not rows:
-        return None
-    return sum(
-        mean * (end - start).total_seconds() / 3_600_000 for start, end, mean in rows
-    )
+class _PowerEnergy:
+    """The energy of power rows over a time window, in kWh.
+
+    Times are UTC timestamps: local times are ambiguous on the night the
+    clocks go back.
+    """
+
+    def __init__(self, power: Sequence[PowerRow]) -> None:
+        """Sort the rows by start and add up their energy."""
+        rows = sorted(
+            (start.timestamp(), (end - start).total_seconds() * mean / 3_600_000)
+            for start, end, mean in power
+        )
+        self.starts = [start for start, _ in rows]
+        self.sums = [0.0]
+        for _, energy in rows:
+            self.sums.append(self.sums[-1] + energy)
+
+    def __call__(self, after: float, until: float) -> float | None:
+        """Return the kWh of the rows that start in [after, until), or None."""
+        first = bisect_left(self.starts, after)
+        last = bisect_left(self.starts, until)
+        return self.sums[last] - self.sums[first] if last > first else None
+
+
+def _trusted(
+    steps: Sequence[tuple[float, float, float, float, bool]],
+    power: _PowerEnergy,
+    length: float,
+) -> dict[bool, bool]:
+    """Return per direction (rising) whether the power agrees with the meter.
+
+    On the meter's steps that are no falls, the power's energy must mostly
+    have the step's sign. An unsigned or reversed power disagrees on the steps
+    of one direction (an unsigned one while exporting); its falls in that
+    direction are then left to the shape rule. Without such steps (a daily
+    meter that only grows) there is nothing against the power.
+    """
+    votes = {False: 0, True: 0}
+    for before_ts, ts, before, value, fall in steps:
+        if fall or value == before:
+            continue
+        energy = power(before_ts + length, ts + length)
+        if energy:
+            change = value - before
+            votes[change > 0] += 1 if energy * change > 0 else -1
+    return {rising: votes[rising] >= 0 for rising in (False, True)}
 
 
 def periodic_from_series(
@@ -139,26 +177,36 @@ def periodic_from_series(
 ) -> tuple[bool, list[Drop]]:
     """Return whether a meter resets on two days or more, and its resets.
 
-    `series` are (start, state) pairs in time order, local times: the state at
-    the end of each statistics row. The rows' length is the shortest step
+    `series` are (start, state) pairs in time order (aware times): the state
+    at the end of each statistics row. The rows' length is the shortest step
     between them. A step is a fall when the state lands less than half as far
-    from 0 as before (either side of 0).
+    from 0 as before (either side of 0). The usual step of a direction is the
+    `USUAL_SHARE` percentile of the other steps that are no falls (falls with
+    falls, rises with rises).
 
-    - With the meter's own power (`power`, rows of (start, end, mean W)): a
-      fall is a reset unless the power's energy over the step (the power rows
-      from the end of the row before to the end of the row) has the fall's
-      direction and is within `POWER_MATCH` of its size. A net meter exporting
-      near 0 falls with its power; a reset falls while the power is 0 or
-      positive.
     - Without power rows for the step: a fall is a reset when it is larger
-      than `JUMP_FACTOR` times the usual step in the same direction (falls with
-      falls, rises with rises; the steps that are falls are left out), with a
+      than `JUMP_FACTOR` times the usual step in its direction, with a
       `JUMP_TOLERANCE` margin.
+    - With the meter's own power (`power`, rows of (start, end, mean W)): a
+      fall is a reset unless the power's energy over the step (the rows from
+      the end of the row before to the end of the row) has the fall's sign and
+      is close to it: within `POWER_MATCH` of the fall, or within the shape
+      rule's margin (a meter's resolution and update lag matter near 0). A net
+      meter exporting near 0 falls with its power; a reset falls while the
+      power is 0 or positive. A power that disagrees with the meter's other
+      steps of that direction (unsigned, reversed) is not used for them.
 
-    Resets count once per day, at any time of day.
+    Times are compared in UTC; resets count once per local day, at any time of
+    day.
     """
     steps = [
-        (before_when, when, before, value, abs(value) < FALL_SHARE * abs(before))
+        (
+            before_when.timestamp(),
+            when.timestamp(),
+            before,
+            value,
+            abs(value) < FALL_SHARE * abs(before),
+        )
         for (before_when, before), (when, value) in pairwise(series)
     ]
     usual = {
@@ -171,25 +219,42 @@ def periodic_from_series(
         )
         for rising in (False, True)
     }
-    length = min(
-        (when - before_when for before_when, when, *_ in steps), default=timedelta()
+    length = min((ts - before_ts for before_ts, ts, *_ in steps), default=0.0)
+    energy_of = _PowerEnergy(power) if power is not None else None
+    trusted = (
+        _trusted(steps, energy_of, length)
+        if energy_of is not None
+        else {False: False, True: False}
     )
     drops: list[Drop] = []
-    for before_when, when, before, value, fall in steps:
+    for (before_ts, ts, before, value, fall), (when, _) in zip(
+        steps, series[1:], strict=True
+    ):
         if not fall:
             continue
         change = value - before
+        margin = JUMP_FACTOR * usual[change > 0] * (1 + JUMP_TOLERANCE)
+        start, end = before_ts + length, ts + length
         energy = (
-            _power_energy(power, before_when + length, when + length)
-            if power is not None
+            energy_of(start, end)
+            if energy_of is not None and trusted[change > 0]
             else None
         )
-        if energy is None:
-            reset = abs(change) > JUMP_FACTOR * usual[change > 0] * (1 + JUMP_TOLERANCE)
+        if energy_of is None or energy is None:
+            reset = abs(change) > margin
         else:
-            reset = not (
-                energy * change > 0
-                and abs(energy - change) <= POWER_MATCH * abs(change)
+            # A meter reports a little late or early: the step, or the step
+            # widened by one row back or forward, may explain the fall.
+            tolerance = max(POWER_MATCH * abs(change), margin)
+            reset = not any(
+                found is not None
+                and found * change > 0
+                and abs(found - change) <= tolerance
+                for found in (
+                    energy,
+                    energy_of(start - length, end),
+                    energy_of(start, end + length),
+                )
             )
         if reset:
             drops.append((when, before, value))
@@ -304,14 +369,16 @@ def _local(timestamp: float) -> datetime:
 
 
 def _hourly(points: list[Point], *, last: bool) -> list[Point]:
-    """Return one point per hour: the last value, or the mean."""
-    hours: dict[datetime, list[float]] = {}
+    """Return one point per hour: the last value, or the mean.
+
+    Hours are UTC hours shown in local time, so the two 02:00 hours of the
+    night the clocks go back stay apart.
+    """
+    hours: dict[float, list[float]] = {}
     for when, value in points:
-        hours.setdefault(when.replace(minute=0, second=0, microsecond=0), []).append(
-            value
-        )
+        hours.setdefault(when.timestamp() // 3600 * 3600, []).append(value)
     return [
-        (hour, values[-1] if last else sum(values) / len(values))
+        (_local(hour), values[-1] if last else sum(values) / len(values))
         for hour, values in hours.items()
     ]
 
