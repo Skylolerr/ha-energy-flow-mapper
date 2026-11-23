@@ -533,10 +533,16 @@ async def test_preselect_returned_own_used_not_parent(hass: HomeAssistant) -> No
     )
     assert preselect_returned(hass, meter, set()) == own
     assert preselect_returned(hass, meter, {own}) is None
-    # Without an own returned sensor the family's sole one counts.
+    # A sub-circuit meter without an own returned sensor never gets the hub's
+    # (via or child device), though the picker lists it.
     other = _device(hass, "other", platform="test", via=hub)
     meter_2 = _entity(hass, "sensor.meter_2", other, "meter_2", platform="test")
-    assert preselect_returned(hass, meter_2, set()) == grid
+    assert preselect_returned(hass, meter_2, set()) is None
+    assert returned_candidates(hass, meter_2, ()) == [(grid, False)]
+    kid = _child(hass, "kid", hub)
+    meter_3 = _entity(hass, "sensor.meter_3", kid, "meter_3", platform="test")
+    assert preselect_returned(hass, meter_3, set()) is None
+    assert returned_candidates(hass, meter_3, ()) == [(grid, False)]
 
 
 # --- paired_power -----------------------------------------------------------

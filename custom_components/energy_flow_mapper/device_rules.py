@@ -371,15 +371,15 @@ def preselect_returned(
     The first of `returned_candidates`, only when it is trusted: a meter with
     a channel key needs a candidate of its own channel (a Pro 3EM phase never
     gets the total's returned sensor); a meter without one needs a sole
-    candidate. Once the meter's own device has a returned sensor (used or
-    not), only the own device counts: a used own sensor never hands over to a
-    parent's (a hub's or the grid export).
+    candidate on its own device. A parent's or child's returned sensor (a
+    hub's, the grid export) is never preselected, and a used own sensor never
+    hands over to it; `returned_candidates` still lists them for the picker.
     """
     channel, found = _returned(hass, energy_entity_id, ())
     if channel is None:
         meter = er.async_get(hass).async_get(energy_entity_id)
         device_id = meter.device_id if meter is not None else None
-        found = [e for e in found if e.device_id == device_id] or found
+        found = [entry for entry in found if entry.device_id == device_id]
     found = [entry for entry in found if entry.entity_id not in used]
     if channel is not None:
         if found and _channel(found[0]) == channel:
