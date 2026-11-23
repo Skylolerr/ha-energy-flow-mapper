@@ -28,6 +28,9 @@ PLAUSIBILITY_MIN_LITERS: Final = 10.0
 ISSUE_UNSUPPORTED_ENERGY_API: Final = "unsupported_energy_api"
 
 HELPERS_STORAGE_VERSION: Final = 1
+# 2: a record per helper (what the setup made it for), next to the IDs. Only
+# the minor version grows, so an older release can still load the file.
+HELPERS_STORAGE_MINOR_VERSION: Final = 2
 HELPERS_STORAGE_KEY: Final = f"{DOMAIN}.helpers"
 SUGGESTIONS_STORAGE_VERSION: Final = 1
 # 2: dismissed hints next to the ignored suggestions. Only the minor version

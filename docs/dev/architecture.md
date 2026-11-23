@@ -22,7 +22,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups, helpers the panel created, ignored suggestions |
 | `integral.py`, `sum_meter.py` | Create integral helpers ("Create meter") and sensor group sums ("Create sum meter") |
-| `template_meter.py`, `solar_setup.py` | Create template sensor helpers; the guided setup "Solar feeds in here" (gross energy and power templates, integrals for daily inputs, rollback of the whole request) |
+| `template_meter.py`, `solar_setup.py` | Create template sensor helpers; the guided setup "Solar feeds in here": methods EM / Plug / Net / From power with their verification, unit-aware templates (`total`), the solar term (integral of a 0-mapped solar power template, reused per solar), start offset, rollback of the whole request (also when cancelled) |
 | `transfer.py` | Export and import of the energy settings as a file |
 | `websocket.py` | All WebSocket commands (admin only, except the read-only card command) |
 | `frontend.py` | Serve the bundles, register the panel, load the card |
@@ -33,7 +33,12 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 All in `.storage/`, each with its own version:
 
 - `energy_flow_mapper.backups` (`STORAGE_VERSION` / `STORAGE_MINOR_VERSION`)
-- `energy_flow_mapper.helpers`, `energy_flow_mapper.groups`
+- `energy_flow_mapper.helpers` (`HELPERS_STORAGE_VERSION` 1 /
+  `HELPERS_STORAGE_MINOR_VERSION` 2): config entry IDs of the helpers the panel created,
+  plus a record per helper of what the solar setup made it for (`kind`: `solar_power`,
+  `solar_energy`, `gross_power`, `gross_energy`, with its inputs). The migration from 1.1
+  adds empty records; only the minor version grew, so an older release can still load it.
+- `energy_flow_mapper.groups`
 - `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
   `SUGGESTIONS_STORAGE_MINOR_VERSION` 2): ignored suggestions and dismissed hints
   (code, kind, stat, optional source role). The migration from 1.1 keeps the ignored
@@ -79,8 +84,11 @@ after their helpers exist.
 `create_integral`, `create_sum_meter` and `create_solar_setup` create HA helpers right
 away (not on save) and record them in the helpers store; the panel then changes the draft.
 When a later helper of the same request fails, the ones created before are removed again.
-`solar_setup_preview` returns the plan (inputs, daily inputs replaced by integrals, unit
-factors, why it is blocked) without creating anything. `create_integral` with `of_source`
+`solar_setup_preview` returns the plan (methods offered and verified, candidates, powers
+with a live reading, statistics evidence, helpers, offset, why it is blocked) without
+creating anything; `create_solar_setup` plans again with the same choices and refuses
+anything the preview would not offer (`not_offered`) or an offset that is no longer enough
+(`values_changed`). `create_integral` with `of_source`
 builds the integral of a saved solar source's power, for a sum that would otherwise hold a
 daily meter.
 

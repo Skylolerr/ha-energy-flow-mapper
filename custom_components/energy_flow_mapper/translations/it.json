@@ -82,9 +82,6 @@
     "template_failed": {
       "message": "Non è stato possibile creare l’helper template del contatore."
     },
-    "no_returned_sensor": {
-      "message": "Il dispositivo di {entity_id} non ha un sensore dell’energia immessa, quindi non può essere configurato come contatore che conta solo il prelievo."
-    },
     "returned_disabled": {
       "message": "Il sensore dell’energia immessa {entity_id} è disattivato. Attivalo prima nelle impostazioni della sua entità in Home Assistant."
     },
@@ -102,6 +99,21 @@
     },
     "input_not_ready": {
       "message": "{entity_id} al momento non ha un valore, quindi non è possibile fissare il valore iniziale del contatore lordo. Riprova quando indica un valore."
+    },
+    "solar_needs_power": {
+      "message": "L’impianto solare {entity_id} ha bisogno di un sensore di potenza: il suo contatore di energia da solo può essere usato solo se le sue statistiche mostrano con certezza che non riparte mai da 0. Imposta prima il sensore di potenza dell’impianto solare."
+    },
+    "not_offered": {
+      "message": "{entity_id} non può essere usato in questo modo per il contatore lordo. Riapri la configurazione e scegli uno dei modi e dei sensori proposti."
+    },
+    "choose_returned": {
+      "message": "Scegli prima il sensore dell’energia immessa di {entity_id}."
+    },
+    "input_disabled": {
+      "message": "{entity_id} è disattivato. Attivalo prima nelle impostazioni della sua entità in Home Assistant."
+    },
+    "values_changed": {
+      "message": "I valori dei contatori di {entity_id} sono cambiati dall’anteprima. Controlla di nuovo la configurazione, poi creala."
     },
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."

@@ -18,6 +18,8 @@ depends on what the meter counts, which only the device tells:
 - **Family** (`family`): the meter's device, its parent and its children, by
   `via_device_id` and `parent_device_id`, disabled entities included (they
   only exist in the entity registry).
+- **Drawn candidates** (`drawn_candidates`): the meter itself, then the
+  import-only "Energy consumed" sensors of its channel.
 - **Returned candidates** and **power pairing** use a channel key per known
   integration (Shelly component and phase, IoTaWatt input, OpenDTU/AhoyDTU
   channel, Emporia device, Zigbee2MQTT suffix, Envoy key family). Without a
@@ -80,6 +82,8 @@ SHELLY_SWITCH: Final = "switch"
 SHELLY_PLUG_ENERGY: Final = "energy"
 # Prefix of "Energy consumed" (`consumed_energy_switch`): aenergy - ret_aenergy.
 SHELLY_CONSUMED_PREFIX: Final = "consumed_energy"
+# Translation key of import-only energy sensors (Shelly "Energy consumed").
+CONSUMED_TRANSLATION_PREFIX: Final = "energy_consumed"
 # A phase of a Pro 3EM (triphase): `a_total_act_energy`, `a_act_power` ...
 SHELLY_PHASE: Final = re.compile(r"^([abc])_")
 
@@ -388,6 +392,47 @@ def preselect_returned(
             return found[0].entity_id
         return None
     return found[0].entity_id if len(found) == 1 else None
+
+
+def is_consumed(entry: er.RegistryEntry) -> bool:
+    """Return True for an import-only "Energy consumed" sensor."""
+    if (entry.translation_key or "").startswith(CONSUMED_TRANSLATION_PREFIX):
+        return True
+    shelly = _shelly_id(entry.unique_id) if entry.platform == SHELLY else None
+    return shelly is not None and (shelly.description or "").startswith(
+        SHELLY_CONSUMED_PREFIX
+    )
+
+
+def drawn_candidates(
+    hass: HomeAssistant, meter: str, exclude: Collection[str]
+) -> list[tuple[str, bool]]:
+    """Return (entity ID, disabled) of the sensors that can be a meter's drawn.
+
+    The meter itself first, then the import-only "Energy consumed" sensors of
+    its own channel (a meter without a channel key: of its own device),
+    enabled before disabled. Sensors in `exclude` (used elsewhere) are left
+    out; the meter itself always stays.
+    """
+    own = er.async_get(hass).async_get(meter)
+    found = [(meter, own.disabled if own is not None else False)]
+    if own is None:
+        return found
+    channel = _channel(own)
+    others = [
+        entry
+        for entry in _energy_sensors(hass, family(hass, meter))
+        if entry.entity_id != meter
+        and entry.entity_id not in exclude
+        and is_consumed(entry)
+        and (
+            _channel(entry) == channel
+            if channel is not None
+            else entry.device_id == own.device_id
+        )
+    ]
+    others.sort(key=lambda entry: (entry.disabled, entry.entity_id))
+    return found + [(entry.entity_id, entry.disabled) for entry in others]
 
 
 def _has_returned(hass: HomeAssistant, meter: er.RegistryEntry) -> bool:

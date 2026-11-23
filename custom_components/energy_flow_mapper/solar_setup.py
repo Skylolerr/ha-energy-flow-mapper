@@ -2,40 +2,52 @@
 
 A circuit meter with a solar plugged in behind it sees only what the circuit
 draws from the house: the solar's own production is used up before it reaches
-the meter. The gross meter adds it back, as a template helper:
+the meter. The gross meter adds it back. It is built by one of a few methods
+(`device_rules.Method`), each correct only for a known kind of meter:
 
-- a meter that counts both ways (net, it goes down while the solar produces):
+- **EM** (a meter with import and export apart, Shelly Pro EM):
+  gross = drawn - returned + solar,
+- **Plug** (a Shelly plug's "Energy", which counts both directions):
+  gross = Energy - 2 x returned + solar,
+- **Net** (a meter that goes down while the circuit feeds in):
   gross = meter + solar,
-- a meter that counts only what it draws, with a returned sensor on its
-  device (Shelly Pro EM): gross = drawn - returned + solar,
-- the gross power: circuit power + solar power. The circuit power is signed
-  for both kinds (it goes below 0 while returning).
+- **From power**: the integral of (circuit power + solar power), correct for
+  every device whose circuit power has a sign.
 
-Each template is `none` while an input is not a number. Inputs in another
-unit (the daily energy of a micro inverter is often in Wh, a power in kW) are
-converted with a factor written into the template, read from the unit at
-setup time; the helpers are fixed at kWh and W.
+A method matches the device (`classify_meter`) or the statistics (a power or
+net meter that went below 0), else it is "not verified" and only built on the
+user's conscious choice. A method whose inputs cannot work (a daily counter,
+no returned sensor, no power sensor) is not offered at all.
 
-An input that falls back to 0 every day would make the gross meter jump down
-once a day, so it is replaced by an integral helper of its own power, created
-first. Without that power sensor the setup stops with a reason, and so it
-does when the check for daily inputs could not run.
+**Solar term** (EM, Plug, Net): an integral of a small template of the solar's
+power in W, where an offline inverter (not a number) is 0; so the term stays
+available all night. One pair per solar power sensor, reused by every setup.
+Without a power sensor the solar's counter is read as it is, but only when its
+statistics show it certainly never resets; else the setup stops.
 
-The gross meter is `total_increasing`, and Home Assistant skips the negative
-states of such a meter. A circuit that returned more than it drew so far, or
-a solar from a fresh integral, would start it below 0: the template then adds
-a constant, read from the inputs at setup time, so it starts at 100 kWh or
-more. A constant does not change what the meter counts.
+**Templates** convert every input to kWh or W at render time, with Home
+Assistant's own factors, and are `none` (unknown) while a needed input has no
+number or an unknown unit. The energy template is `total`: Home Assistant
+books every change 1:1, so a lag dip cancels. A constant offset lifts it to
+100 kWh or more at the start; the preview computes it from the values the
+template will read (a new solar integral reads 0), and create checks that the
+previewed offset is still enough.
+
+Nothing the panel sends is trusted: create plans again and refuses a method,
+sensor or power the preview would not offer, and an offset that is no longer
+enough. The setup never writes the energy settings: it creates helpers and
+returns them; the panel puts them into the draft.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Collection, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from homeassistant.components.sensor import SensorDeviceClass
 from homeassistant.const import (
@@ -47,16 +59,29 @@ from homeassistant.const import (
 from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
-from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
+from homeassistant.util.unit_conversion import (
+    BaseUnitConverter,
+    EnergyConverter,
+    PowerConverter,
+)
 
 from .candidates import ENERGY_UNITS, POWER_UNITS
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
-from .daily_reset import async_daily_check
+from .device_rules import (
+    MeterClass,
+    Method,
+    classify_meter,
+    default_inverted,
+    drawn_candidates,
+    paired_power,
+    preselect_returned,
+    returned_candidates,
+)
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
-from .hints import returned_sensor
-from .integral import async_create_integral, energy_unit, entity_unit
+from .integral import async_create_integral, entity_unit
 from .meter_inputs import Cache, meter_inputs
+from .stats_probe import StatsEvidence, async_probe
 from .template_meter import TemplateKind, async_create_template
 
 _LOGGER = logging.getLogger(__name__)
@@ -65,31 +90,78 @@ ENERGY_DECIMALS: Final = 3
 POWER_DECIMALS: Final = 1
 SOLAR_STAT: Final = "stat_energy_from"
 # The lowest starting value (kWh) of a gross meter; a lower one gets an offset.
-# Far from 0: Home Assistant reads a dip of more than 10 % as a meter reset,
-# and an input that lags (an integral samples the power) can dip it a bit.
+# Home Assistant's energy settings warn about a meter below 0.
 START_MIN: Final = 100.0
 # The offset is a whole number of these (kWh), so a preview and the setup a
 # moment later give the same one.
 OFFSET_STEP: Final = 100
+# The largest offset create accepts (kWh).
+OFFSET_MAX: Final = 1_000_000_000
+UNIT: Final = "unit_of_measurement"
+ENERGY_METHODS: Final = (Method.EM, Method.PLUG, Method.NET)
+
+# Kinds of the records of created helpers (`CreatedHelpers.async_add`).
+KIND_SOLAR_POWER: Final = "solar_power"
+KIND_SOLAR_ENERGY: Final = "solar_energy"
+KIND_GROSS_POWER: Final = "gross_power"
+KIND_GROSS_ENERGY: Final = "gross_energy"
 
 
-class MeterKind(StrEnum):
-    """How the circuit meter counts."""
+def _factors(converter: type[BaseUnitConverter], target: str) -> dict[str, float]:
+    """Return unit -> factor to `target`, for every unit Home Assistant knows."""
+    return {
+        str(unit): converter.converter_factory(unit, target)(1.0)
+        for unit in sorted(converter.VALID_UNITS, key=str)
+        if unit is not None
+    }
 
-    NET = "net"
-    DRAWS = "draws"
+
+# The factors the templates convert with, from Home Assistant's converters.
+KWH: Final = _factors(EnergyConverter, UnitOfEnergy.KILO_WATT_HOUR)
+WATTS: Final = _factors(PowerConverter, UnitOfPower.WATT)
 
 
 class Blocked(StrEnum):
     """Why the setup cannot be done; each is also an exception key."""
 
-    NO_RETURNED_SENSOR = "no_returned_sensor"
-    RETURNED_DISABLED = "returned_disabled"
-    DAILY_WITHOUT_POWER = "daily_without_power"
-    UNSUPPORTED_INPUT = "unsupported_input"
     SOLAR_ALREADY_IN_METER = "solar_already_in_meter"
     DAILY_CHECK_FAILED = "daily_check_failed"
+    UNSUPPORTED_INPUT = "unsupported_input"
+    SOLAR_NEEDS_POWER = "solar_needs_power"
+    DAILY_WITHOUT_POWER = "daily_without_power"
+    NOT_OFFERED = "not_offered"
+    CHOOSE_RETURNED = "choose_returned"
+    RETURNED_DISABLED = "returned_disabled"
+    INPUT_DISABLED = "input_disabled"
     INPUT_NOT_READY = "input_not_ready"
+    VALUES_CHANGED = "values_changed"
+
+
+class Reason(StrEnum):
+    """Why a method is (not) offered or not verified; the panel words them.
+
+    A verified energy method gives the device rule's key instead
+    (`device_rules.RULE_*`).
+    """
+
+    POWER_SIGNED = "power_signed"
+    AGAINST_RULE = "unverified_against_rule"
+    MAY_RESET = "unverified_may_reset"
+    POWER_UNSIGNED = "unverified_power_unsigned"
+    NO_RETURNED_SENSOR = "no_returned_sensor"
+    DAILY_INPUT = "daily_input"
+    UNSUPPORTED_INPUT = "unsupported_input"
+    NO_POWER = "no_power"
+    UNUSABLE_POWER = "unusable_power"
+
+
+class Role(StrEnum):
+    """The helpers the setup creates; names are given per role."""
+
+    SOLAR_POWER = "solar_power"
+    SOLAR_ENERGY = "solar_energy"
+    POWER = "power"
+    ENERGY = "energy"
 
 
 def _error(key: str, **placeholders: str) -> ServiceValidationError:
@@ -102,92 +174,136 @@ def _error(key: str, **placeholders: str) -> ServiceValidationError:
 
 def unit_factor(unit: str | None, kind: TemplateKind) -> float | None:
     """Return the factor from `unit` to kWh (energy) or W (power), or None."""
-    converter, target = (
-        (EnergyConverter, UnitOfEnergy.KILO_WATT_HOUR)
-        if kind == "energy"
-        else (PowerConverter, UnitOfPower.WATT)
-    )
-    if unit not in converter.VALID_UNITS:
-        return None
-    return converter.converter_factory(unit, target)(1.0)
+    factors = KWH if kind == "energy" else WATTS
+    return factors.get(unit) if unit else None
 
 
-def _template(
-    terms: list[tuple[str, str, str]],
-    decimals: int,
-    factors: Mapping[str, float],
-    offset: int = 0,
-) -> str:
-    """Return a template of signed terms (sign, variable, entity ID) + offset."""
-    sets = "".join(
-        f"{{% set {var} = states('{entity}') %}}" for _, var, entity in terms
+# --- Templates -------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _Term:
+    """One input of a template: its variable, entity and sign.
+
+    `coef` is the input's factor (1, -1 or -2). A `zero` input that is not a
+    number counts as 0; any other makes the template `none`.
+    """
+
+    name: str
+    entity: str
+    coef: int = 1
+    zero: bool = False
+
+
+def _read(term: _Term, table: str) -> tuple[str, str, str]:
+    """Return (sets, check, value) of an input, converted with `table`.
+
+    The value is the state times the factor of its current unit; an unknown
+    unit fails the check. The value names the input's variables, so
+    `meter_inputs` sees which input a minus applies to.
+    """
+    var, unit = term.name, f"{term.name}_unit"
+    sets = (
+        f"{{% set {var} = states('{term.entity}') %}}"
+        f"{{% set {unit} = state_attr('{term.entity}', '{UNIT}') %}}"
     )
-    check = " and ".join(f"{var} | is_number" for _, var, _ in terms)
-    parts: list[str] = []
-    for sign, var, entity in terms:
-        factor = factors.get(entity, 1.0)
-        term = f"{var} | float" + ("" if factor == 1 else f" * {factor!r}")
-        parts.append(term if not parts else f"{sign} {term}")
+    value = f"{var} | float * {table}[{unit}]"
+    if term.zero:
+        return (
+            sets,
+            f"({unit} in {table} or not {var} | is_number)",
+            f"({value} if {var} | is_number else 0)",
+        )
+    return sets, f"{var} | is_number and {unit} in {table}", value
+
+
+def _kwh(term: _Term) -> tuple[str, str, str]:
+    """Read an input in kWh."""
+    return _read(term, "kwh")
+
+
+def _w(term: _Term) -> tuple[str, str, str]:
+    """Read an input in W."""
+    return _read(term, "w")
+
+
+def _table(name: str, factors: Mapping[str, float]) -> str:
+    items = ", ".join(f"'{unit}': {factor!r}" for unit, factor in factors.items())
+    return f"{{% set {name} = {{{items}}} %}}"
+
+
+def _template(terms: list[_Term], *, energy: bool, offset: int = 0) -> str:
+    """Return a template of the signed `terms` (+ offset), in kWh or W."""
+    read, table, decimals = (
+        (_kwh, _table("kwh", KWH), ENERGY_DECIMALS)
+        if energy
+        else (_w, _table("w", WATTS), POWER_DECIMALS)
+    )
+    parts = [read(term) for term in terms]
+    expression = ""
+    for term, (_, _, value) in zip(terms, parts, strict=True):
+        size = abs(term.coef)
+        scaled = value if size == 1 else f"{size} * {value}"
+        if not expression:
+            expression = scaled if term.coef > 0 else f"-1 * {scaled}"
+        else:
+            expression += f" {'+' if term.coef > 0 else '-'} {scaled}"
     if offset:
-        parts.append(f"+ {offset}")
+        expression += f" + {offset}"
+    sets = table + "".join(part[0] for part in parts)
+    check = " and ".join(part[1] for part in parts)
     return (
-        f"{sets}{{% if {check} %}}{{{{ ({' '.join(parts)}) | round({decimals}) }}}}"
+        f"{sets}{{% if {check} %}}{{{{ ({expression}) | round({decimals}) }}}}"
         "{% else %}{{ none }}{% endif %}"
     )
 
 
-def gross_energy_template(  # noqa: PLR0913 - the inputs, then keywords
-    kind: MeterKind,
+def gross_energy_template(
+    method: Method,
     meter: str,
     solar: str,
-    returned: str | None,
+    returned: str | None = None,
     *,
-    factors: Mapping[str, float] | None = None,
     offset: int = 0,
 ) -> str:
     """Return the gross energy template (kWh, 3 decimals).
 
-    Net: meter + solar. Draws: meter - returned + solar. `factors` maps an
-    entity ID to the factor that turns its value into kWh (1 is left out);
-    `offset` (kWh) is added to lift the starting value.
+    EM: meter - returned + solar. Plug: meter - 2 x returned + solar. Net:
+    meter + solar. `solar` is the solar term (its integral or its lifetime
+    counter); `offset` (kWh) lifts the starting value.
     """
-    terms = [("+", "meter", meter)]
-    if kind is MeterKind.DRAWS:
+    if method is Method.POWER:
+        raise ValueError("From power has no energy template")
+    terms = [_Term("meter", meter)]
+    if method is not Method.NET:
         if returned is None:
-            raise ValueError("A meter that only draws needs a returned sensor")
-        terms.append(("-", "returned", returned))
-    terms.append(("+", "solar", solar))
-    return _template(terms, ENERGY_DECIMALS, factors or {}, offset)
+            raise ValueError(f"{method} needs a returned sensor")
+        terms.append(_Term("returned", returned, -2 if method is Method.PLUG else -1))
+    terms.append(_Term("solar", solar))
+    return _template(terms, energy=True, offset=offset)
 
 
-def gross_power_template(
-    circuit_power: str,
-    solar_power: str,
-    *,
-    factors: Mapping[str, float] | None = None,
-) -> str:
-    """Return the gross power template (W, 1 decimal): circuit + solar."""
-    terms = [("+", "circuit", circuit_power), ("+", "solar", solar_power)]
-    return _template(terms, POWER_DECIMALS, factors or {})
+def gross_power_template(circuit: str, solar: str, *, invert: bool = False) -> str:
+    """Return the gross power template (W, 1 decimal): circuit + solar.
 
-
-def _factor(hass: HomeAssistant, entity_id: str, kind: TemplateKind) -> float | None:
-    """Return the factor of an input a template can read, or None."""
-    if not valid_entity_id(entity_id):
-        return None
-    return unit_factor(entity_unit(hass, entity_id), kind)
-
-
-def _integral_factor(hass: HomeAssistant, power: str) -> float | None:
-    """Return the factor to kWh of the integral of `power`, or None.
-
-    The integral counts in `integral.energy_unit` of the power's unit: kWh
-    for W and kW, MWh for MW. A power without an energy unit (BTU/h) or
-    without a unit at all cannot be integrated into kWh.
+    The circuit's power is turned around with `invert` (positive on export);
+    without a number it makes the template `none`. An offline solar is 0.
     """
-    if not valid_entity_id(power) or (unit := entity_unit(hass, power)) is None:
-        return None
-    return unit_factor(energy_unit(unit), "energy")
+    return _template(
+        [
+            _Term("circuit", circuit, -1 if invert else 1),
+            _Term("solar", solar, zero=True),
+        ],
+        energy=False,
+    )
+
+
+def solar_power_template(solar_power: str) -> str:
+    """Return the solar's power in W, 0 while it has no number (offline)."""
+    return _template([_Term("solar", solar_power, zero=True)], energy=False)
+
+
+# --- Reading inputs ----------------------------------------------------------
 
 
 def _name(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -200,108 +316,35 @@ def _name(hass: HomeAssistant, entity_id: str) -> str | None:
     return (entry.name or entry.original_name) if entry is not None else None
 
 
-@dataclass
-class Plan:
-    """What the setup creates for one circuit meter and solar source."""
-
-    kind: MeterKind
-    suggested_kind: MeterKind
-    meter: str
-    solar: str
-    # The device's name in the settings, else the meter's; for default names.
-    meter_name: str
-    returned: str | None
-    returned_disabled: bool
-    circuit_power: str | None
-    solar_power: str | None
-    # Inputs of the gross energy that reset every day, in template order.
-    daily: list[str] = field(default_factory=list)
-    # Daily input -> the power sensor whose integral replaces it.
-    integrals: dict[str, str] = field(default_factory=dict)
-    # Entity ID -> factor to kWh (energy inputs) or W (power sensors).
-    factors: dict[str, float] = field(default_factory=dict)
-    # Power sensor -> factor to kWh of its integral.
-    integral_factors: dict[str, float] = field(default_factory=dict)
-    # A power sensor without a usable unit: then there is no gross power.
-    unusable_power: str | None = None
-    # Added to the gross energy (kWh) so it starts at START_MIN or more.
-    offset: int = 0
-    blocked: Blocked | None = None
-    blocked_entity: str | None = None
-
-    def block(self, reason: Blocked, entity_id: str) -> None:
-        """Keep the first reason found."""
-        if self.blocked is None:
-            self.blocked, self.blocked_entity = reason, entity_id
-
-    def as_dict(self) -> dict[str, Any]:
-        """Return the preview of the panel."""
-        return {
-            "suggested_kind": self.suggested_kind,
-            "kind": self.kind,
-            "returned": self.returned,
-            "returned_disabled": self.returned_disabled,
-            "circuit_power": self.circuit_power,
-            "solar_power": self.solar_power,
-            "daily": self.daily,
-            "integrals": [
-                {"stat": stat, "power": power} for stat, power in self.integrals.items()
-            ],
-            "blocked": self.blocked,
-            "blocked_entity": self.blocked_entity,
-            "unusable_power": self.unusable_power,
-            "offset": self.offset,
-        }
+def _usable(hass: HomeAssistant, entity_id: str, kind: TemplateKind) -> bool:
+    """Return True for an entity a template can read in kWh or W."""
+    return (
+        valid_entity_id(entity_id)
+        and unit_factor(entity_unit(hass, entity_id), kind) is not None
+    )
 
 
-def _check_power(hass: HomeAssistant, plan: Plan, power: str) -> None:
-    """Keep the factor of a power sensor; without one, no gross power."""
-    if (factor := _factor(hass, power, "power")) is None:
-        if plan.unusable_power is None:
-            plan.unusable_power = power
-    else:
-        plan.factors[power] = factor
+def _disabled(hass: HomeAssistant, entity_id: str) -> bool:
+    """Return True for an entity disabled in the registry (it has no state)."""
+    entry = er.async_get(hass).async_get(entity_id)
+    return entry is not None and entry.disabled
 
 
-def _value(hass: HomeAssistant, entity_id: str) -> float | None:
-    """Return the current value of an input, or None if it has no number."""
-    state = hass.states.get(entity_id)
+def _is_number(text: str) -> bool:
+    """Return True for a finite number, like Jinja's `is_number`."""
     try:
-        value = float(state.state) if state is not None else math.nan
+        return math.isfinite(float(text))
     except ValueError:
+        return False
+
+
+def _value(hass: HomeAssistant, entity_id: str, kind: TemplateKind) -> float | None:
+    """Return the current value in kWh or W, as a template reads it, or None."""
+    state = hass.states.get(entity_id)
+    if state is None or not _is_number(state.state):
         return None
-    return value if math.isfinite(value) else None
-
-
-def _set_offset(
-    hass: HomeAssistant, plan: Plan, inputs: list[tuple[str, str | None]]
-) -> None:
-    """Set the offset that starts the gross energy at START_MIN or more.
-
-    Reads the inputs as the template will. An input replaced by a new
-    integral starts at 0. Only the terms that can pull the gross below 0
-    need a value: a net meter, and the returned energy that is subtracted.
-    Without one the start is unknown, and the setup waits. An added term
-    that counts only up (the solar, a drawn meter) counts as 0 without a
-    value, which only makes the offset larger: a solar counter may be
-    offline at night.
-    """
-    gross = 0.0
-    for entity, _ in inputs:
-        if entity in plan.integrals:
-            continue
-        subtracted = entity == plan.returned
-        can_go_negative = subtracted or (
-            entity == plan.meter and plan.kind is MeterKind.NET
-        )
-        if (value := _value(hass, entity)) is None:
-            if can_go_negative:
-                plan.block(Blocked.INPUT_NOT_READY, entity)
-                return
-            value = 0.0
-        gross += (-1 if subtracted else 1) * value * plan.factors[entity]
-    if gross < START_MIN:
-        plan.offset = math.ceil((START_MIN - gross) / OFFSET_STEP) * OFFSET_STEP
+    factor = unit_factor(state.attributes.get(UNIT), kind)
+    return float(state.state) * factor if factor is not None else None
 
 
 def _holds_solar(
@@ -363,85 +406,575 @@ def _find(
     return device, source
 
 
-def _inputs(plan: Plan) -> list[tuple[str, str | None]]:
-    """Return (input, its own power sensor) in template order."""
-    inputs: list[tuple[str, str | None]] = [
-        (plan.meter, plan.circuit_power if plan.kind is MeterKind.NET else None)
-    ]
-    if plan.kind is MeterKind.DRAWS:
+def _not_offered(entity_id: str) -> ServiceValidationError:
+    return _error(Blocked.NOT_OFFERED, entity_id=entity_id)
+
+
+def _check_draft_power(
+    hass: HomeAssistant, power: str, refused: Collection[str]
+) -> None:
+    """Raise `not_offered` unless `power` is a power sensor that may be used."""
+    registry_entry = er.async_get(hass).async_get(power)
+    state = hass.states.get(power)
+    device_class = (
+        state.attributes.get(ATTR_DEVICE_CLASS) if state is not None else None
+    ) or (
+        registry_entry.device_class or registry_entry.original_device_class
+        if registry_entry is not None
+        else None
+    )
+    if (
+        not valid_entity_id(power)
+        or not power.startswith("sensor.")
+        or power in refused
+        or (state is None and registry_entry is None)
+        or (
+            entity_unit(hass, power) not in WATTS
+            and device_class != SensorDeviceClass.POWER
+        )
+    ):
+        raise _not_offered(power)
+
+
+# --- Plan --------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Choices:
+    """What the panel asks for; everything is checked against the offer.
+
+    `stat` is the device, `solar` the solar source's energy statistic.
+    `draft` holds the power sensors the panel set but did not save yet
+    (`stat_rate` of the device, `solar_rate` of the solar); a key that is
+    present wins over the saved value, also None (removed in the draft).
+    `periodic` is the user's daily switch per input; a certain signal
+    ignores it.
+    """
+
+    stat: str
+    solar: str
+    method: Method | None = None
+    drawn: str | None = None
+    returned: str | None = None
+    invert: bool | None = None
+    draft: Mapping[str, str | None] = field(default_factory=dict)
+    periodic: Mapping[str, bool] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class MethodStatus:
+    """Whether a method is offered and verified, and why (a reason key)."""
+
+    method: Method
+    offered: bool
+    verified: bool
+    reason: str | None
+    # The input that keeps the method from being offered.
+    entity: str | None = None
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the WebSocket form."""
+        return {
+            "method": self.method,
+            "offered": self.offered,
+            "verified": self.verified,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class SolarTerm:
+    """Where the solar energy of EM, Plug and Net comes from.
+
+    `kind` "integral": the integral of the 0-mapped template of the power
+    sensor `source`, `reuse` when one of ours exists already. "counter": the
+    solar's own lifetime counter `source`. None: it cannot be built.
+    """
+
+    kind: Literal["integral", "counter"] | None
+    source: str
+    reuse: str | None = None
+
+    def reads(self) -> str | None:
+        """Return the entity the gross template reads now (None: a new one)."""
+        return self.source if self.kind == "counter" else self.reuse
+
+
+@dataclass
+class Plan:
+    """What the setup creates for one circuit meter and solar source."""
+
+    stat: str
+    # The device's name in the settings, else the meter's; for default names.
+    meter_name: str
+    method: Method | None
+    suggested: Method | None
+    rule: MeterClass
+    statuses: list[MethodStatus]
+    drawn: str
+    returned: str | None
+    invert: bool
+    drawn_candidates: list[tuple[str, bool]]
+    returned_candidates: list[tuple[str, bool]]
+    # (entity, where it is from: draft, saved or paired) of both powers.
+    circuit: tuple[str | None, str | None]
+    solar: tuple[str | None, str | None]
+    signed: bool
+    evidence: dict[str, StatsEvidence]
+    solar_term: SolarTerm
+    # (circuit, solar) power when both are readable: a gross power exists.
+    gross_power: tuple[str, str] | None
+    live: dict[str, float | None]
+    offset: int = 0
+    blocked: Blocked | None = None
+    blocked_entity: str | None = None
+
+    def block(self, reason: Blocked, entity_id: str) -> None:
+        """Keep the first reason found."""
+        if self.blocked is None:
+            self.blocked, self.blocked_entity = reason, entity_id
+
+    def status(self, method: Method) -> MethodStatus:
+        """Return the status of one method."""
+        return next(status for status in self.statuses if status.method is method)
+
+    def roles(self) -> list[Role]:
+        """Return the helpers create makes, in order."""
+        if self.method is None:
+            return []
+        if self.method is Method.POWER:
+            return [Role.POWER, Role.ENERGY]
+        roles = []
+        if self.solar_term.kind == "integral" and self.solar_term.reuse is None:
+            roles += [Role.SOLAR_POWER, Role.SOLAR_ENERGY]
+        if self.gross_power is not None:
+            roles.append(Role.POWER)
+        return [*roles, Role.ENERGY]
+
+    def default_name(self, hass: HomeAssistant, role: Role) -> str:
+        """Return the name a helper gets when the panel gives none."""
+        if role is Role.ENERGY:
+            return f"{self.meter_name} gross"
+        if role is Role.POWER:
+            return f"{self.meter_name} gross power"
+        power = self.solar_term.source
+        power_name = _name(hass, power) or power
+        if role is Role.SOLAR_POWER:
+            return f"{power_name} (0 when offline)"
+        return f"{power_name} energy"
+
+    def as_dict(self, hass: HomeAssistant) -> dict[str, Any]:
+        """Return the preview of the panel."""
+        return {
+            "method": self.method,
+            "suggested": self.suggested,
+            "rule": self.rule.rule,
+            "methods": [status.as_dict() for status in self.statuses],
+            "drawn": self.drawn,
+            "returned": self.returned,
+            "invert": self.invert,
+            "drawn_candidates": [
+                {"entity": entity, "disabled": disabled}
+                for entity, disabled in self.drawn_candidates
+            ],
+            "returned_candidates": [
+                {"entity": entity, "disabled": disabled}
+                for entity, disabled in self.returned_candidates
+            ],
+            "power": {
+                "circuit": self.circuit[0],
+                "solar": self.solar[0],
+                "signed": self.signed,
+                "circuit_from": self.circuit[1],
+                "solar_from": self.solar[1],
+            },
+            "live": self.live,
+            "evidence": {
+                stat: found.as_dict() for stat, found in self.evidence.items()
+            },
+            "solar_term": {
+                "kind": self.solar_term.kind,
+                "reuse": self.solar_term.reuse,
+            },
+            "helpers": [
+                {"role": role, "name_default": self.default_name(hass, role)}
+                for role in self.roles()
+            ],
+            "offset": self.offset,
+            "blocked": self.blocked,
+            "blocked_entity": self.blocked_entity,
+        }
+
+
+def _power(
+    draft: Mapping[str, str | None], key: str, saved: str | None
+) -> tuple[str | None, str | None]:
+    """Return a power sensor of the draft or the settings, and where it is from."""
+    if key in draft:
+        return draft[key], "draft" if draft[key] is not None else None
+    return saved, "saved" if saved is not None else None
+
+
+def _reusable_solar_term(
+    hass: HomeAssistant, helpers: CreatedHelpers, solar_power: str
+) -> str | None:
+    """Return our integral of `solar_power`'s 0-mapped template, or None.
+
+    Only a pair exactly as the setup builds it now: our template of the
+    solar power, unchanged, and our left integral of it, both enabled. A
+    helper the user changed is never reused.
+    """
+    registry = er.async_get(hass)
+    entries = hass.config_entries
+
+    def entity_of(entry_id: Any, domain: str) -> tuple[str, Mapping[str, Any]] | None:
+        """Return the enabled entity and the options of our helper, or None."""
+        entry = entries.async_get_entry(str(entry_id))
+        if entry is None or entry.domain != domain:
+            return None
+        found = er.async_entries_for_config_entry(registry, entry.entry_id)
+        if not found or found[0].disabled:
+            return None
+        return found[0].entity_id, entry.options
+
+    for entry_id, record in reversed(helpers.records().items()):
+        if (
+            record.get("kind") != KIND_SOLAR_ENERGY
+            or record.get("power") != solar_power
+        ):
+            continue
+        template = entity_of(record.get("template"), "template")
+        integral = entity_of(entry_id, "integration")
+        if (
+            template is not None
+            and integral is not None
+            and template[1].get("state") == solar_power_template(solar_power)
+            and integral[1].get("source") == template[0]
+            and integral[1].get("method") == "left"
+        ):
+            return integral[0]
+    return None
+
+
+@dataclass
+class _Inputs:
+    """The circuit's energy inputs, and what is known about them."""
+
+    hass: HomeAssistant
+    drawn: str
+    returned: str | None
+    has_returned: bool
+    evidence: dict[str, StatsEvidence]
+    periodic: Mapping[str, bool]
+
+    def is_periodic(self, entity: str) -> bool:
+        """Return True for a counter that resets: certain, the user's, or guessed."""
+        found = self.evidence.get(entity)
+        if found is not None and found.certain:
+            return True
+        if entity in self.periodic:
+            return self.periodic[entity]
+        return bool(found is not None and found.periodic)
+
+    def lifetime(self, entity: str) -> bool:
+        """Return True for a counter certainly never reset (no drop at all)."""
+        found = self.evidence.get(entity)
+        return (
+            found is not None
+            and found.periodic is False
+            and not found.certain
+            and not found.drops
+            and not self.periodic.get(entity, False)
+        )
+
+
+def _energy_problem(inputs: _Inputs, method: Method) -> tuple[Reason, str] | None:
+    """Return why EM, Plug or Net cannot work, with the input, or None."""
+    entities = [inputs.drawn]
+    if method is not Method.NET:
+        if not inputs.has_returned:
+            return Reason.NO_RETURNED_SENSOR, inputs.drawn
+        if inputs.returned is not None:
+            entities.append(inputs.returned)
+    for entity in entities:
+        if not _usable(inputs.hass, entity, "energy"):
+            return Reason.UNSUPPORTED_INPUT, entity
+        if inputs.is_periodic(entity):
+            return Reason.DAILY_INPUT, entity
+    return None
+
+
+def _energy_status(inputs: _Inputs, method: Method, rule: MeterClass) -> MethodStatus:
+    """Return the status of EM, Plug or Net.
+
+    Verified when the device's rule (`classify_meter`) gives this method.
+    Against a rule of a known meter, or for an unknown one (whose counter may
+    start at 0 after a power cut), it is offered unverified.
+    """
+    if (problem := _energy_problem(inputs, method)) is not None:
+        reason, entity = problem
+        return MethodStatus(
+            method, offered=False, verified=False, reason=reason, entity=entity
+        )
+    if rule.method is method:
+        return MethodStatus(method, offered=True, verified=True, reason=rule.rule)
+    return MethodStatus(
+        method,
+        offered=True,
+        verified=False,
+        reason=Reason.AGAINST_RULE
+        if rule.method in (Method.EM, Method.PLUG)
+        else Reason.MAY_RESET,
+    )
+
+
+def _power_status(
+    hass: HomeAssistant, circuit: str | None, solar_power: str | None, *, signed: bool
+) -> MethodStatus:
+    """Return the status of "From power": verified once the circuit fed in."""
+    reason: Reason | None = None
+    if circuit is None or solar_power is None:
+        reason = Reason.NO_POWER
+    elif not _usable(hass, circuit, "power") or _disabled(hass, circuit):
+        reason = Reason.UNUSABLE_POWER
+    if reason is not None:
+        return MethodStatus(
+            Method.POWER, offered=False, verified=False, reason=reason, entity=circuit
+        )
+    return MethodStatus(
+        Method.POWER,
+        offered=True,
+        verified=signed,
+        reason=Reason.POWER_SIGNED if signed else Reason.POWER_UNSIGNED,
+    )
+
+
+def _set_offset(hass: HomeAssistant, plan: Plan) -> None:
+    """Set the offset that starts the gross energy at START_MIN or more.
+
+    Reads the inputs as the template will: a new solar integral reads 0, a
+    reused one its value. Only the terms that can pull the gross below 0 need
+    a value: the meter of Net, and the returned energy that is subtracted.
+    Without one the start is unknown, and the setup waits. An added term that
+    counts only up (the solar, a drawn meter) counts as 0 without a value,
+    which only makes the offset larger: a solar counter may be offline at
+    night.
+    """
+    method = plan.method
+    terms: list[tuple[str | None, int, bool]] = [(plan.drawn, 1, method is Method.NET)]
+    if method is not Method.NET:
+        terms.append((plan.returned, -2 if method is Method.PLUG else -1, True))
+    terms.append((plan.solar_term.reads(), 1, False))
+    gross = 0.0
+    for entity, coef, needed in terms:
+        value = _value(hass, entity, "energy") if entity is not None else None
+        if value is None:
+            if needed:
+                plan.block(Blocked.INPUT_NOT_READY, entity or plan.stat)
+                return
+            value = 0.0
+        gross += coef * value
+    if gross < START_MIN:
+        plan.offset = math.ceil((START_MIN - gross) / OFFSET_STEP) * OFFSET_STEP
+
+
+def _live(
+    hass: HomeAssistant,
+    circuit: str | None,
+    solar_power: str | None,
+    *,
+    invert: bool,
+) -> dict[str, float | None]:
+    """Return the circuit, solar and gross power now, as the template reads them."""
+    circuit_w = _value(hass, circuit, "power") if circuit is not None else None
+    if circuit_w is not None and invert:
+        circuit_w = -circuit_w
+    solar_w: float | None = None
+    if solar_power is not None:
+        # Offline (not a number) is 0, like in the template.
+        state = hass.states.get(solar_power)
+        offline = state is None or not _is_number(state.state)
+        solar_w = 0.0 if offline else _value(hass, solar_power, "power")
+    gross_w = (
+        round(circuit_w + solar_w, POWER_DECIMALS)
+        if circuit_w is not None and solar_w is not None
+        else None
+    )
+    return {"circuit_w": circuit_w, "solar_w": solar_w, "gross_w": gross_w}
+
+
+def _solar_term(
+    hass: HomeAssistant,
+    helpers: CreatedHelpers,
+    inputs: _Inputs,
+    solar: str,
+    solar_power: str | None,
+) -> SolarTerm:
+    """Return where the solar energy comes from (R1: power first)."""
+    if solar_power is not None:
+        return SolarTerm(
+            "integral", solar_power, _reusable_solar_term(hass, helpers, solar_power)
+        )
+    if _usable(hass, solar, "energy") and inputs.lifetime(solar):
+        return SolarTerm("counter", solar)
+    return SolarTerm(None, solar)
+
+
+def _block_inputs(hass: HomeAssistant, plan: Plan, solar: str) -> None:
+    """Block for the solar already in the circuit, or a solar term not buildable."""
+    circuit, solar_power = plan.circuit[0], plan.solar[0]
+    # A meter or power that already holds the solar would count it twice.
+    for entity in dict.fromkeys(
+        entity
+        for entity in (plan.stat, plan.drawn, plan.returned, circuit)
+        if entity is not None
+    ):
+        if _holds_solar(hass, entity, solar, solar_power):
+            plan.block(Blocked.SOLAR_ALREADY_IN_METER, entity)
+    if solar_power is not None and not _usable(hass, solar_power, "power"):
+        plan.block(Blocked.UNSUPPORTED_INPUT, solar_power)
+    elif solar_power is not None and _disabled(hass, solar_power):
+        # Its template would read 0 for good: the solar would go missing.
+        plan.block(Blocked.INPUT_DISABLED, solar_power)
+    elif solar_power is None and not _usable(hass, solar, "energy"):
+        plan.block(Blocked.UNSUPPORTED_INPUT, solar)
+    elif plan.solar_term.kind is None:
+        plan.block(Blocked.SOLAR_NEEDS_POWER, solar)
+
+
+def _block_method(plan: Plan) -> None:
+    """Block for the chosen method: not offered, or an input it cannot use."""
+    offered = {status.method for status in plan.statuses if status.offered}
+    if not offered:
+        status = plan.status(Method.NET)
+        plan.block(
+            Blocked.UNSUPPORTED_INPUT
+            if status.reason == Reason.UNSUPPORTED_INPUT
+            else Blocked.DAILY_WITHOUT_POWER,
+            status.entity or plan.stat,
+        )
+    method = plan.method
+    if method is None:
+        return
+    if method not in offered:
+        plan.block(Blocked.NOT_OFFERED, plan.status(method).entity or plan.stat)
+    if method in (Method.EM, Method.PLUG):
         if plan.returned is None:
-            plan.block(Blocked.NO_RETURNED_SENSOR, plan.meter)
-        else:
-            if plan.returned_disabled:
-                plan.block(Blocked.RETURNED_DISABLED, plan.returned)
-            inputs.append((plan.returned, None))
-    inputs.append((plan.solar, plan.solar_power))
-    return inputs
+            plan.block(Blocked.CHOOSE_RETURNED, plan.stat)
+        elif dict(plan.returned_candidates).get(plan.returned):
+            plan.block(Blocked.RETURNED_DISABLED, plan.returned)
+    if method is not Method.POWER and dict(plan.drawn_candidates).get(plan.drawn):
+        plan.block(Blocked.INPUT_DISABLED, plan.drawn)
 
 
 async def async_plan(
-    hass: HomeAssistant,
-    prefs: Prefs,
-    stat: str,
-    solar: str,
-    kind: MeterKind | None = None,
+    hass: HomeAssistant, prefs: Prefs, helpers: CreatedHelpers, choices: Choices
 ) -> Plan:
-    """Return what the setup would create; `kind` defaults to the suggested one.
+    """Return what the setup would create for a device and a solar source.
 
-    `stat` must be an electricity device of the settings and `solar` the
-    energy statistic of a solar source. The meter's own power sensor is the
-    device's `stat_rate`: for a net meter it is the power of that meter. For a
-    meter that only draws it is signed too, so it is the power of drawn minus
-    returned, not of either alone: a daily drawn or returned meter then has
-    no power of its own and blocks the setup. A sum or template helper that
-    already holds the solar (or its power, or an integral of its power)
-    blocks it too, and so does a check for daily inputs that could not run
-    (the recorder is busy) or an input without a value (see `_set_offset`).
-    A power sensor without a usable unit only leaves out the gross power.
+    `choices.stat` must be an electricity device of the settings and
+    `choices.solar` the energy statistic of a solar source. A drawn or
+    returned sensor, or a draft power, that the setup would not offer raises
+    `not_offered`. A device or solar without power gets the single power
+    sensor of its own device (`paired_power`). The method defaults to the
+    suggested one: the device's rule, else "From power", else none.
+    `blocked` is the first reason the chosen method cannot be built, with the
+    entity it is about.
     """
+    stat, solar = choices.stat, choices.solar
     device, source = _find(prefs, stat, solar)
-    found = returned_sensor(hass, stat, exclude=used_stats(prefs))
-    suggested = MeterKind.DRAWS if found else MeterKind.NET
-    plan = Plan(
-        kind=kind or suggested,
-        suggested_kind=suggested,
-        meter=stat,
-        solar=solar,
-        meter_name=device.get(NAME) or _name(hass, stat) or stat,
-        returned=found[0] if found else None,
-        returned_disabled=found[1] if found else False,
-        circuit_power=device.get(RATE),
-        solar_power=source.get(RATE),
+    # Sensors used by other things; the meter's own powers are no reason to
+    # skip a sensor of its own.
+    own = {rate for rate in (device.get(RATE), source.get(RATE)) if rate}
+    used = used_stats(prefs) - {stat} - own
+    for key in ("stat_rate", "solar_rate"):
+        if (power := choices.draft.get(key)) is not None:
+            _check_draft_power(hass, power, {stat, solar})
+    circuit = _power(choices.draft, "stat_rate", device.get(RATE))
+    if circuit[0] is None and (paired := paired_power(hass, stat, used)) is not None:
+        circuit = paired, "paired"
+    solar_power = _power(choices.draft, "solar_rate", source.get(RATE))
+    if solar_power[0] is None and (
+        paired := paired_power(hass, solar, used | {circuit[0] or ""})
+    ):
+        solar_power = paired, "paired"
+    if circuit[0] is not None and circuit[0] == solar_power[0]:
+        raise _not_offered(circuit[0])
+    drawn_list = drawn_candidates(hass, stat, used)
+    returned_list = returned_candidates(hass, stat, used)
+    drawn = choices.drawn or stat
+    if drawn not in dict(drawn_list):
+        raise _not_offered(drawn)
+    if choices.returned is not None and choices.returned not in dict(returned_list):
+        raise _not_offered(choices.returned)
+    returned = choices.returned or preselect_returned(hass, stat, used)
+
+    found = await async_probe(
+        hass,
+        {stat, drawn, solar}
+        | {e for e in (returned, circuit[0], solar_power[0]) if e is not None},
+        power_of={
+            energy: power
+            for energy, power in (
+                (drawn, circuit[0]),
+                (stat, circuit[0]),
+                (solar, solar_power[0]),
+            )
+            if power is not None
+        },
     )
-    # A sum or gross template that already holds the solar would count it twice.
-    if _holds_solar(hass, stat, solar, plan.solar_power):
-        plan.block(Blocked.SOLAR_ALREADY_IN_METER, stat)
-    inputs = _inputs(plan)
-    daily = await async_daily_check(hass, [entity for entity, _ in inputs])
-    if daily is None:
+    inputs = _Inputs(
+        hass, drawn, returned, bool(returned_list), found or {}, choices.periodic
+    )
+    rule = classify_meter(hass, drawn, inputs.evidence.get(drawn))
+    circuit_evidence = inputs.evidence.get(circuit[0] or "")
+    signed = circuit_evidence is not None and circuit_evidence.went_negative
+    statuses = [_energy_status(inputs, method, rule) for method in ENERGY_METHODS]
+    statuses.append(_power_status(hass, circuit[0], solar_power[0], signed=signed))
+    offered = {status.method for status in statuses if status.offered}
+    suggested = rule.method if rule.method in offered else None
+    if suggested is None and Method.POWER in offered:
+        suggested = Method.POWER
+    invert = choices.invert
+    if invert is None:
+        invert = circuit[0] is not None and default_inverted(hass, circuit[0])
+    plan = Plan(
+        stat=stat,
+        meter_name=device.get(NAME) or _name(hass, stat) or stat,
+        method=choices.method or suggested,
+        suggested=suggested,
+        rule=rule,
+        statuses=statuses,
+        drawn=drawn,
+        returned=returned,
+        invert=invert,
+        drawn_candidates=drawn_list,
+        returned_candidates=returned_list,
+        circuit=circuit,
+        solar=solar_power,
+        signed=signed,
+        evidence=inputs.evidence,
+        solar_term=_solar_term(hass, helpers, inputs, solar, solar_power[0]),
+        gross_power=(circuit[0], solar_power[0])
+        if circuit[0] is not None
+        and solar_power[0] is not None
+        and _usable(hass, circuit[0], "power")
+        and not _disabled(hass, circuit[0])
+        and _usable(hass, solar_power[0], "power")
+        else None,
+        live=_live(hass, circuit[0], solar_power[0], invert=invert),
+    )
+    if found is None:
+        # Before anything the statistics decide: a retry may help.
         plan.block(Blocked.DAILY_CHECK_FAILED, stat)
-        daily = set()
-    for entity, power in inputs:
-        if entity not in daily:
-            if (factor := _factor(hass, entity, "energy")) is None:
-                plan.block(Blocked.UNSUPPORTED_INPUT, entity)
-            else:
-                plan.factors[entity] = factor
-            continue
-        plan.daily.append(entity)
-        if power is None:
-            plan.block(Blocked.DAILY_WITHOUT_POWER, entity)
-        elif (factor := _integral_factor(hass, power)) is None:
-            plan.block(Blocked.UNSUPPORTED_INPUT, power)
-        else:
-            plan.integrals[entity] = power
-            plan.integral_factors[power] = factor
-    if plan.circuit_power is not None and plan.solar_power is not None:
-        for power in (plan.circuit_power, plan.solar_power):
-            _check_power(hass, plan, power)
-    if plan.blocked is None:
-        _set_offset(hass, plan, inputs)
+    _block_inputs(hass, plan, solar)
+    _block_method(plan)
+    if plan.blocked is None and plan.method in ENERGY_METHODS:
+        _set_offset(hass, plan)
     return plan
+
+
+# --- Create ------------------------------------------------------------------
 
 
 async def _async_undo(
@@ -464,79 +997,130 @@ async def _async_undo(
             _LOGGER.exception("Forgetting the helper %s failed", entry_id)
 
 
-@dataclass(frozen=True)
-class Names:
-    """Names of the helpers; empty ones get defaults from the meter."""
+def _check_offset(plan: Plan, offset: float) -> int:
+    """Return the previewed offset if it is still enough, else refuse.
 
-    energy: str = ""
-    power: str | None = None
-    # Power sensor -> name of its integral (default: its name plus " energy").
-    integrals: Mapping[str, str] = field(default_factory=dict)
+    It must be a whole number of OFFSET_STEP and at least what the values
+    need now. From power has no offset (its integral starts at 0) and
+    ignores it.
+    """
+    if plan.method is Method.POWER:
+        return 0
+    if (
+        not math.isfinite(offset)
+        or offset < plan.offset
+        or offset > OFFSET_MAX
+        or offset % OFFSET_STEP
+    ):
+        raise _error(Blocked.VALUES_CHANGED, entity_id=plan.stat)
+    return int(offset)
+
+
+type _Record = Callable[..., Awaitable[None]]
 
 
 async def async_create(
-    hass: HomeAssistant, helpers: CreatedHelpers, plan: Plan, names: Names
+    hass: HomeAssistant,
+    helpers: CreatedHelpers,
+    plan: Plan,
+    names: Mapping[str, str],
+    offset: float,
 ) -> tuple[str, str | None]:
     """Create the helpers of `plan`; return the gross meter and gross power.
 
-    First the integrals of daily inputs, then the energy template, then the
-    power template when both power sensors exist and are usable. Every
-    helper is recorded as created by Energy Flow Mapper. When one fails,
-    every helper of this request is removed and forgotten again, and the
-    error is raised.
+    `plan` must come from `async_plan` with the panel's choices; `offset` is
+    the one the preview showed. Refused when the plan is blocked, the method
+    is not offered, or the offset is no longer enough (`values_changed`).
+    Every helper is recorded as created by Energy Flow Mapper, with what it
+    is for. When one fails, or the request is cancelled, every helper of this
+    request (not a reused solar term) is removed and forgotten again, shielded
+    from a further cancel, and the error is raised.
     """
     if plan.blocked is not None:
-        raise _error(plan.blocked, entity_id=plan.blocked_entity or plan.meter)
-    name = names.energy.strip() or f"{plan.meter_name} gross"
-    power_name = (names.power or "").strip() or f"{name} power"
+        raise _error(plan.blocked, entity_id=plan.blocked_entity or plan.stat)
+    method = plan.method
+    if (
+        method is None
+        or not plan.status(method).offered
+        or (method is Method.POWER and plan.gross_power is None)
+    ):
+        raise _not_offered(plan.stat)
+    start = _check_offset(plan, offset)
+
+    def name(role: Role) -> str:
+        return (names.get(role) or "").strip() or plan.default_name(hass, role)
+
     created: list[str] = []
 
-    async def record(entry_id: str) -> None:
+    async def record(entry_id: str, **what: Any) -> None:
         created.append(entry_id)
-        await helpers.async_add(entry_id)
+        await helpers.async_add(entry_id, what)
 
     try:
-        inputs: dict[str, str] = {}
-        factors = dict(plan.factors)
-        for stat, power in plan.integrals.items():
-            entry_id, entity_id = await async_create_integral(
+        power_entry: str | None = None
+        stat_rate: str | None = None
+        if plan.gross_power is not None:
+            power_entry, stat_rate = await async_create_template(
                 hass,
-                power,
-                (names.integrals.get(power) or "").strip()
-                or f"{_name(hass, power) or power} energy",
-            )
-            await record(entry_id)
-            inputs[stat] = entity_id
-            factors[entity_id] = plan.integral_factors[power]
-        entry_id, gross = await async_create_template(
-            hass,
-            name,
-            gross_energy_template(
-                plan.kind,
-                inputs.get(plan.meter, plan.meter),
-                inputs.get(plan.solar, plan.solar),
-                plan.returned,
-                factors=factors,
-                offset=plan.offset,
-            ),
-            "energy",
-        )
-        await record(entry_id)
-        stat_rate = None
-        if (
-            (circuit_power := plan.circuit_power) is not None
-            and (solar_power := plan.solar_power) is not None
-            and plan.unusable_power is None
-        ):
-            entry_id, stat_rate = await async_create_template(
-                hass,
-                power_name,
-                gross_power_template(circuit_power, solar_power, factors=factors),
+                name(Role.POWER),
+                gross_power_template(*plan.gross_power, invert=plan.invert),
                 "power",
             )
-            await record(entry_id)
-    except Exception:
+            await record(
+                power_entry,
+                kind=KIND_GROSS_POWER,
+                stat=plan.stat,
+                method=method.value,
+            )
+        if method is Method.POWER and stat_rate is not None:
+            entry_id, gross = await async_create_integral(
+                hass, stat_rate, name(Role.ENERGY)
+            )
+        else:
+            solar = await _async_solar_energy(hass, plan.solar_term, name, record)
+            entry_id, gross = await async_create_template(
+                hass,
+                name(Role.ENERGY),
+                gross_energy_template(
+                    method, plan.drawn, solar, plan.returned, offset=start
+                ),
+                "energy",
+            )
+        await record(
+            entry_id,
+            kind=KIND_GROSS_ENERGY,
+            stat=plan.stat,
+            method=method.value,
+            power=power_entry,
+        )
+    except Exception, asyncio.CancelledError:
         # Nobody uses them yet; a retry would meet them.
-        await _async_undo(hass, helpers, created)
+        await asyncio.shield(_async_undo(hass, helpers, created))
         raise
     return gross, stat_rate
+
+
+async def _async_solar_energy(
+    hass: HomeAssistant,
+    term: SolarTerm,
+    name: Callable[[Role], str],
+    record: _Record,
+) -> str:
+    """Return the solar term's entity: the counter, reused, or a new integral.
+
+    A new one is the 0-mapped template of the solar's power and its integral
+    (kWh), recorded so the next setup with this solar reuses them.
+    """
+    if (reads := term.reads()) is not None:
+        return reads
+    template_entry, template = await async_create_template(
+        hass, name(Role.SOLAR_POWER), solar_power_template(term.source), "power"
+    )
+    await record(template_entry, kind=KIND_SOLAR_POWER, power=term.source)
+    entry_id, integral = await async_create_integral(
+        hass, template, name(Role.SOLAR_ENERGY)
+    )
+    await record(
+        entry_id, kind=KIND_SOLAR_ENERGY, power=term.source, template=template_entry
+    )
+    return integral

@@ -47,7 +47,19 @@ async def test_create_template_energy(hass: HomeAssistant) -> None:
     assert state.state == "1.5"
     assert state.attributes["unit_of_measurement"] == "kWh"
     assert state.attributes["device_class"] == "energy"
-    assert state.attributes["state_class"] == "total_increasing"
+    # `total`: every change is booked 1:1, so a lag dip cancels (no reset).
+    assert state.attributes["state_class"] == "total"
+    assert entry.options["state_class"] == "total"
+
+
+async def test_create_template_state_class_parameter(hass: HomeAssistant) -> None:
+    """The state class of an energy template can be given."""
+    entry_id, _ = await async_create_template(
+        hass, "Meter", "{{ 1 }}", "energy", state_class="total_increasing"
+    )
+    entry = hass.config_entries.async_get_entry(entry_id)
+    assert entry is not None
+    assert entry.options["state_class"] == "total_increasing"
 
 
 async def test_create_template_power(hass: HomeAssistant) -> None:

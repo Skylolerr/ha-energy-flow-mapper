@@ -43,6 +43,7 @@ from .candidates import (
 )
 from .const import DOMAIN, PLAUSIBILITY_MIN_KWH, PLAUSIBILITY_MIN_LITERS
 from .daily_reset import async_daily_resetting
+from .device_rules import Method
 from .energy_stats import (
     PERIODS,
     async_energy,
@@ -110,7 +111,7 @@ from .hints import (
 from .integral import async_create_integral
 from .meter_inputs import Cache, counted_inputs
 from .models import EnergyFlowMapperData
-from .solar_setup import MeterKind, Names, async_create, async_plan
+from .solar_setup import Choices, Role, async_create, async_plan
 from .stats_probe import async_probe
 from .sum_meter import async_create_sum, check_rate_members, check_sum_members
 from .transfer import InvalidImportError, build_export, parse_import
@@ -818,15 +819,42 @@ async def websocket_daily_check(
     )
 
 
-_METER_KINDS = vol.In([kind.value for kind in MeterKind])
+_METHODS = vol.In([method.value for method in Method])
+# The panel's choices, the same in preview and create.
+_SETUP_CHOICES: dict[Any, Any] = {
+    vol.Required("stat"): str,
+    vol.Required("solar"): str,
+    vol.Optional("drawn"): str,
+    vol.Optional("returned"): str,
+    vol.Optional("invert"): bool,
+    # Power sensors set in the panel but not saved yet; None: removed there.
+    vol.Optional("draft"): {
+        vol.Optional("stat_rate"): _OPTIONAL_TEXT,
+        vol.Optional("solar_rate"): _OPTIONAL_TEXT,
+    },
+    # The user's daily switch per input.
+    vol.Optional("periodic"): {str: bool},
+}
+
+
+def _choices(msg: dict[str, Any]) -> Choices:
+    return Choices(
+        stat=msg["stat"],
+        solar=msg["solar"],
+        method=Method(msg["method"]) if "method" in msg else None,
+        drawn=msg.get("drawn"),
+        returned=msg.get("returned"),
+        invert=msg.get("invert"),
+        draft=msg.get("draft", {}),
+        periodic=msg.get("periodic", {}),
+    )
 
 
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/solar_setup_preview",
-        vol.Required("stat"): str,
-        vol.Required("solar"): str,
-        vol.Optional(ATTR_KIND): _METER_KINDS,
+        vol.Optional("method"): _METHODS,
+        **_SETUP_CHOICES,
     }
 )
 @require_admin
@@ -836,26 +864,26 @@ async def websocket_solar_setup_preview(
 ) -> None:
     """Return what "Solar feeds in here" would create for a device and solar.
 
-    `kind` (net or draws) defaults to the suggested one: draws when the
-    meter's HA device has a returned sensor. `blocked` is the reason the setup
-    cannot be done (an exception key, for `blocked_entity`), or None.
+    The methods with whether each is offered and verified (and why), the
+    suggested one, the sensors to pick from, the powers with a live reading,
+    the statistics evidence, the helpers with default names, the start
+    offset, and `blocked`: the reason the chosen method cannot be built (an
+    exception key, for `blocked_entity`), or None. A sensor outside the lists
+    is refused with `not_offered`.
     """
-    _runtime(hass)
+    runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
-    kind = MeterKind(msg[ATTR_KIND]) if ATTR_KIND in msg else None
-    plan = await async_plan(hass, prefs, msg["stat"], msg["solar"], kind)
-    connection.send_result(msg["id"], plan.as_dict())
+    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg))
+    connection.send_result(msg["id"], plan.as_dict(hass))
 
 
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/create_solar_setup",
-        vol.Required("stat"): str,
-        vol.Required("solar"): str,
-        vol.Required(ATTR_KIND): _METER_KINDS,
-        vol.Required(ATTR_NAME): str,
-        vol.Optional("power_name"): str,
-        vol.Optional("integral_names"): {str: str},
+        vol.Required("method"): _METHODS,
+        **_SETUP_CHOICES,
+        vol.Optional("names"): {vol.In([role.value for role in Role]): str},
+        vol.Required("offset"): vol.All(vol.Coerce(float), vol.Range(min=0)),
     }
 )
 @require_admin
@@ -866,20 +894,17 @@ async def websocket_create_solar_setup(
     """Create the gross meter (and its power) of "Solar feeds in here".
 
     The helpers are created at once, not on save; the panel then replaces the
-    device with the gross meter in the draft. Names are passed ready
-    (translated) by the panel; `integral_names` maps a power sensor to the
-    name of its integral. Refused with the preview's `blocked` reason.
+    device with the gross meter in the draft. Nothing is trusted: the setup is
+    planned again with the same choices and refused with the preview's
+    `blocked` reason, `not_offered`, or `values_changed` when the previewed
+    `offset` is no longer enough. Names are passed ready (translated) by the
+    panel, per helper role; an empty one gets the default.
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
-    plan = await async_plan(
-        hass, prefs, msg["stat"], msg["solar"], MeterKind(msg[ATTR_KIND])
-    )
+    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg))
     entity_id, stat_rate = await async_create(
-        hass,
-        runtime.helpers,
-        plan,
-        Names(msg[ATTR_NAME], msg.get("power_name"), msg.get("integral_names", {})),
+        hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
     )
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -87,4 +88,19 @@ async def test_flow_removes_entry_when_options_fail(hass: HomeAssistant) -> None
             _failed,
             options_steps=[{"state": "{{ 1 +"}],
         )
+    _nothing_left(hass)
+
+
+@pytest.mark.parametrize("error", [RuntimeError("boom"), asyncio.CancelledError()])
+async def test_flow_removes_entry_on_any_error_after_creation(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch, error: BaseException
+) -> None:
+    """Any error once the entry exists, a cancel too, removes it again."""
+
+    def fails(registry: Any, entry_id: str) -> list[Any]:
+        raise error
+
+    monkeypatch.setattr(_flow.er, "async_entries_for_config_entry", fails)
+    with pytest.raises(type(error)):
+        await async_run_helper_flow(hass, "template", _template_steps(), _failed)
     _nothing_left(hass)

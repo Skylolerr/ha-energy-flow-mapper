@@ -9,14 +9,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.template import Template
 
+from custom_components.energy_flow_mapper.device_rules import Method
 from custom_components.energy_flow_mapper.meter_inputs import (
     counted_inputs,
     meter_inputs,
 )
-from custom_components.energy_flow_mapper.solar_setup import (
-    MeterKind,
-    gross_energy_template,
-)
+from custom_components.energy_flow_mapper.solar_setup import gross_energy_template
 
 from .common import MockConfigEntry
 from .conftest import _meter
@@ -382,7 +380,7 @@ async def test_inputs_of_our_gross_meter(hass: HomeAssistant) -> None:
     _template(
         hass,
         "sensor.gross",
-        gross_energy_template(MeterKind.DRAWS, A, C, B, factors={C: 0.001}, offset=100),
+        gross_energy_template(Method.EM, A, C, B, offset=100),
     )
     assert meter_inputs(hass, "sensor.gross") == {
         "entities": {A, B, C},

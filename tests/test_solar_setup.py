@@ -2,33 +2,45 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ServiceValidationError
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.template import Template
+from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 
 from custom_components.energy_flow_mapper import (
     energy_access,
     solar_setup,
-    stats_probe,
 )
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import template_meter as template_module
 from custom_components.energy_flow_mapper.const import DOMAIN
+from custom_components.energy_flow_mapper.device_rules import Method
+from custom_components.energy_flow_mapper.meter_inputs import meter_inputs
 from custom_components.energy_flow_mapper.solar_setup import (
-    MeterKind,
+    KWH,
+    WATTS,
+    Choices,
     gross_energy_template,
     gross_power_template,
+    solar_power_template,
 )
+from custom_components.energy_flow_mapper.stats_probe import StatsEvidence
 
 from .common import MockConfigEntry, WebSocketGenerator
 from .conftest import ENERGY_PREFS, _meter
 
 pytestmark = pytest.mark.usefixtures("sensors")
 
+MAIN = "sensor.main_energy"
+MAIN_POWER = "sensor.main_power"
 SOLAR = "sensor.solar_energy"
 SOLAR_POWER = "sensor.solar_power"
 RETURNED = "sensor.main_returned"
@@ -40,6 +52,61 @@ WITH_SOLAR_POWER = {
         for source in ENERGY_PREFS["energy_sources"]
     ],
 }
+MAC = "AABBCCDDEEFF"
+PRO_EM = "sensor.pro_em_energy"
+PRO_EM_RETURNED = "sensor.pro_em_returned"
+PRO_EM_POWER = "sensor.pro_em_power"
+PLUG = "sensor.plug_energy"
+PLUG_RETURNED = "sensor.plug_returned"
+PLUG_CONSUMED = "sensor.plug_consumed"
+PLUG_POWER = "sensor.plug_power"
+# Shelly devices in the settings, with the solar's power sensor.
+WITH_SHELLY = {
+    **WITH_SOLAR_POWER,
+    "device_consumption": [
+        *ENERGY_PREFS["device_consumption"],
+        {"stat_consumption": PRO_EM, "stat_rate": PRO_EM_POWER, "name": "Pro EM"},
+        {"stat_consumption": PLUG, "stat_rate": PLUG_POWER, "name": "Balcony"},
+    ],
+}
+
+
+def lifetime(*, went_negative: bool = False) -> StatsEvidence:
+    """Evidence of a counter that never resets."""
+    return StatsEvidence(
+        periodic=False,
+        certain=False,
+        reason=None,
+        drops=[],
+        went_negative=went_negative,
+        series=[],
+    )
+
+
+DAILY = StatsEvidence(
+    periodic=True,
+    certain=False,
+    reason="drops",
+    drops=[],
+    went_negative=False,
+    series=[],
+)
+CERTAIN_DAILY = StatsEvidence(
+    periodic=True,
+    certain=True,
+    reason="utility_meter",
+    drops=[],
+    went_negative=False,
+    series=[],
+)
+NO_DATA = StatsEvidence(
+    periodic=None,
+    certain=False,
+    reason="no_data",
+    drops=[],
+    went_negative=False,
+    series=[],
+)
 
 
 async def send(
@@ -60,8 +127,8 @@ def render(hass: HomeAssistant, template: str) -> Any:
     return Template(template, hass).async_render()
 
 
-def _main_device(hass: HomeAssistant) -> str:
-    entry = er.async_get(hass).async_get("sensor.main_energy")
+def _device_of(hass: HomeAssistant, entity_id: str) -> str:
+    entry = er.async_get(hass).async_get(entity_id)
     assert entry is not None
     assert entry.device_id is not None
     return entry.device_id
@@ -70,13 +137,13 @@ def _main_device(hass: HomeAssistant) -> str:
 def _returned(
     hass: HomeAssistant, *, disabled: bool = False, unit: str = "kWh"
 ) -> None:
-    """Give the main meter's device a Shelly returned-energy sensor."""
+    """Give the main meter's device a returned-energy sensor."""
     er.async_get(hass).async_get_or_create(
         "sensor",
-        "shelly",
-        "aabbcc-em1:0-total_act_ret_energy",
+        "test",
+        "main-returned",
         suggested_object_id="main_returned",
-        device_id=_main_device(hass),
+        device_id=_device_of(hass, MAIN),
         original_device_class="energy",
         translation_key="energy_returned",
         unit_of_measurement=unit,
@@ -94,6 +161,101 @@ def _returned(
         )
 
 
+def _shelly(
+    hass: HomeAssistant,
+    entity_id: str,
+    device_id: str,
+    unique_id: str,
+    *,
+    device_class: str = "energy",
+    translation_key: str | None = None,
+    disabled: bool = False,
+    state: str = "10",
+) -> None:
+    unit = "kWh" if device_class == "energy" else "W"
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "shelly",
+        unique_id,
+        suggested_object_id=entity_id.removeprefix("sensor."),
+        device_id=device_id,
+        original_device_class=device_class,
+        translation_key=translation_key,
+        unit_of_measurement=unit,
+        disabled_by=er.RegistryEntryDisabler.INTEGRATION if disabled else None,
+    )
+    if not disabled:
+        hass.states.async_set(
+            entity_id,
+            state,
+            {"device_class": device_class, "unit_of_measurement": unit},
+        )
+
+
+def _new_device(hass: HomeAssistant, name: str) -> str:
+    entry = MockConfigEntry(domain="shelly")
+    entry.add_to_hass(hass)
+    return (
+        dr.async_get(hass)
+        .async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={("shelly", name)}
+        )
+        .id
+    )
+
+
+def _shelly_pro_em(hass: HomeAssistant) -> None:
+    """Add a Shelly Pro EM channel: energy, returned energy and power."""
+    device = _new_device(hass, "pro_em")
+    _shelly(hass, PRO_EM, device, f"{MAC}-em1data:0-total_act_energy", state="500")
+    _shelly(
+        hass,
+        PRO_EM_RETURNED,
+        device,
+        f"{MAC}-em1data:0-total_act_ret_energy",
+        translation_key="energy_returned",
+        state="20",
+    )
+    _shelly(
+        hass,
+        PRO_EM_POWER,
+        device,
+        f"{MAC}-em1:0-power",
+        device_class="power",
+        state="-50",
+    )
+
+
+def _shelly_plug(hass: HomeAssistant) -> None:
+    """Add a Shelly Plus Plug S: Energy (both ways), returned, consumed."""
+    device = _new_device(hass, "plug")
+    _shelly(hass, PLUG, device, f"{MAC}-switch:0-energy", state="10")
+    _shelly(
+        hass,
+        PLUG_RETURNED,
+        device,
+        f"{MAC}-switch:0-ret_energy",
+        translation_key="energy_returned",
+        state="2",
+    )
+    _shelly(
+        hass,
+        PLUG_CONSUMED,
+        device,
+        f"{MAC}-switch:0-consumed_energy_switch",
+        translation_key="energy_consumed",
+        disabled=True,
+    )
+    _shelly(
+        hass,
+        PLUG_POWER,
+        device,
+        f"{MAC}-switch:0-power",
+        device_class="power",
+        state="5",
+    )
+
+
 @pytest.fixture(autouse=True)
 def solar_power(hass: HomeAssistant, sensors: None) -> None:
     """Add a power sensor of the solar (used only where the source names it)."""
@@ -106,108 +268,162 @@ def solar_power(hass: HomeAssistant, sensors: None) -> None:
         name="Solar power",
         state="300",
     )
-    main = hass.states.get("sensor.main_energy")
+    main = hass.states.get(MAIN)
     assert main is not None
-    hass.states.async_set("sensor.main_energy", "1000", main.attributes)
+    hass.states.async_set(MAIN, "1000", main.attributes)
+
+
+class Evidence(dict[str, StatsEvidence]):
+    """Evidence per statistic, and the probes asked for (stats, power_of)."""
+
+    calls: list[tuple[set[str], dict[str, str]]]
 
 
 @pytest.fixture
-def daily(monkeypatch: pytest.MonkeyPatch) -> set[str]:
-    """Fake the daily reset detection; return the set of daily statistics."""
-    found: set[str] = set()
+def evidence(monkeypatch: pytest.MonkeyPatch) -> Evidence:
+    """Fake the statistics probe; unknown statistics are lifetime counters."""
+    found = Evidence()
+    found.calls = []
 
-    async def fake(hass: HomeAssistant, stats: Any, days: int = 3) -> set[str]:
-        return {stat for stat in stats if stat in found}
+    async def fake(
+        hass: HomeAssistant,
+        stats: Any,
+        days: int = 3,
+        power_of: Any = None,
+    ) -> dict[str, StatsEvidence]:
+        found.calls.append((set(stats), dict(power_of or {})))
+        return {stat: found.get(stat, lifetime()) for stat in stats}
 
-    monkeypatch.setattr(solar_setup, "async_daily_check", fake)
+    monkeypatch.setattr(solar_setup, "async_probe", fake)
     return found
 
 
 # --- Templates -------------------------------------------------------------
 
 
-async def test_gross_energy_template_net(hass: HomeAssistant) -> None:
-    """Net: gross = meter + solar, `none` while an input is not a number."""
-    template = gross_energy_template(MeterKind.NET, "sensor.a", "sensor.c", None)
-    assert template == (
-        "{% set meter = states('sensor.a') %}"
-        "{% set solar = states('sensor.c') %}"
-        "{% if meter | is_number and solar | is_number %}"
-        "{{ (meter | float + solar | float) | round(3) }}"
-        "{% else %}{{ none }}{% endif %}"
+def _set(hass: HomeAssistant, entity_id: str, state: str, unit: str | None) -> None:
+    hass.states.async_set(
+        entity_id, state, {"unit_of_measurement": unit} if unit else {}
     )
-    hass.states.async_set("sensor.a", "-1.5")
-    hass.states.async_set("sensor.c", "3")
-    assert render(hass, template) == 1.5
-    hass.states.async_set("sensor.a", "unknown")
-    assert render(hass, template) is None
 
 
-async def test_gross_energy_template_draws(hass: HomeAssistant) -> None:
-    """Draws: gross = drawn - returned + solar (the maintainer's F11 form)."""
-    template = gross_energy_template(
-        MeterKind.DRAWS, "sensor.drawn", "sensor.solar", "sensor.returned"
-    )
-    assert template == (
-        "{% set meter = states('sensor.drawn') %}"
-        "{% set returned = states('sensor.returned') %}"
-        "{% set solar = states('sensor.solar') %}"
-        "{% if meter | is_number and returned | is_number and solar | is_number %}"
-        "{{ (meter | float - returned | float + solar | float) | round(3) }}"
-        "{% else %}{{ none }}{% endif %}"
-    )
-    hass.states.async_set("sensor.drawn", "10")
-    hass.states.async_set("sensor.returned", "2")
-    hass.states.async_set("sensor.solar", "3")
+def test_unit_tables_are_home_assistants() -> None:
+    """The templates convert with Home Assistant's own factors, every unit."""
+    assert set(KWH) == {str(unit) for unit in EnergyConverter.VALID_UNITS}
+    assert set(WATTS) == {str(unit) for unit in PowerConverter.VALID_UNITS}
+    assert KWH["Wh"] == pytest.approx(0.001)
+    assert KWH["MWh"] == pytest.approx(1000)
+    assert WATTS["kW"] == pytest.approx(1000)
+
+
+async def test_gross_energy_template_em(hass: HomeAssistant) -> None:
+    """EM: drawn - returned + solar, each read in kWh at render time."""
+    template = gross_energy_template(Method.EM, "sensor.d", "sensor.s", "sensor.r")
+    _set(hass, "sensor.d", "10", "kWh")
+    _set(hass, "sensor.r", "2000", "Wh")
+    _set(hass, "sensor.s", "3", "kWh")
     assert render(hass, template) == 11.0
-    hass.states.async_set("sensor.returned", "unavailable")
+    # The same energy in another unit gives the same value.
+    _set(hass, "sensor.r", "2", "kWh")
+    assert render(hass, template) == 11.0
+    # A missing input or an unknown unit: unknown, never a wrong number.
+    _set(hass, "sensor.r", "unavailable", None)
+    assert render(hass, template) is None
+    _set(hass, "sensor.r", "2", "%")
+    assert render(hass, template) is None
+    _set(hass, "sensor.r", "2", "kWh")
+    _set(hass, "sensor.s", "unknown", "kWh")
     assert render(hass, template) is None
 
 
-def test_gross_energy_template_draws_needs_returned() -> None:
+async def test_gross_energy_template_plug(hass: HomeAssistant) -> None:
+    """Plug: Energy (both ways) - 2 x returned + solar."""
+    template = gross_energy_template(Method.PLUG, "sensor.e", "sensor.s", "sensor.r")
+    assert "- 2 * returned" in template
+    _set(hass, "sensor.e", "10", "kWh")
+    _set(hass, "sensor.r", "2", "kWh")
+    _set(hass, "sensor.s", "3000", "Wh")
+    assert render(hass, template) == 9.0
+
+
+async def test_gross_energy_template_net_and_offset(hass: HomeAssistant) -> None:
+    """Net: meter + solar; the offset lifts the start, differences stay."""
+    template = gross_energy_template(Method.NET, "sensor.m", "sensor.s", offset=300)
+    _set(hass, "sensor.m", "-250.5", "kWh")
+    _set(hass, "sensor.s", "1", "kWh")
+    assert render(hass, template) == 50.5
+
+
+def test_gross_energy_template_needs_returned() -> None:
     with pytest.raises(ValueError, match="returned"):
-        gross_energy_template(MeterKind.DRAWS, "sensor.a", "sensor.c", None)
+        gross_energy_template(Method.EM, "sensor.a", "sensor.c")
+    with pytest.raises(ValueError, match="power"):
+        gross_energy_template(Method.POWER, "sensor.a", "sensor.c")
+
+
+async def test_our_gross_meter_subtracts_only_returned(hass: HomeAssistant) -> None:
+    """What the gross meter holds, and that only `returned` is subtracted."""
+    for entity_id in ("sensor.d", "sensor.r", "sensor.s"):
+        _meter(hass, entity_id)
+    entry = MockConfigEntry(
+        domain="template",
+        options={
+            "template_type": "sensor",
+            "state": gross_energy_template(
+                Method.PLUG, "sensor.d", "sensor.s", "sensor.r", offset=100
+            ),
+        },
+    )
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "template",
+        entry.entry_id,
+        suggested_object_id="gross",
+        config_entry=entry,
+    )
+    assert meter_inputs(hass, "sensor.gross") == {
+        "entities": {"sensor.d", "sensor.r", "sensor.s"},
+        "signed_known": True,
+        "subtracted": {"sensor.r"},
+    }
 
 
 async def test_gross_power_template(hass: HomeAssistant) -> None:
-    """Power: circuit + solar, rounded to 1 decimal."""
-    template = gross_power_template("sensor.f11_power", "sensor.dtu_power")
-    assert template == (
-        "{% set circuit = states('sensor.f11_power') %}"
-        "{% set solar = states('sensor.dtu_power') %}"
-        "{% if circuit | is_number and solar | is_number %}"
-        "{{ (circuit | float + solar | float) | round(1) }}"
-        "{% else %}{{ none }}{% endif %}"
-    )
-    hass.states.async_set("sensor.f11_power", "-120.04")
-    hass.states.async_set("sensor.dtu_power", "300")
+    """Circuit + solar in W; an offline solar counts as 0, the circuit must be."""
+    template = gross_power_template("sensor.c", "sensor.p")
+    _set(hass, "sensor.c", "-120.04", "W")
+    _set(hass, "sensor.p", "0.3", "kW")
     assert render(hass, template) == 180.0
-    hass.states.async_set("sensor.dtu_power", "unavailable")
+    _set(hass, "sensor.p", "unavailable", None)
+    assert render(hass, template) == -120.0
+    _set(hass, "sensor.p", "5", "%")
+    assert render(hass, template) is None
+    _set(hass, "sensor.p", "300", "W")
+    _set(hass, "sensor.c", "unknown", "W")
     assert render(hass, template) is None
 
 
-async def test_templates_convert_units(hass: HomeAssistant) -> None:
-    """Factors turn Wh into kWh and kW into W inside the template."""
-    energy = gross_energy_template(
-        MeterKind.DRAWS,
-        "sensor.drawn",
-        "sensor.dtu_today",
-        "sensor.returned",
-        factors={"sensor.dtu_today": 0.001, "sensor.returned": 1.0},
-    )
-    assert "solar | float * 0.001" in energy
-    assert "returned | float -" not in energy  # a factor of 1 is left out
-    hass.states.async_set("sensor.drawn", "10")
-    hass.states.async_set("sensor.returned", "2")
-    hass.states.async_set("sensor.dtu_today", "3000")
-    assert render(hass, energy) == 11.0
+async def test_gross_power_template_inverted(hass: HomeAssistant) -> None:
+    """An export-positive circuit power is turned around."""
+    template = gross_power_template("sensor.c", "sensor.p", invert=True)
+    _set(hass, "sensor.c", "120", "W")
+    _set(hass, "sensor.p", "300", "W")
+    assert render(hass, template) == 180.0
 
-    power = gross_power_template(
-        "sensor.f11_power", "sensor.dtu_power", factors={"sensor.f11_power": 1000.0}
-    )
-    hass.states.async_set("sensor.f11_power", "-0.1")
-    hass.states.async_set("sensor.dtu_power", "300")
-    assert render(hass, power) == 200.0
+
+async def test_solar_power_template_zero_mapped(hass: HomeAssistant) -> None:
+    """The solar's power in W; offline (not a number) is 0, an odd unit unknown."""
+    template = solar_power_template("sensor.p")
+    _set(hass, "sensor.p", "0.3", "kW")
+    assert render(hass, template) == 300.0
+    for state in ("unavailable", "unknown"):
+        _set(hass, "sensor.p", state, None)
+        assert render(hass, template) == 0
+    hass.states.async_remove("sensor.p")
+    assert render(hass, template) == 0
+    _set(hass, "sensor.p", "5", "%")
+    assert render(hass, template) is None
 
 
 @pytest.mark.parametrize(
@@ -248,56 +464,356 @@ async def preview(
         hass_ws_client,
         hass,
         type=f"{DOMAIN}/solar_setup_preview",
-        **({"stat": "sensor.main_energy", "solar": SOLAR} | msg),
+        **({"stat": MAIN, "solar": SOLAR} | msg),
     )
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_preview_suggests_draws_with_returned_sensor(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
-) -> None:
-    """A returned sensor on the meter's device suggests "only draws"."""
-    _returned(hass)
-    response = await preview(hass_ws_client, hass)
+async def result_of(
+    hass_ws_client: WebSocketGenerator, hass: HomeAssistant, **msg: Any
+) -> dict[str, Any]:
+    response = await preview(hass_ws_client, hass, **msg)
     assert response["success"], response
-    assert response["result"] == {
-        "suggested_kind": "draws",
-        "kind": "draws",
-        "returned": RETURNED,
-        "returned_disabled": False,
-        "circuit_power": "sensor.main_power",
-        "solar_power": SOLAR_POWER,
-        "daily": [],
-        "integrals": [],
-        "blocked": None,
-        "blocked_entity": None,
-        "unusable_power": None,
-        "offset": 0,
+    result: dict[str, Any] = response["result"]
+    return result
+
+
+def methods(result: dict[str, Any]) -> dict[str, tuple[bool, bool, str | None]]:
+    return {
+        m["method"]: (m["offered"], m["verified"], m["reason"])
+        for m in result["methods"]
     }
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_preview_suggests_net_without_returned_sensor(
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_methods_for_shelly_pro_em(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """Without a returned sensor the meter counts both ways; no solar power."""
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["suggested_kind"] == "net"
-    assert result["kind"] == "net"
-    assert result["returned"] is None
-    assert result["returned_disabled"] is False
-    assert result["solar_power"] is None
+    """A Pro EM channel is an EM meter: verified; the others are not."""
+    _shelly_pro_em(hass)
+    result = await result_of(hass_ws_client, hass, stat=PRO_EM)
+    assert methods(result) == {
+        "em": (True, True, "rule_shelly_em"),
+        "plug": (True, False, "unverified_against_rule"),
+        "net": (True, False, "unverified_against_rule"),
+        "power": (True, False, "unverified_power_unsigned"),
+    }
+    assert result["suggested"] == "em"
+    assert result["method"] == "em"
+    assert result["rule"] == "rule_shelly_em"
+    assert result["drawn"] == PRO_EM
+    assert result["returned"] == PRO_EM_RETURNED
+    assert result["drawn_candidates"] == [{"entity": PRO_EM, "disabled": False}]
+    assert result["returned_candidates"] == [
+        {"entity": PRO_EM_RETURNED, "disabled": False}
+    ]
+    assert result["power"] == {
+        "circuit": PRO_EM_POWER,
+        "solar": SOLAR_POWER,
+        "signed": False,
+        "circuit_from": "saved",
+        "solar_from": "saved",
+    }
+    assert result["live"] == {"circuit_w": -50.0, "solar_w": 300.0, "gross_w": 250.0}
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+    assert [h["role"] for h in result["helpers"]] == [
+        "solar_power",
+        "solar_energy",
+        "power",
+        "energy",
+    ]
+    assert result["helpers"][3]["name_default"] == "Pro EM gross"
     assert result["blocked"] is None
+    # 500 - 20 + 0 (a new solar integral) is enough.
+    assert result["offset"] == 0
 
-    # "Only draws" needs the returned sensor.
-    response = await preview(hass_ws_client, hass, kind="draws")
-    result = response["result"]
-    assert result["kind"] == "draws"
-    assert result["blocked"] == "no_returned_sensor"
-    assert result["blocked_entity"] == "sensor.main_energy"
 
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("evidence")
+async def test_preview_methods_for_shelly_plug(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A plug's "Energy" counts both ways: Plug, verified, with - 2 x returned."""
+    _shelly_plug(hass)
+    result = await result_of(hass_ws_client, hass, stat=PLUG)
+    assert methods(result)["plug"] == (True, True, "rule_shelly_plug")
+    assert methods(result)["em"] == (True, False, "unverified_against_rule")
+    assert result["suggested"] == "plug"
+    assert result["drawn_candidates"] == [
+        {"entity": PLUG, "disabled": False},
+        {"entity": PLUG_CONSUMED, "disabled": True},
+    ]
+    # The disabled "Energy consumed" as drawn: EM verified, but it has no value.
+    result = await result_of(
+        hass_ws_client, hass, stat=PLUG, method="em", drawn=PLUG_CONSUMED
+    )
+    assert methods(result)["em"] == (True, True, "rule_shelly_consumed")
+    assert result["blocked"] == "input_disabled"
+    assert result["blocked_entity"] == PLUG_CONSUMED
+
+    response = await create(hass_ws_client, hass, stat=PLUG, method="plug")
+    assert response["success"], response
+    energy = _template_entries(hass)["Balcony gross"]
+    assert "- 2 * returned" in energy.options["state"]
+    # 10 - 2 x 2 + 0 (fresh solar integral), lifted by the offset to >= 100.
+    integral = _solar_integral(hass)
+    hass.states.async_set(integral, "0", {"unit_of_measurement": "kWh"})
+    assert render(hass, energy.options["state"]) == 106.0
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_unknown_device_power_unverified_without_negative(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """An unknown device gets "From power"; verified only once it went below 0."""
+    result = await result_of(hass_ws_client, hass)
+    assert result["suggested"] == "power"
+    assert result["rule"] is None
+    assert methods(result) == {
+        "em": (False, False, "no_returned_sensor"),
+        "plug": (False, False, "no_returned_sensor"),
+        "net": (True, False, "unverified_may_reset"),
+        "power": (True, False, "unverified_power_unsigned"),
+    }
+    assert result["power"]["signed"] is False
+    assert [h["role"] for h in result["helpers"]] == ["power", "energy"]
+    assert result["offset"] == 0
+
+    evidence[MAIN_POWER] = lifetime(went_negative=True)
+    result = await result_of(hass_ws_client, hass)
+    assert methods(result)["power"] == (True, True, "power_signed")
+    assert result["power"]["signed"] is True
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_net_when_meter_went_negative(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """A meter that went below 0 counts both ways: Net, verified."""
+    evidence[MAIN] = lifetime(went_negative=True)
+    result = await result_of(hass_ws_client, hass)
+    assert result["suggested"] == "net"
+    assert methods(result)["net"] == (True, True, "rule_net_negative")
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_nothing_suggested_without_power(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """No rule and no power: no method is chosen for the user."""
+    result = await result_of(hass_ws_client, hass, stat="sensor.kitchen_energy")
+    assert result["suggested"] is None
+    assert result["method"] is None
+    assert methods(result)["power"] == (False, False, "no_power")
+    assert methods(result)["net"] == (True, False, "unverified_may_reset")
+    assert result["helpers"] == []
+    assert result["blocked"] is None
+    assert result["solar_term"] == {"kind": "counter", "reuse": None}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_reports_evidence_and_reads_powers(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: Evidence,
+) -> None:
+    """The evidence of every input; each meter's own power explains its falls."""
+    _returned(hass)
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert set(result["evidence"]) == {MAIN, RETURNED, SOLAR, MAIN_POWER, SOLAR_POWER}
+    assert result["evidence"][MAIN] == lifetime().as_dict()
+    stats, power_of = evidence.calls[-1]
+    assert stats == {MAIN, RETURNED, SOLAR, MAIN_POWER, SOLAR_POWER}
+    assert power_of == {MAIN: MAIN_POWER, SOLAR: SOLAR_POWER}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_daily_circuit_offers_only_power(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """A daily circuit meter or returned sensor leaves "From power" only."""
+    _returned(hass)
+    evidence[RETURNED] = DAILY
+    result = await result_of(hass_ws_client, hass)
+    assert methods(result)["em"] == (False, False, "daily_input")
+    assert methods(result)["net"][0] is True
+    evidence[MAIN] = DAILY
+    result = await result_of(hass_ws_client, hass)
+    assert methods(result)["net"] == (False, False, "daily_input")
+    assert result["suggested"] == "power"
+    # Asked for anyway: not offered.
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "not_offered"
+    assert result["blocked_entity"] == MAIN
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_periodic_switch(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """The user's daily switch overrides a guess, never a certain signal."""
+    evidence[MAIN] = DAILY
+    result = await result_of(hass_ws_client, hass, periodic={MAIN: False})
+    assert methods(result)["net"][0] is True
+    result = await result_of(
+        hass_ws_client,
+        hass,
+        stat="sensor.garage_energy",
+        periodic={"sensor.garage_energy": True},
+    )
+    assert methods(result)["net"] == (False, False, "daily_input")
+    evidence[MAIN] = CERTAIN_DAILY
+    result = await result_of(hass_ws_client, hass, periodic={MAIN: False})
+    assert methods(result)["net"] == (False, False, "daily_input")
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_preview_daily_circuit_without_power_blocks(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """No method left: the daily meter is named."""
+    evidence["sensor.kitchen_energy"] = DAILY
+    result = await result_of(hass_ws_client, hass, stat="sensor.kitchen_energy")
+    assert result["blocked"] == "daily_without_power"
+    assert result["blocked_entity"] == "sensor.kitchen_energy"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_solar_without_power_lifetime_ok(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+) -> None:
+    """A certainly lifetime solar counter is used as it is, unit-aware."""
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["solar_term"] == {"kind": "counter", "reuse": None}
+    assert result["blocked"] is None
+    assert [h["role"] for h in result["helpers"]] == ["energy"]
+    response = await create(hass_ws_client, hass, method="net", offset=0)
+    assert response["success"], response
+    energy = _template_entries(hass)["Main gross"]
+    assert energy.options["state"] == gross_energy_template(Method.NET, MAIN, SOLAR)
+    assert hass.config_entries.async_entries("integration") == _poe(hass)
+
+
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    ("solar_evidence", "periodic"),
+    [
+        (DAILY, None),
+        (CERTAIN_DAILY, None),
+        (NO_DATA, None),
+        (
+            StatsEvidence(
+                periodic=False,
+                certain=False,
+                reason=None,
+                drops=[(datetime(2026, 11, 22, 6, tzinfo=UTC), 5.0, 0.0)],
+                went_negative=False,
+                series=[],
+            ),
+            None,
+        ),
+        (lifetime(), True),
+    ],
+)
+async def test_solar_without_power_daily_blocks(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    evidence: dict[str, StatsEvidence],
+    solar_evidence: StatsEvidence,
+    periodic: bool | None,
+) -> None:
+    """Daily, unknown or ever dropped without power: «needs a power sensor»."""
+    evidence[SOLAR] = solar_evidence
+    msg: dict[str, Any] = {"method": "net"}
+    if periodic is not None:
+        msg["periodic"] = {SOLAR: periodic}
+    result = await result_of(hass_ws_client, hass, **msg)
+    assert result["blocked"] == "solar_needs_power"
+    assert result["blocked_entity"] == SOLAR
+    response = await create(hass_ws_client, hass, **msg)
+    assert response["error"]["translation_key"] == "solar_needs_power"
+    assert hass.config_entries.async_entries("template") == []
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_draft_values(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Power sensors set in the panel but not saved are used, and checked."""
+    _shelly_pro_em(hass)
+    result = await result_of(
+        hass_ws_client,
+        hass,
+        stat=PRO_EM,
+        draft={"stat_rate": "sensor.ups_power", "solar_rate": None},
+    )
+    assert result["power"]["circuit"] == "sensor.ups_power"
+    assert result["power"]["circuit_from"] == "draft"
+    # The draft removed the solar's power: the counter (lifetime) is used.
+    assert result["power"]["solar"] is None
+    assert result["solar_term"] == {"kind": "counter", "reuse": None}
+    for draft in (
+        {"stat_rate": "sensor.nope"},
+        {"stat_rate": "switch.x"},
+        {"solar_rate": PRO_EM},
+        {"stat_rate": SOLAR_POWER},
+    ):
+        response = await preview(hass_ws_client, hass, stat=PRO_EM, draft=draft)
+        assert response["error"]["translation_key"] == "not_offered", draft
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_pairs_a_power_when_none_is_set(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A device without power gets its own device's single power sensor."""
+    prefs = deepcopy(ENERGY_PREFS)
+    prefs["device_consumption"].append({"stat_consumption": "sensor.printer_energy"})
+    await energy_access.async_write(hass, prefs)
+    result = await result_of(hass_ws_client, hass, stat="sensor.printer_energy")
+    assert result["power"]["circuit"] == "sensor.printer_power"
+    assert result["power"]["circuit_from"] == "paired"
+    assert result["power"]["solar"] is None
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_invert_default_and_live(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The live line follows the switch; it is preselected only by a rule."""
+    hass.states.async_set(MAIN_POWER, "0.1", {"unit_of_measurement": "kW"})
+    result = await result_of(hass_ws_client, hass)
+    assert result["invert"] is False
+    assert result["live"] == {"circuit_w": 100.0, "solar_w": 300.0, "gross_w": 400.0}
+    result = await result_of(hass_ws_client, hass, invert=True)
+    assert result["live"] == {"circuit_w": -100.0, "solar_w": 300.0, "gross_w": 200.0}
+    hass.states.async_set(SOLAR_POWER, "unavailable", {})
+    hass.states.async_set(MAIN_POWER, "unavailable", {})
+    result = await result_of(hass_ws_client, hass)
+    assert result["live"] == {"circuit_w": None, "solar_w": 0.0, "gross_w": None}
+
+
+# Kept from before the rewrite: the solar must not already be in the meter.
 
 CIRCUIT_SUM = "sensor.circuit_sum"
 # The circuit meter is a sum helper (from "Create sum meter").
@@ -326,25 +842,17 @@ def _group_sum(hass: HomeAssistant, entity_id: str, members: list[str]) -> None:
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SUM_DEVICE])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_preview_blocks_solar_already_in_the_meter(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
     """A sum meter that already holds the solar would count it twice."""
-    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", SOLAR])
+    _group_sum(hass, CIRCUIT_SUM, [MAIN, SOLAR])
     response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
     result = response["result"]
     assert result["blocked"] == "solar_already_in_meter"
     assert result["blocked_entity"] == CIRCUIT_SUM
-    response = await send(
-        hass_ws_client,
-        hass,
-        type=f"{DOMAIN}/create_solar_setup",
-        stat=CIRCUIT_SUM,
-        solar=SOLAR,
-        kind="net",
-        name="Gross",
-    )
+    response = await create(hass_ws_client, hass, stat=CIRCUIT_SUM, method="net")
     assert not response["success"]
     assert response["error"]["translation_key"] == "solar_already_in_meter"
 
@@ -386,7 +894,7 @@ def _template_sensor(hass: HomeAssistant, entity_id: str, state: str) -> None:
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
-@pytest.mark.usefixtures("daily")
+@pytest.mark.usefixtures("evidence")
 async def test_setup_blocked_when_sum_contains_integral_of_solar(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -394,20 +902,12 @@ async def test_setup_blocked_when_sum_contains_integral_of_solar(
 ) -> None:
     """A sum with an integral of the solar's power already holds the solar."""
     _integral(hass, SOLAR_INTEGRAL, SOLAR_POWER)
-    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", SOLAR_INTEGRAL])
+    _group_sum(hass, CIRCUIT_SUM, [MAIN, SOLAR_INTEGRAL])
     response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
     assert response["result"]["blocked"] == "solar_already_in_meter"
     assert response["result"]["blocked_entity"] == CIRCUIT_SUM
     integrals = hass.config_entries.async_entries("integration")
-    response = await send(
-        hass_ws_client,
-        hass,
-        type=f"{DOMAIN}/create_solar_setup",
-        stat=CIRCUIT_SUM,
-        solar=SOLAR,
-        kind="net",
-        name="Gross",
-    )
+    response = await create(hass_ws_client, hass, stat=CIRCUIT_SUM, method="net")
     assert not response["success"]
     assert response["error"]["translation_key"] == "solar_already_in_meter"
     assert hass.config_entries.async_entries("template") == []
@@ -415,8 +915,27 @@ async def test_setup_blocked_when_sum_contains_integral_of_solar(
     assert loaded_entry.runtime_data.helpers.entries() == []
 
 
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_setup_blocked_when_circuit_power_holds_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A circuit power that already adds the solar's power counts it twice."""
+    _template_sensor(
+        hass,
+        "sensor.sum_power",
+        f"{{{{ states('{MAIN_POWER}') | float + states('{SOLAR_POWER}') | float }}}}",
+    )
+    hass.states.async_set("sensor.sum_power", "10", {"unit_of_measurement": "W"})
+    result = await result_of(
+        hass_ws_client, hass, draft={"stat_rate": "sensor.sum_power"}
+    )
+    assert result["blocked"] == "solar_already_in_meter"
+    assert result["blocked_entity"] == "sensor.sum_power"
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 @pytest.mark.parametrize("solar_input", [SOLAR_INTEGRAL, SOLAR, SOLAR_POWER])
 async def test_setup_blocked_on_gross_template(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator, solar_input: str
@@ -438,7 +957,7 @@ MAIN_PLUS = "{{ states('sensor.main_energy') | float + "
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 @pytest.mark.parametrize(
     ("state", "inner"),
     [
@@ -512,7 +1031,7 @@ WITH_DERIVED_SOLAR = {
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_solar_already_in_meter_via_what_the_solar_is_built_from(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -526,7 +1045,7 @@ async def test_solar_already_in_meter_via_what_the_solar_is_built_from(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_shared_input_number_does_not_hold_the_solar(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -549,7 +1068,7 @@ async def test_shared_input_number_does_not_hold_the_solar(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_shared_helper_sensor_does_not_hold_the_solar(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -571,7 +1090,7 @@ async def test_shared_helper_sensor_does_not_hold_the_solar(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_setup_not_blocked_by_commented_out_solar(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -586,14 +1105,14 @@ async def test_setup_not_blocked_by_commented_out_solar(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_setup_not_blocked_by_unrelated_template_or_integral(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
     """Templates and integrals of other sensors do not hold the solar."""
-    _integral(hass, "sensor.heat_pump_integral", "sensor.main_power")
+    _integral(hass, "sensor.heat_pump_integral", MAIN_POWER)
     _integral(hass, "sensor.broken_integral", "")
-    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", "sensor.heat_pump_integral"])
+    _group_sum(hass, CIRCUIT_SUM, [MAIN, "sensor.heat_pump_integral"])
     # Another sensor whose ID starts like the solar's is not the solar.
     _template_sensor(
         hass,
@@ -607,107 +1126,63 @@ async def test_setup_not_blocked_by_unrelated_template_or_integral(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SUM_DEVICE])
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_preview_allows_a_sum_without_the_solar(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
     """A sum of other meters is a circuit meter like any other."""
-    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy"])
+    _group_sum(hass, CIRCUIT_SUM, [MAIN])
     response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
     assert response["result"]["blocked"] != "solar_already_in_meter"
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_preview_reports_disabled_returned_sensor(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
     """A disabled returned sensor is named; the setup never enables it."""
     _returned(hass, disabled=True)
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["suggested_kind"] == "draws"
+    result = await result_of(hass_ws_client, hass, method="em")
     assert result["returned"] == RETURNED
-    assert result["returned_disabled"] is True
+    assert result["returned_candidates"] == [{"entity": RETURNED, "disabled": True}]
     assert result["blocked"] == "returned_disabled"
     assert result["blocked_entity"] == RETURNED
     entry = er.async_get(hass).async_get(RETURNED)
     assert entry is not None
     assert entry.disabled
-
     # As a net meter it can still be set up.
-    response = await preview(hass_ws_client, hass, kind="net")
-    assert response["result"]["blocked"] is None
-
-
-@pytest.mark.usefixtures("loaded_entry")
-async def test_preview_blocks_daily_without_power(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, daily: set[str]
-) -> None:
-    """A daily solar meter without a power sensor stops the setup."""
-    daily.add(SOLAR)
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["daily"] == [SOLAR]
-    assert result["integrals"] == []
-    assert result["blocked"] == "daily_without_power"
-    assert result["blocked_entity"] == SOLAR
-
-
-@pytest.mark.usefixtures("loaded_entry")
-async def test_preview_keeps_the_first_reason(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, daily: set[str]
-) -> None:
-    """With several reasons the first one found is reported."""
-    _returned(hass, disabled=True)
-    daily.add(SOLAR)
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["blocked"] == "returned_disabled"
-    assert result["blocked_entity"] == RETURNED
-    assert result["daily"] == [SOLAR]
-
-
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("loaded_entry")
-async def test_preview_lists_integrals_for_daily_inputs(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, daily: set[str]
-) -> None:
-    """Daily inputs with their own power get an integral of it."""
-    daily.update({SOLAR, "sensor.main_energy"})
-    response = await preview(hass_ws_client, hass, kind="net")
-    result = response["result"]
-    assert result["daily"] == ["sensor.main_energy", SOLAR]
-    assert result["integrals"] == [
-        {"stat": "sensor.main_energy", "power": "sensor.main_power"},
-        {"stat": SOLAR, "power": SOLAR_POWER},
-    ]
+    result = await result_of(hass_ws_client, hass, method="net")
     assert result["blocked"] is None
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("loaded_entry")
-@pytest.mark.parametrize("stat", ["sensor.main_energy", RETURNED])
-async def test_preview_daily_draws_meter_has_no_own_power(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    daily: set[str],
-    stat: str,
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_asks_for_a_returned_sensor_without_preselection(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """In "only draws", the signed circuit power is not the power of one meter."""
+    """Two returned sensors and no channel to tell them apart: none is chosen."""
     _returned(hass)
-    daily.add(stat)
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["kind"] == "draws"
-    assert result["blocked"] == "daily_without_power"
-    assert result["blocked_entity"] == stat
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "test",
+        "main-export-2",
+        suggested_object_id="main_export_2",
+        device_id=_device_of(hass, MAIN),
+        original_device_class="energy",
+        translation_key="energy_exported",
+    )
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert result["returned"] is None
+    assert len(result["returned_candidates"]) == 2
+    assert result["blocked"] == "choose_returned"
+    result = await result_of(hass_ws_client, hass, method="em", returned=RETURNED)
+    assert result["blocked"] is None
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 @pytest.mark.parametrize(
     ("change", "entity"),
     [
-        ({"sensor.main_energy": {"unit_of_measurement": "%"}}, "sensor.main_energy"),
+        ({MAIN: {"unit_of_measurement": "%"}}, MAIN),
         ({SOLAR: {"unit_of_measurement": "%"}}, SOLAR),
     ],
 )
@@ -720,41 +1195,36 @@ async def test_preview_blocks_inputs_without_unit(
     """An input without an energy unit cannot be read into kWh."""
     for entity_id, attributes in change.items():
         hass.states.async_set(entity_id, "1", attributes)
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] == "unsupported_input"
-    assert response["result"]["blocked_entity"] == entity
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "unsupported_input"
+    assert result["blocked_entity"] == entity
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("daily")
-@pytest.mark.parametrize(
-    "powers",
-    [[SOLAR_POWER], ["sensor.main_power"], ["sensor.main_power", SOLAR_POWER]],
-)
-async def test_power_without_unit_gives_no_gross_power(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    powers: list[str],
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_power_without_unit(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """A power sensor without a power unit only leaves out the gross power.
+    """A power without a power unit is left out, a solar one stops the setup.
 
-    With both unusable, the preview names the circuit's (the first found).
+    Without the circuit's: no "From power" and no gross power.
     """
-    for power in powers:
-        hass.states.async_set(power, "1", {"unit_of_measurement": "%"})
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
+    hass.states.async_set(MAIN_POWER, "1", {"unit_of_measurement": "%"})
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert methods(result)["power"] == (False, False, "unusable_power")
+    assert [h["role"] for h in result["helpers"]] == [
+        "solar_power",
+        "solar_energy",
+        "energy",
+    ]
     assert result["blocked"] is None
-    assert result["unusable_power"] == powers[0]
-    response = await create(hass_ws_client, hass)
-    assert response["success"], response
-    assert response["result"]["stat_rate"] is None
-    assert set(_template_entries(hass)) == {"Main gross"}
-    assert len(loaded_entry.runtime_data.helpers.entries()) == 1
+    hass.states.async_set(SOLAR_POWER, "1", {"unit_of_measurement": "%"})
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "unsupported_input"
+    assert result["blocked_entity"] == SOLAR_POWER
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_preview_waits_for_an_unavailable_net_meter(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -763,22 +1233,20 @@ async def test_preview_waits_for_an_unavailable_net_meter(
     An unavailable input keeps the unit its registry entry knows, so the
     reason is the missing value, not the unit.
     """
-    hass.states.async_set("sensor.main_energy", "unavailable", {})
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] == "input_not_ready"
-    assert response["result"]["blocked_entity"] == "sensor.main_energy"
-    hass.states.async_remove("sensor.main_energy")
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] == "input_not_ready"
-    response = await create(hass_ws_client, hass)
+    hass.states.async_set(MAIN, "unavailable", {})
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "input_not_ready"
+    assert result["blocked_entity"] == MAIN
+    hass.states.async_remove(MAIN)
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "input_not_ready"
+    response = await create(hass_ws_client, hass, method="net")
     assert response["error"]["translation_key"] == "input_not_ready"
-    assert response["error"]["translation_placeholders"] == {
-        "entity_id": "sensor.main_energy"
-    }
+    assert response["error"]["translation_placeholders"] == {"entity_id": MAIN}
     assert hass.config_entries.async_entries("template") == []
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_unavailable_added_inputs_count_as_zero(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -788,27 +1256,26 @@ async def test_unavailable_added_inputs_count_as_zero(
     returned energy is subtracted: without it the start is unknown.
     """
     hass.states.async_set(SOLAR, "unavailable", {})
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] is None
-    assert response["result"]["offset"] == 0
-    hass.states.async_set("sensor.main_energy", "-50", {"unit_of_measurement": "kWh"})
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] is None
-    assert response["result"]["offset"] == 200
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] is None
+    assert result["offset"] == 0
+    hass.states.async_set(MAIN, "-50", {"unit_of_measurement": "kWh"})
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["offset"] == 200
 
     _returned(hass)
-    hass.states.async_set("sensor.main_energy", "unavailable", {})
-    response = await preview(hass_ws_client, hass, kind="draws")
-    assert response["result"]["blocked"] is None
+    hass.states.async_set(MAIN, "unavailable", {})
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert result["blocked"] is None
     # 0 - 2 + 0: lifted to the floor.
-    assert response["result"]["offset"] == 200
+    assert result["offset"] == 200
     hass.states.async_set(RETURNED, "unknown", {})
-    response = await preview(hass_ws_client, hass, kind="draws")
-    assert response["result"]["blocked"] == "input_not_ready"
-    assert response["result"]["blocked_entity"] == RETURNED
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert result["blocked"] == "input_not_ready"
+    assert result["blocked_entity"] == RETURNED
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_preview_external_statistic_is_unsupported(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
@@ -816,12 +1283,13 @@ async def test_preview_external_statistic_is_unsupported(
     prefs = deepcopy(ENERGY_PREFS)
     prefs["device_consumption"].append({"stat_consumption": "tibber:energy"})
     await energy_access.async_write(hass, prefs)
-    response = await preview(hass_ws_client, hass, stat="tibber:energy")
-    assert response["result"]["blocked"] == "unsupported_input"
-    assert response["result"]["blocked_entity"] == "tibber:energy"
+    result = await result_of(hass_ws_client, hass, stat="tibber:energy")
+    assert methods(result)["net"] == (False, False, "unsupported_input")
+    assert result["blocked"] == "unsupported_input"
+    assert result["blocked_entity"] == "tibber:energy"
 
 
-@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.usefixtures("loaded_entry", "evidence")
 @pytest.mark.parametrize(
     ("msg", "key", "placeholders"),
     [
@@ -833,10 +1301,12 @@ async def test_preview_external_statistic_is_unsupported(
             {"stat": "sensor.grid_import"},
         ),
         (
-            {"solar": "sensor.main_energy"},
+            {"solar": MAIN},
             "unknown_source",
-            {"stat": "sensor.main_energy"},
+            {"stat": MAIN},
         ),
+        ({"drawn": "sensor.kitchen_energy"}, "not_offered", None),
+        ({"returned": "sensor.grid_export"}, "not_offered", None),
     ],
 )
 async def test_preview_errors(
@@ -844,20 +1314,44 @@ async def test_preview_errors(
     hass_ws_client: WebSocketGenerator,
     msg: dict[str, str],
     key: str,
-    placeholders: dict[str, str],
+    placeholders: dict[str, str] | None,
 ) -> None:
-    """Only an electricity device and a solar source of the settings."""
+    """Only an electricity device, a solar source and offered sensors."""
     response = await preview(hass_ws_client, hass, **msg)
     assert response["error"]["translation_key"] == key
-    assert response["error"]["translation_placeholders"] == placeholders
+    if placeholders is not None:
+        assert response["error"]["translation_placeholders"] == placeholders
 
 
 @pytest.mark.usefixtures("loaded_entry")
-async def test_preview_schema_refuses_unknown_kind(
+async def test_preview_schema_refuses_unknown_method(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    response = await preview(hass_ws_client, hass, kind="both")
+    response = await preview(hass_ws_client, hass, method="both")
     assert response["error"]["code"] == "invalid_format"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER, ENERGY_PREFS])
+async def test_setup_blocked_when_the_probe_fails(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A busy recorder stops the setup with a retry reason, not silently."""
+
+    async def busy(*args: Any, **kwargs: Any) -> None:
+        return None  # the statistics query on a timeout or failure
+
+    monkeypatch.setattr(solar_setup, "async_probe", busy)
+    result = await result_of(hass_ws_client, hass)
+    assert result["blocked"] == "daily_check_failed"
+    assert result["blocked_entity"] == MAIN
+    assert result["evidence"] == {}
+    response = await create(hass_ws_client, hass, method="power")
+    assert response["error"]["translation_key"] == "daily_check_failed"
+    assert hass.config_entries.async_entries("template") == []
+    assert loaded_entry.runtime_data.helpers.entries() == []
 
 
 # --- Create ----------------------------------------------------------------
@@ -866,21 +1360,16 @@ async def test_preview_schema_refuses_unknown_kind(
 async def create(
     hass_ws_client: WebSocketGenerator, hass: HomeAssistant, **msg: Any
 ) -> dict[str, Any]:
-    return await send(
-        hass_ws_client,
-        hass,
-        type=f"{DOMAIN}/create_solar_setup",
-        **(
-            {
-                "stat": "sensor.main_energy",
-                "solar": SOLAR,
-                "kind": "net",
-                "name": "Main gross",
-                "power_name": "Main gross power",
-            }
-            | msg
-        ),
-    )
+    """Create with the offset the preview shows, as the panel does."""
+    msg = {"stat": MAIN, "solar": SOLAR, "method": "net"} | msg
+    if "offset" not in msg:
+        shown = await preview(
+            hass_ws_client,
+            hass,
+            **{key: value for key, value in msg.items() if key != "names"},
+        )
+        msg["offset"] = shown["result"]["offset"] if shown["success"] else 0
+    return await send(hass_ws_client, hass, type=f"{DOMAIN}/create_solar_setup", **msg)
 
 
 def _entity_of(hass: HomeAssistant, entry_id: str) -> str:
@@ -891,149 +1380,350 @@ def _template_entries(hass: HomeAssistant) -> dict[str, Any]:
     return {e.title: e for e in hass.config_entries.async_entries("template")}
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_create_solar_setup_uses_integral_for_daily_solar(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    daily: set[str],
-) -> None:
-    """A daily solar meter is replaced by an integral of the solar's power."""
-    daily.add(SOLAR)
-    response = await create(hass_ws_client, hass)
-    assert response["success"], response
-    integrals = [
+def _poe(hass: HomeAssistant) -> list[Any]:
+    """Return the integral the test setup has from the start."""
+    return [
         e
         for e in hass.config_entries.async_entries("integration")
-        if e.options.get("source") == SOLAR_POWER
-    ]
-    assert len(integrals) == 1
-    integral = integrals[0]
-    assert integral.title == "Solar power energy"
-    integral_entity = _entity_of(hass, integral.entry_id)
-
-    templates = _template_entries(hass)
-    energy, power = templates["Main gross"], templates["Main gross power"]
-    assert energy.options["state"] == gross_energy_template(
-        MeterKind.NET, "sensor.main_energy", integral_entity, None
-    )
-    assert power.options["state"] == gross_power_template(
-        "sensor.main_power", SOLAR_POWER
-    )
-    assert SOLAR not in energy.options["state"]
-    assert energy.options["unit_of_measurement"] == "kWh"
-    assert power.options["unit_of_measurement"] == "W"
-
-    result = response["result"]
-    assert result["entity_id"] == _entity_of(hass, energy.entry_id)
-    assert result["stat_rate"] == _entity_of(hass, power.entry_id)
-    assert loaded_entry.runtime_data.helpers.entries() == [
-        integral.entry_id,
-        energy.entry_id,
-        power.entry_id,
+        if e.title == "PoE energy"
     ]
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_create_integral_of_a_kw_solar_counts_kwh(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    daily: set[str],
-) -> None:
-    """The integral of a kW solar counts in kWh, so the gross needs no factor."""
-    daily.add(SOLAR)
-    hass.states.async_set(
-        SOLAR_POWER, "0.3", {"device_class": "power", "unit_of_measurement": "kW"}
+def _solar_integral(hass: HomeAssistant) -> str:
+    """Return the entity of the (single) integral of the solar's power template."""
+    template = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
     )
-    response = await create(hass_ws_client, hass)
-    assert response["success"], response
+    template_entity = _entity_of(hass, template.entry_id)
     integral = next(
         e
         for e in hass.config_entries.async_entries("integration")
-        if e.options.get("source") == SOLAR_POWER
+        if e.options.get("source") == template_entity
     )
-    assert "unit_prefix" not in integral.options
-    integral_entity = _entity_of(hass, integral.entry_id)
-    templates = _template_entries(hass)
-    assert templates["Main gross"].options["state"] == gross_energy_template(
-        MeterKind.NET, "sensor.main_energy", integral_entity, None
-    )
-    assert templates["Main gross power"].options["state"] == gross_power_template(
-        "sensor.main_power", SOLAR_POWER, factors={SOLAR_POWER: 1000.0}
-    )
+    return _entity_of(hass, integral.entry_id)
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("loaded_entry")
-@pytest.mark.parametrize("unit", ["BTU/h", None])
-async def test_preview_blocks_a_power_without_energy_unit(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    daily: set[str],
-    unit: str | None,
-) -> None:
-    """BTU/h is a power, but its integral is no energy unit; no unit is none."""
-    daily.add(SOLAR)
-    if unit is None:
-        hass.states.async_set(SOLAR_POWER, "1", {})
-        er.async_get(hass).async_update_entity(SOLAR_POWER, unit_of_measurement=None)
-    else:
-        hass.states.async_set(SOLAR_POWER, "1", {"unit_of_measurement": unit})
-    response = await preview(hass_ws_client, hass)
-    assert response["result"]["blocked"] == "unsupported_input"
-    assert response["result"]["blocked_entity"] == SOLAR_POWER
-
-
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_create_draws_with_returned_in_wh(
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("evidence")
+async def test_create_em_template_state_class_total(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
-    daily: set[str],
 ) -> None:
-    """Only draws: drawn - returned + solar, the Wh sensor read as kWh."""
-    _returned(hass, unit="Wh")
-    hass.states.async_set(
-        RETURNED,
-        "2000",
-        {
-            "device_class": "energy",
-            "unit_of_measurement": "Wh",
-            "state_class": "total_increasing",
-        },
+    """EM: drawn - returned + solar term, `total`, and the gross power."""
+    _shelly_pro_em(hass)
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert response["success"], response
+    await hass.async_block_till_done()
+    templates = _template_entries(hass)
+    energy, power = templates["Pro EM gross"], templates["Pro EM gross power"]
+    assert energy.options["state_class"] == "total"
+    assert energy.options["unit_of_measurement"] == "kWh"
+    assert energy.options["device_class"] == "energy"
+    integral = _solar_integral(hass)
+    assert energy.options["state"] == gross_energy_template(
+        Method.EM, PRO_EM, integral, PRO_EM_RETURNED
     )
-    hass.states.async_set("sensor.main_energy", "500", {"unit_of_measurement": "kWh"})
-    hass.states.async_set(SOLAR, "3", {"unit_of_measurement": "kWh"})
-    hass.states.async_set("sensor.main_power", "-0.2", {"unit_of_measurement": "kW"})
-    before = hass.config_entries.async_entries("integration")
+    assert power.options["state"] == gross_power_template(PRO_EM_POWER, SOLAR_POWER)
+    assert power.options["state_class"] == "measurement"
+    result = response["result"]
+    assert result == {
+        "entity_id": _entity_of(hass, energy.entry_id),
+        "stat_rate": _entity_of(hass, power.entry_id),
+    }
+    helpers = loaded_entry.runtime_data.helpers
+    records = helpers.records()
+    assert records[energy.entry_id] == {
+        "kind": "gross_energy",
+        "stat": PRO_EM,
+        "method": "em",
+        "power": power.entry_id,
+    }
+    assert records[power.entry_id] == {
+        "kind": "gross_power",
+        "stat": PRO_EM,
+        "method": "em",
+    }
+    assert len(helpers.entries()) == 4
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_create_template_unit_aware_wh_and_kwh(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A unit change of an input (Wh to kWh) does not move the gross meter."""
+    _shelly_pro_em(hass)
+    hass.states.async_set(
+        PRO_EM_RETURNED,
+        "20000",
+        {"unit_of_measurement": "Wh", "device_class": "energy"},
+    )
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert response["success"], response
+    gross = response["result"]["entity_id"]
+    hass.states.async_set(_solar_integral(hass), "1.5", {"unit_of_measurement": "kWh"})
+    await hass.async_block_till_done()
+    before = hass.states.get(gross)
+    assert before is not None
+    assert float(before.state) == pytest.approx(500 - 20 + 1.5)
+    hass.states.async_set(
+        PRO_EM_RETURNED, "20", {"unit_of_measurement": "kWh", "device_class": "energy"}
+    )
+    await hass.async_block_till_done()
+    after = hass.states.get(gross)
+    assert after is not None
+    assert after.state == before.state
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_solar_term_integral_of_zero_mapped_power(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """The solar term: an integral of the solar's power that is 0 when offline."""
     response = await create(
-        hass_ws_client, hass, kind="draws", name=" ", power_name=" "
+        hass_ws_client,
+        hass,
+        method="net",
+        names={"solar_power": "PV 0", "solar_energy": "PV energy"},
     )
     assert response["success"], response
     await hass.async_block_till_done()
-    result = response["result"]
-    energy = hass.states.get(result["entity_id"])
-    assert energy is not None
-    assert float(energy.state) == pytest.approx(501.0)
-    power = hass.states.get(result["stat_rate"])
-    assert power is not None
-    assert float(power.state) == pytest.approx(100.0)
-    # Empty names fall back to the device's name in the settings.
-    assert set(_template_entries(hass)) == {"Main gross", "Main gross power"}
-    assert hass.config_entries.async_entries("integration") == before
-    assert len(loaded_entry.runtime_data.helpers.entries()) == 2
+    template = _template_entries(hass)["PV 0"]
+    assert template.options["state"] == solar_power_template(SOLAR_POWER)
+    assert template.options["unit_of_measurement"] == "W"
+    template_entity = _entity_of(hass, template.entry_id)
+    integral = next(
+        e
+        for e in hass.config_entries.async_entries("integration")
+        if e.title == "PV energy"
+    )
+    assert integral.options["source"] == template_entity
+    assert integral.options["method"] == "left"
+    assert integral.options["unit_prefix"] == "k"
+    integral_entity = _entity_of(hass, integral.entry_id)
+    energy = _template_entries(hass)["Main gross"]
+    assert energy.options["state"] == gross_energy_template(
+        Method.NET, MAIN, integral_entity
+    )
+    # Offline at night: the solar term reads 0, never unknown.
+    hass.states.async_set(SOLAR_POWER, "unavailable", {})
+    await hass.async_block_till_done()
+    state = hass.states.get(template_entity)
+    assert state is not None
+    assert float(state.state) == 0
+    records = loaded_entry.runtime_data.helpers.records()
+    assert records[template.entry_id] == {"kind": "solar_power", "power": SOLAR_POWER}
+    assert records[integral.entry_id] == {
+        "kind": "solar_energy",
+        "power": SOLAR_POWER,
+        "template": template.entry_id,
+    }
 
 
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_solar_term_reused_for_second_setup(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A second circuit with the same solar reuses its solar term."""
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    integral = _solar_integral(hass)
+    hass.states.async_set(integral, "12.5", {"unit_of_measurement": "kWh"})
+    count = len(loaded_entry.runtime_data.helpers.entries())
+
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.garage_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": integral}
+    assert [h["role"] for h in result["helpers"]] == ["energy"]
+    response = await create(
+        hass_ws_client,
+        hass,
+        stat="sensor.garage_energy",
+        method="net",
+        names={"energy": "Garage gross"},
+    )
+    assert response["success"], response
+    energy = _template_entries(hass)["Garage gross"]
+    assert energy.options["state"] == gross_energy_template(
+        Method.NET, "sensor.garage_energy", integral, offset=100
+    )
+    assert len(loaded_entry.runtime_data.helpers.entries()) == count + 1
+
+    # A solar term edited by hand is not reused.
+    template = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
+    )
+    hass.config_entries.async_update_entry(
+        template, options={**template.options, "state": "{{ 1 }}"}
+    )
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.kitchen_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_offset_from_used_values_new_integral_zero(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The offset uses what the template reads: a new solar integral is 0.
+
+    50 - 300 + 0 starts at -250 kWh, though the solar counter says 5000.
+    """
+    _returned(hass)
+    hass.states.async_set(MAIN, "50", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(RETURNED, "300000", {"unit_of_measurement": "Wh"})
+    hass.states.async_set(SOLAR, "5000", {"unit_of_measurement": "kWh"})
+    result = await result_of(hass_ws_client, hass, method="em", returned=RETURNED)
+    assert result["offset"] == 400
+    response = await create(hass_ws_client, hass, method="em", returned=RETURNED)
+    assert response["success"], response
+    state = _template_entries(hass)["Main gross"].options["state"]
+    assert state == gross_energy_template(
+        Method.EM, MAIN, _solar_integral(hass), RETURNED, offset=400
+    )
+    hass.states.async_set(_solar_integral(hass), "0", {"unit_of_measurement": "kWh"})
+    assert render(hass, state) == 150.0
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_create_refuses_values_changed(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """An offset that is no longer enough is refused; the panel asks again."""
+    _returned(hass)
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert result["offset"] == 0
+    # 1000 - 1950 + 0 now needs 1100.
+    hass.states.async_set(RETURNED, "1950", {"unit_of_measurement": "kWh"})
+    for offset in (0, 1000, 1150):
+        response = await create(hass_ws_client, hass, method="em", offset=offset)
+        assert response["error"]["translation_key"] == "values_changed"
+    assert hass.config_entries.async_entries("template") == []
+    assert loaded_entry.runtime_data.helpers.entries() == []
+    # The new offset, or a larger one, is enough.
+    response = await create(hass_ws_client, hass, method="em", offset=1200)
+    assert response["success"], response
+    state = _template_entries(hass)["Main gross"].options["state"]
+    assert state.endswith("+ 1200) | round(3) }}{% else %}{{ none }}{% endif %}")
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+@pytest.mark.parametrize(
+    "msg",
+    [
+        {"method": "em", "returned": "sensor.grid_export"},
+        {"method": "em"},
+        {"method": "net", "drawn": "sensor.kitchen_energy"},
+        {"method": "net", "draft": {"stat_rate": "sensor.nope"}},
+    ],
+)
+async def test_create_refuses_not_offered_returned(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    msg: dict[str, Any],
+) -> None:
+    """Choices outside the preview's lists are refused; nothing is created."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_solar_setup",
+        stat=MAIN,
+        solar=SOLAR,
+        offset=0,
+        **msg,
+    )
+    assert response["error"]["translation_key"] == "not_offered"
+    assert hass.config_entries.async_entries("template") == []
+    assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+@pytest.mark.usefixtures("evidence")
+async def test_create_with_draft_solar_rate(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A solar power set in the panel only is used for the solar term."""
+    draft = {"solar_rate": SOLAR_POWER, "stat_rate": MAIN_POWER}
+    result = await result_of(hass_ws_client, hass, method="power", draft=draft)
+    assert result["power"]["solar_from"] == "draft"
+    response = await create(hass_ws_client, hass, method="net", draft=draft)
+    assert response["success"], response
+    integral = _solar_integral(hass)
+    energy = _template_entries(hass)["Main gross"]
+    assert energy.options["state"] == gross_energy_template(Method.NET, MAIN, integral)
+    assert response["result"]["stat_rate"] is not None
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_power_method_invert(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """From power: an integral of (-circuit + solar), no solar term, no offset."""
+    hass.states.async_set(MAIN_POWER, "150", {"unit_of_measurement": "W"})
+    response = await create(hass_ws_client, hass, method="power", invert=True, offset=0)
+    assert response["success"], response
+    await hass.async_block_till_done()
+    power = _template_entries(hass)["Main gross power"]
+    assert power.options["state"] == gross_power_template(
+        MAIN_POWER, SOLAR_POWER, invert=True
+    )
+    assert set(_template_entries(hass)) == {"Main gross power"}
+    stat_rate = _entity_of(hass, power.entry_id)
+    state = hass.states.get(stat_rate)
+    assert state is not None
+    assert float(state.state) == 150.0
+    integral = next(
+        e
+        for e in hass.config_entries.async_entries("integration")
+        if e.options.get("source") == stat_rate
+    )
+    assert integral.title == "Main gross"
+    assert integral.options["unit_prefix"] == "k"
+    assert response["result"] == {
+        "entity_id": _entity_of(hass, integral.entry_id),
+        "stat_rate": stat_rate,
+    }
+    records = loaded_entry.runtime_data.helpers.records()
+    assert records[integral.entry_id]["kind"] == "gross_energy"
+    assert records[integral.entry_id]["power"] == power.entry_id
+    assert records[integral.entry_id]["method"] == "power"
+
+
+@pytest.mark.usefixtures("evidence")
 async def test_create_without_circuit_power_has_no_gross_power(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
-    daily: set[str],
 ) -> None:
     """Without both power sensors only the energy template is created."""
     response = await create(
-        hass_ws_client, hass, stat="sensor.kitchen_energy", name="Kitchen gross"
+        hass_ws_client,
+        hass,
+        stat="sensor.kitchen_energy",
+        names={"energy": " Kitchen gross "},
     )
     assert response["success"], response
     assert response["result"]["stat_rate"] is None
@@ -1041,32 +1731,7 @@ async def test_create_without_circuit_power_has_no_gross_power(
     assert len(loaded_entry.runtime_data.helpers.entries()) == 1
 
 
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_create_names_integrals_as_asked(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    daily: set[str],
-) -> None:
-    """The panel can pass translated integral names, per power sensor."""
-    daily.update({SOLAR, "sensor.main_energy"})
-    # Without a friendly name the registry's name is used, not the entity ID.
-    hass.states.async_set(
-        SOLAR_POWER, "300", {"device_class": "power", "unit_of_measurement": "W"}
-    )
-    er.async_get(hass).async_update_entity(SOLAR_POWER, name="Balcony")
-    response = await create(
-        hass_ws_client,
-        hass,
-        integral_names={"sensor.main_power": "Main Energie"},
-    )
-    assert response["success"], response
-    titles = {e.title for e in hass.config_entries.async_entries("integration")}
-    assert {"Main Energie", "Balcony energy"} <= titles
-    assert len(loaded_entry.runtime_data.helpers.entries()) == 4
-
-
-@pytest.mark.usefixtures("daily")
+@pytest.mark.usefixtures("evidence")
 async def test_create_refused_when_blocked(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -1074,7 +1739,7 @@ async def test_create_refused_when_blocked(
 ) -> None:
     """A blocked setup creates nothing and names the reason."""
     _returned(hass, disabled=True)
-    response = await create(hass_ws_client, hass, kind="draws")
+    response = await create(hass_ws_client, hass, method="em")
     assert response["error"]["translation_key"] == "returned_disabled"
     assert response["error"]["translation_placeholders"] == {"entity_id": RETURNED}
     assert hass.config_entries.async_entries("template") == []
@@ -1082,17 +1747,16 @@ async def test_create_refused_when_blocked(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.parametrize("failing", [1, 2])
+@pytest.mark.usefixtures("evidence")
+@pytest.mark.parametrize("failing", [1, 2, 3])
 async def test_solar_setup_rolls_back_on_failure(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
-    daily: set[str],
     monkeypatch: pytest.MonkeyPatch,
     failing: int,
 ) -> None:
     """A failing template removes every helper of the request and forgets it."""
-    daily.add(SOLAR)
     original = solar_setup.async_create_template
     calls = 0
 
@@ -1104,32 +1768,52 @@ async def test_solar_setup_rolls_back_on_failure(
         return await original(*args, **kwargs)
 
     monkeypatch.setattr(solar_setup, "async_create_template", fails)
-    before = hass.config_entries.async_entries("integration")
-    response = await create(hass_ws_client, hass)
+    response = await create(hass_ws_client, hass, method="net")
     assert response["error"]["translation_key"] == "template_failed"
     assert hass.config_entries.async_entries("template") == []
-    assert hass.config_entries.async_entries("integration") == before
+    assert hass.config_entries.async_entries("integration") == _poe(hass)
     assert loaded_entry.runtime_data.helpers.entries() == []
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_rollback_keeps_a_reused_solar_term(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure removes only what this request made, not the reused term."""
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    before = loaded_entry.runtime_data.helpers.entries()
+
+    async def fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        raise template_module._failed()
+
+    monkeypatch.setattr(solar_setup, "async_create_template", fails)
+    response = await create(hass_ws_client, hass, stat="sensor.garage_energy")
+    assert response["error"]["translation_key"] == "template_failed"
+    assert loaded_entry.runtime_data.helpers.entries() == before
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
 async def test_rollback_goes_on_when_a_removal_fails(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
-    daily: set[str],
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """Every helper is still removed and the first error is the one raised."""
-    daily.add(SOLAR)
     original_template = solar_setup.async_create_template
     calls = 0
 
-    async def power_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+    async def third_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
         nonlocal calls
         calls += 1
-        if calls == 2:
+        if calls == 3:
             raise template_module._failed()
         return await original_template(*args, **kwargs)
 
@@ -1148,18 +1832,17 @@ async def test_rollback_goes_on_when_a_removal_fails(
     async def discard(entry_id: str) -> None:
         raise OSError("disk full")
 
-    monkeypatch.setattr(solar_setup, "async_create_template", power_fails)
+    monkeypatch.setattr(solar_setup, "async_create_template", third_fails)
     monkeypatch.setattr(hass.config_entries, "async_remove", remove)
     monkeypatch.setattr(loaded_entry.runtime_data.helpers, "async_discard", discard)
-    before = hass.config_entries.async_entries("integration")
-    response = await create(hass_ws_client, hass)
+    response = await create(hass_ws_client, hass, method="net")
     assert response["error"]["translation_key"] == "template_failed"
-    # The energy template could not be removed; it stays recorded as ours.
+    # The templates could not be removed; they stay recorded as ours.
     # The integral was removed even though forgetting it failed.
-    assert [e.entry_id for e in hass.config_entries.async_entries("template")] == (
-        refused
-    )
-    assert hass.config_entries.async_entries("integration") == before
+    assert sorted(
+        e.entry_id for e in hass.config_entries.async_entries("template")
+    ) == sorted(refused)
+    assert hass.config_entries.async_entries("integration") == _poe(hass)
     assert "busy" in caplog.text
     assert "disk full" in caplog.text
     monkeypatch.setattr(
@@ -1168,121 +1851,55 @@ async def test_rollback_goes_on_when_a_removal_fails(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
 async def test_solar_setup_rolls_back_a_failed_integral(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
-    daily: set[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The second integral failing removes the first one."""
-    daily.update({SOLAR, "sensor.main_energy"})
-    original = solar_setup.async_create_integral
+    """The gross integral failing removes the gross power and the solar term."""
+
+    async def fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+        raise integral_module._failed()
+
+    monkeypatch.setattr(solar_setup, "async_create_integral", fails)
+    response = await create(hass_ws_client, hass, method="power")
+    assert response["error"]["translation_key"] == "integral_failed"
+    assert hass.config_entries.async_entries("template") == []
+    assert hass.config_entries.async_entries("integration") == _poe(hass)
+    assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_create_cancelled_cleans_up(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A cancelled request removes what it made (shielded), then is cancelled."""
+    original = solar_setup.async_create_template
     calls = 0
 
-    async def second_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
+    async def cancelled(*args: Any, **kwargs: Any) -> tuple[str, str]:
         nonlocal calls
         calls += 1
-        if calls == 2:
-            raise integral_module._failed()
+        if calls == 3:
+            raise asyncio.CancelledError
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(solar_setup, "async_create_integral", second_fails)
-    before = hass.config_entries.async_entries("integration")
-    response = await create(hass_ws_client, hass)
-    assert response["error"]["translation_key"] == "integral_failed"
-    assert hass.config_entries.async_entries("integration") == before
-    assert loaded_entry.runtime_data.helpers.entries() == []
-
-
-async def test_gross_energy_template_offset(hass: HomeAssistant) -> None:
-    """A constant offset lifts the starting value; differences stay the same."""
-    template = gross_energy_template(
-        MeterKind.NET, "sensor.a", "sensor.c", None, offset=251
+    monkeypatch.setattr(solar_setup, "async_create_template", cancelled)
+    helpers = loaded_entry.runtime_data.helpers
+    prefs = await energy_access.async_get_prefs(hass)
+    plan = await solar_setup.async_plan(
+        hass, prefs, helpers, Choices(stat=MAIN, solar=SOLAR, method=Method.NET)
     )
-    assert "{{ (meter | float + solar | float + 251) | round(3) }}" in template
-    hass.states.async_set("sensor.a", "-250")
-    hass.states.async_set("sensor.c", "0")
-    assert render(hass, template) == 1.0
-
-
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_create_gross_meter_starts_above_zero(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    daily: set[str],
-) -> None:
-    """Returned more than drawn, the solar from a fresh integral (at 0).
-
-    50 - 300 + 0 would start at -250 kWh; Home Assistant skips negative
-    states of a meter. The template adds a constant in whole 100 kWh so it
-    starts at 100 kWh or more: a dip of more than 10 % of a small value
-    would count as a meter reset.
-    """
-    _returned(hass)
-    daily.add(SOLAR)
-    hass.states.async_set("sensor.main_energy", "50", {"unit_of_measurement": "kWh"})
-    hass.states.async_set(RETURNED, "300000", {"unit_of_measurement": "Wh"})
-    response = await create(hass_ws_client, hass, kind="draws")
-    assert response["success"], response
-    integral = next(
-        e
-        for e in hass.config_entries.async_entries("integration")
-        if e.options.get("source") == SOLAR_POWER
-    )
-    integral_entity = _entity_of(hass, integral.entry_id)
-    state = _template_entries(hass)["Main gross"].options["state"]
-    assert state == gross_energy_template(
-        MeterKind.DRAWS,
-        "sensor.main_energy",
-        integral_entity,
-        RETURNED,
-        factors={RETURNED: 0.001},
-        offset=400,
-    )
-    hass.states.async_set(integral_entity, "0")
-    assert render(hass, state) == 150.0
-
-
-@pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_create_gross_meter_without_offset(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
-) -> None:
-    """A gross meter that starts at 100 kWh or more gets no offset."""
-    hass.states.async_set("sensor.main_energy", "-0.5", {"unit_of_measurement": "kWh"})
-    hass.states.async_set(SOLAR, "100.5", {"unit_of_measurement": "kWh"})
-    response = await create(hass_ws_client, hass)
-    assert response["success"], response
-    state = _template_entries(hass)["Main gross"].options["state"]
-    assert state == gross_energy_template(
-        MeterKind.NET, "sensor.main_energy", SOLAR, None
-    )
-
-
-@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-async def test_setup_blocked_when_the_daily_check_fails(
-    hass: HomeAssistant,
-    hass_ws_client: WebSocketGenerator,
-    loaded_entry: MockConfigEntry,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A busy recorder stops the setup with a retry reason, not silently."""
-
-    async def busy(*args: Any, **kwargs: Any) -> None:
-        return None  # the statistics query on a timeout or failure
-
-    monkeypatch.setattr(stats_probe, "async_statistics", busy)
-    hass.config.components.add("recorder")
-    response = await preview(hass_ws_client, hass)
-    result = response["result"]
-    assert result["blocked"] == "daily_check_failed"
-    assert result["blocked_entity"] == "sensor.main_energy"
-    assert result["daily"] == []
-    response = await create(hass_ws_client, hass)
-    assert response["error"]["translation_key"] == "daily_check_failed"
+    with pytest.raises(asyncio.CancelledError):
+        await solar_setup.async_create(hass, helpers, plan, {}, plan.offset)
     assert hass.config_entries.async_entries("template") == []
-    assert loaded_entry.runtime_data.helpers.entries() == []
+    assert hass.config_entries.async_entries("integration") == _poe(hass)
+    assert helpers.entries() == []
 
 
 @pytest.mark.usefixtures("loaded_entry")
@@ -1294,9 +1911,8 @@ async def test_setup_blocked_when_the_daily_check_fails(
             "type": f"{DOMAIN}/create_solar_setup",
             "stat": "x",
             "solar": "y",
-            "kind": "net",
-            "name": "x",
-            "power_name": "x",
+            "method": "net",
+            "offset": 0,
         },
     ],
 )
@@ -1310,3 +1926,138 @@ async def test_solar_setup_admin_only(
     response = await send(hass_ws_client, hass, hass_read_only_access_token, **msg)
     assert not response["success"]
     assert response["error"]["code"] == "unauthorized"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_solar_term_not_reused_when_missing_or_disabled(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A solar term with a disabled integral or a missing template is not reused.
+
+    A record of another solar's term is skipped.
+    """
+    await loaded_entry.runtime_data.helpers.async_add(
+        "other", {"kind": "solar_energy", "power": "sensor.other_power"}
+    )
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    integral = _solar_integral(hass)
+    er.async_get(hass).async_update_entity(
+        integral, disabled_by=er.RegistryEntryDisabler.USER
+    )
+    result = await result_of(hass_ws_client, hass, stat="sensor.garage_energy")
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+    er.async_get(hass).async_update_entity(integral, disabled_by=None)
+    result = await result_of(hass_ws_client, hass, stat="sensor.garage_energy")
+    assert result["solar_term"]["reuse"] == integral
+    template = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
+    )
+    await hass.config_entries.async_remove(template.entry_id)
+    result = await result_of(hass_ws_client, hass, stat="sensor.garage_energy")
+    assert result["solar_term"]["reuse"] is None
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_returned_without_energy_unit_is_not_offered(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A returned sensor a template cannot read in kWh leaves out EM and Plug."""
+    _returned(hass)
+    hass.states.async_set(RETURNED, "2", {"unit_of_measurement": "%"})
+    result = await result_of(hass_ws_client, hass, method="em")
+    assert methods(result)["em"] == (False, False, "unsupported_input")
+    assert result["blocked"] == "not_offered"
+    assert result["blocked_entity"] == RETURNED
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_power_method_not_offered_without_power(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """From power, asked for without the solar's power, is not offered."""
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert methods(result)["power"] == (False, False, "no_power")
+    assert result["blocked"] == "not_offered"
+    assert result["blocked_entity"] == MAIN_POWER
+
+
+@pytest.mark.usefixtures("evidence")
+async def test_create_needs_a_method(
+    hass: HomeAssistant, loaded_entry: MockConfigEntry
+) -> None:
+    """Without a chosen or suggested method nothing is created."""
+    helpers = loaded_entry.runtime_data.helpers
+    prefs = await energy_access.async_get_prefs(hass)
+    plan = await solar_setup.async_plan(
+        hass, prefs, helpers, Choices(stat="sensor.kitchen_energy", solar=SOLAR)
+    )
+    assert plan.method is None
+    with pytest.raises(ServiceValidationError) as err:
+        await solar_setup.async_create(hass, helpers, plan, {}, 0)
+    assert err.value.translation_key == "not_offered"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_invert_preselected_by_rule(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A power known to be positive on export (Huawei) is turned around."""
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "huawei_solar",
+        "HV1_power_meter_active_power",
+        suggested_object_id="meter_active_power",
+        original_device_class="power",
+        unit_of_measurement="W",
+    )
+    hass.states.async_set(
+        "sensor.meter_active_power", "100", {"unit_of_measurement": "W"}
+    )
+    result = await result_of(
+        hass_ws_client, hass, draft={"stat_rate": "sensor.meter_active_power"}
+    )
+    assert result["invert"] is True
+    assert result["live"]["circuit_w"] == -100.0
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_preview_pairs_the_solars_power(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar without power gets its own device's single power sensor."""
+    prefs = deepcopy(ENERGY_PREFS)
+    for source in prefs["energy_sources"]:
+        if source["type"] == "solar":
+            source["stat_energy_from"] = "sensor.printer_energy"
+    await energy_access.async_write(hass, prefs)
+    result = await result_of(hass_ws_client, hass, solar="sensor.printer_energy")
+    assert result["power"]["solar"] == "sensor.printer_power"
+    assert result["power"]["solar_from"] == "paired"
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_disabled_power_sensors(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A disabled power has no state: never 0 for the solar, never a circuit."""
+    registry = er.async_get(hass)
+    registry.async_update_entity(MAIN_POWER, disabled_by=er.RegistryEntryDisabler.USER)
+    hass.states.async_remove(MAIN_POWER)
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert methods(result)["power"] == (False, False, "unusable_power")
+    assert "power" not in [h["role"] for h in result["helpers"]]
+    assert result["blocked"] is None
+    registry.async_update_entity(SOLAR_POWER, disabled_by=er.RegistryEntryDisabler.USER)
+    hass.states.async_remove(SOLAR_POWER)
+    result = await result_of(hass_ws_client, hass, method="net")
+    assert result["blocked"] == "input_disabled"
+    assert result["blocked_entity"] == SOLAR_POWER

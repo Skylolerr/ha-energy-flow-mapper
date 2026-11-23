@@ -82,9 +82,6 @@
     "template_failed": {
       "message": "The template helper for the meter could not be created."
     },
-    "no_returned_sensor": {
-      "message": "{entity_id} has no returned energy sensor on its device, so it cannot be set up as a meter that only counts what it draws."
-    },
     "returned_disabled": {
       "message": "The returned energy sensor {entity_id} is disabled. Enable it in its entity settings in Home Assistant first."
     },
@@ -102,6 +99,21 @@
     },
     "input_not_ready": {
       "message": "{entity_id} has no value right now, so the starting value of the gross meter cannot be set. Try again when it reports one."
+    },
+    "solar_needs_power": {
+      "message": "The solar {entity_id} needs a power sensor: its energy counter alone can only be used when its statistics show for certain that it never starts again at 0. Set the solar's power sensor first."
+    },
+    "not_offered": {
+      "message": "{entity_id} cannot be used this way to build the gross meter. Open the setup again and choose one of the offered ways and sensors."
+    },
+    "choose_returned": {
+      "message": "Choose the returned energy sensor of {entity_id} first."
+    },
+    "input_disabled": {
+      "message": "{entity_id} is disabled. Enable it in its entity settings in Home Assistant first."
+    },
+    "values_changed": {
+      "message": "The values of the meters of {entity_id} have changed since the preview. Check the setup again, then create it."
     },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."

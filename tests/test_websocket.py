@@ -720,9 +720,8 @@ async def test_schema_rejects_unknown_change_type(
             "type": f"{DOMAIN}/create_solar_setup",
             "stat": "x",
             "solar": "y",
-            "kind": "net",
-            "name": "x",
-            "power_name": "x",
+            "method": "net",
+            "offset": 0,
         },
         {
             "type": f"{DOMAIN}/ignore_suggestion",

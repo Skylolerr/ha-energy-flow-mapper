@@ -16,6 +16,7 @@ from custom_components.energy_flow_mapper.device_rules import (
     Method,
     classify_meter,
     default_inverted,
+    drawn_candidates,
     family,
     paired_power,
     preselect_returned,
@@ -915,3 +916,62 @@ async def test_default_inverted_huawei(hass: HomeAssistant) -> None:
     assert default_inverted(hass, inverter) is False
     assert default_inverted(hass, other) is False
     assert default_inverted(hass, "sensor.unknown") is False
+
+
+# --- drawn_candidates -------------------------------------------------------
+
+
+async def test_drawn_plug_energy_then_consumed(hass: HomeAssistant) -> None:
+    """The meter itself first, then the import-only sensor of its channel."""
+    energy, consumed = _plug(hass)
+    assert drawn_candidates(hass, energy, ()) == [(energy, False), (consumed, True)]
+    # A used one is left out; the meter itself always stays.
+    assert drawn_candidates(hass, energy, {consumed, energy}) == [(energy, False)]
+    # "Energy consumed" as the meter: no other drawn sensor.
+    assert drawn_candidates(hass, consumed, ()) == [(consumed, True)]
+
+
+async def test_drawn_only_own_channel(hass: HomeAssistant) -> None:
+    """A 2-channel switch: the other channel's consumed sensor is no candidate."""
+    device = _device(hass, "pro2pm")
+    energy = _entity(hass, "sensor.ch0_energy", device, f"{MAC}-switch:0-energy")
+    own = _entity(
+        hass,
+        "sensor.ch0_consumed",
+        device,
+        f"{MAC}-switch:0-consumed_energy_switch",
+    )
+    _entity(
+        hass,
+        "sensor.ch1_consumed",
+        device,
+        f"{MAC}-switch:1-consumed_energy_switch",
+        translation_key="energy_consumed",
+    )
+    assert drawn_candidates(hass, energy, ()) == [(energy, False), (own, False)]
+
+
+async def test_drawn_without_channel_own_device(hass: HomeAssistant) -> None:
+    """Without a channel key only the meter's own device counts."""
+    device = _device(hass, "meter", platform="test")
+    child = _device(hass, "child", platform="test", via=device)
+    meter = _entity(hass, "sensor.m_energy", device, "m-energy", platform="test")
+    consumed = _entity(
+        hass,
+        "sensor.m_consumed",
+        device,
+        "m-consumed",
+        platform="test",
+        translation_key="energy_consumed",
+    )
+    _entity(
+        hass,
+        "sensor.c_consumed",
+        child,
+        "c-consumed",
+        platform="test",
+        translation_key="energy_consumed",
+    )
+    assert drawn_candidates(hass, meter, ()) == [(meter, False), (consumed, False)]
+    # Unknown entities are their own only candidate.
+    assert drawn_candidates(hass, "sensor.unknown", ()) == [("sensor.unknown", False)]

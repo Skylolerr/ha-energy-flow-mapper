@@ -82,9 +82,6 @@
     "template_failed": {
       "message": "Der Template-Helfer für den Zähler konnte nicht erstellt werden."
     },
-    "no_returned_sensor": {
-      "message": "{entity_id} hat auf seinem Gerät keinen Sensor für zurückgespeiste Energie und kann darum nicht als Zähler eingerichtet werden, der nur den Bezug zählt."
-    },
     "returned_disabled": {
       "message": "Der Sensor für zurückgespeiste Energie {entity_id} ist deaktiviert. Aktiviere ihn zuerst in seinen Entitätseinstellungen in Home Assistant."
     },
@@ -102,6 +99,21 @@
     },
     "input_not_ready": {
       "message": "{entity_id} hat gerade keinen Wert, darum kann der Startwert des Brutto-Zählers nicht festgelegt werden. Versuche es wieder, wenn er einen Wert meldet."
+    },
+    "solar_needs_power": {
+      "message": "Die Solaranlage {entity_id} braucht einen Leistungssensor: Ihr Energiezähler allein kann nur verwendet werden, wenn seine Statistik sicher zeigt, dass er nie wieder bei 0 beginnt. Lege zuerst den Leistungssensor der Solaranlage fest."
+    },
+    "not_offered": {
+      "message": "{entity_id} kann so nicht für den Brutto-Zähler verwendet werden. Öffne die Einrichtung erneut und wähle einen der angebotenen Wege und Sensoren."
+    },
+    "choose_returned": {
+      "message": "Wähle zuerst den Sensor für zurückgespeiste Energie von {entity_id}."
+    },
+    "input_disabled": {
+      "message": "{entity_id} ist deaktiviert. Aktiviere ihn zuerst in seinen Entitätseinstellungen in Home Assistant."
+    },
+    "values_changed": {
+      "message": "Die Werte der Zähler von {entity_id} haben sich seit der Vorschau geändert. Prüfe die Einrichtung erneut und erstelle sie dann."
     },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."

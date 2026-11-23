@@ -32,7 +32,9 @@ SENSOR_OPTIONS: dict[TemplateKind, dict[str, str]] = {
     "energy": {
         CONF_UNIT_OF_MEASUREMENT: UnitOfEnergy.KILO_WATT_HOUR.value,
         CONF_DEVICE_CLASS: SensorDeviceClass.ENERGY.value,
-        CONF_STATE_CLASS: SensorStateClass.TOTAL_INCREASING.value,
+        # Every change is booked 1:1: a dip of an input that lags cancels
+        # instead of counting as a meter reset.
+        CONF_STATE_CLASS: SensorStateClass.TOTAL.value,
     },
     "power": {
         CONF_UNIT_OF_MEASUREMENT: UnitOfPower.WATT.value,
@@ -49,20 +51,28 @@ def _failed() -> HomeAssistantError:
 
 
 async def async_create_template(
-    hass: HomeAssistant, name: str, state: str, kind: TemplateKind
+    hass: HomeAssistant,
+    name: str,
+    state: str,
+    kind: TemplateKind,
+    *,
+    state_class: SensorStateClass | str | None = None,
 ) -> tuple[str, str]:
     """Create a template sensor helper; return entry ID and entity ID.
 
-    `kind` "energy" gives a kWh meter (`total_increasing`), "power" a W
-    sensor (`measurement`). If anything fails once the helper exists, it is
+    `kind` "energy" gives a kWh meter (`total`, or `state_class`), "power" a
+    W sensor (`measurement`). If anything fails once the helper exists, it is
     removed again: it was made by this request and nobody uses it.
     """
+    options = dict(SENSOR_OPTIONS[kind])
+    if state_class is not None:
+        options[CONF_STATE_CLASS] = str(state_class)
     return await async_run_helper_flow(
         hass,
         TEMPLATE_DOMAIN,
         [
             {"next_step_id": "sensor"},
-            {CONF_NAME: name, CONF_STATE: state, **SENSOR_OPTIONS[kind]},
+            {CONF_NAME: name, CONF_STATE: state, **options},
         ],
         _failed,
     )

@@ -82,9 +82,6 @@
     "template_failed": {
       "message": "L’assistant modèle du compteur n’a pas pu être créé."
     },
-    "no_returned_sensor": {
-      "message": "L’appareil de {entity_id} n’a pas de capteur d’énergie réinjectée ; il ne peut donc pas être configuré comme un compteur qui ne compte que ce qu’il consomme."
-    },
     "returned_disabled": {
       "message": "Le capteur d’énergie réinjectée {entity_id} est désactivé. Active-le d’abord dans ses réglages d’entité dans Home Assistant."
     },
@@ -102,6 +99,21 @@
     },
     "input_not_ready": {
       "message": "{entity_id} n’a pas de valeur pour le moment, la valeur de départ du compteur brut ne peut donc pas être fixée. Réessaie quand il indique une valeur."
+    },
+    "solar_needs_power": {
+      "message": "L’installation solaire {entity_id} a besoin d’un capteur de puissance : son compteur d’énergie seul ne peut être utilisé que si ses statistiques montrent avec certitude qu’il ne repart jamais de 0. Définis d’abord le capteur de puissance de l’installation solaire."
+    },
+    "not_offered": {
+      "message": "{entity_id} ne peut pas être utilisé ainsi pour le compteur brut. Rouvre la configuration et choisis l’une des façons et l’un des capteurs proposés."
+    },
+    "choose_returned": {
+      "message": "Choisis d’abord le capteur d’énergie réinjectée de {entity_id}."
+    },
+    "input_disabled": {
+      "message": "{entity_id} est désactivé. Active-le d’abord dans ses réglages d’entité dans Home Assistant."
+    },
+    "values_changed": {
+      "message": "Les valeurs des compteurs de {entity_id} ont changé depuis l’aperçu. Vérifie à nouveau la configuration, puis crée-la."
     },
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
