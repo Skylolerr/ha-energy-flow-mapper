@@ -98,10 +98,17 @@ from .hierarchy import (
     untracked,
     validate,
 )
-from .hints import async_counted_returned, async_hints, async_sum_members, meter_stats
+from .hints import (
+    async_counted_returned,
+    async_hints,
+    async_sum_members,
+    meter_powers,
+    meter_stats,
+)
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
 from .solar_setup import MeterKind, Names, async_create, async_plan
+from .stats_probe import async_probe
 from .sum_meter import async_create_sum, check_rate_members, check_sum_members
 from .transfer import InvalidImportError, build_export, parse_import
 
@@ -276,6 +283,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_create_sum_meter)
     async_register_command(hass, websocket_solar_setup_preview)
     async_register_command(hass, websocket_create_solar_setup)
+    async_register_command(hass, websocket_daily_check)
     async_register_command(hass, websocket_energy)
     async_register_command(hass, websocket_export)
     async_register_command(hass, websocket_import_check)
@@ -404,7 +412,9 @@ async def websocket_get(
     # timeout, not two.
     daily, counted = await asyncio.gather(
         async_daily_resetting(
-            hass, sorted(meter_stats(prefs) | async_sum_members(hass, prefs))
+            hass,
+            sorted(meter_stats(prefs) | async_sum_members(hass, prefs)),
+            power_of=meter_powers(prefs),
         ),
         async_counted_returned(hass, prefs),
     )
@@ -742,6 +752,40 @@ async def websocket_create_sum_meter(
             raise
         await runtime.helpers.async_add(rate_entry_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/daily_check",
+        vol.Required("stats"): [str],
+        vol.Optional("power"): {str: str},
+    }
+)
+@require_admin
+@async_response
+async def websocket_daily_check(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Check statistics for periodic counters, on demand (saved or draft-only).
+
+    `power` maps an energy statistic to its power sensor (a draft pairing); the
+    saved devices' and solar sources' powers are used for the others. Returns
+    `{evidence: {stat: {...}}, unknown}`; `unknown` when the recorder failed
+    or was too slow, so the panel can offer to check again.
+    """
+    _runtime(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    power_of = meter_powers(prefs) | msg.get("power", {})
+    evidence = await async_probe(hass, set(msg["stats"]), power_of=power_of)
+    connection.send_result(
+        msg["id"],
+        {
+            "evidence": {
+                stat: found.as_dict() for stat, found in (evidence or {}).items()
+            },
+            "unknown": evidence is None,
+        },
+    )
 
 
 _METER_KINDS = vol.In([kind.value for kind in MeterKind])

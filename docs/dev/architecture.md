@@ -15,7 +15,8 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `groups.py` | Pure logic of the device groups |
 | `candidates.py` | Describe statistics (name, unit, device, power sensor, helper type) and find free sensors |
 | `energy_stats.py` | Energy per statistic in a period, from the recorder |
-| `daily_reset.py` | Recognise meters that reset every day (hourly states, daily utility meters); the one guarded hourly statistics query that hints share |
+| `daily_reset.py` | Recognise meters that reset periodically for `get`, the hints and the setup (the rule of `stats_probe.py`, utility meters with a cycle) |
+| `stats_probe.py` | What the statistics show: periodic counters (same-direction drop rule, explained by the meter's own power when known; utility meter cycle; changing `last_reset`), power sign, hourly sparkline; reads 5-minute statistics first, hourly where they do not cover the window, in kWh and W; the guarded recorder queries; `daily_check` |
 | `hints.py` | Hints of the panel, returned by `get`: returned energy of a circuit while solar exists, daily meters in a sum, power sensors the HA device has (entity registry incl. disabled entities, group options, recorder) |
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups, helpers the panel created, ignored suggestions |

@@ -13,7 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
-from custom_components.energy_flow_mapper import daily_reset
+from custom_components.energy_flow_mapper import stats_probe
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.daily_reset import (
     async_daily_check,
@@ -219,16 +219,19 @@ def statistics(
         calls.append(args)
         return {stat: data[stat] for stat in args[3] if stat in data}
 
-    monkeypatch.setattr(daily_reset, "statistics_during_period", fake)
-    monkeypatch.setattr(daily_reset, "get_instance", FakeRecorder)
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fake)
+    monkeypatch.setattr(stats_probe, "get_instance", FakeRecorder)
     hass.config.components.add("recorder")
     return calls, data
 
 
-async def test_daily_resetting_reads_hourly_states_at_once(
+async def test_daily_resetting_reads_short_term_states_at_once(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
-    """One query reads the hourly states of all entity statistics."""
+    """One 5-minute query reads all entity statistics; hourly only for the rest.
+
+    `sensor.none` has no 5-minute rows, so one hourly query reads it.
+    """
     await hass.config.async_set_time_zone(ZURICH)
     calls, data = statistics
     data["sensor.daily"] = rows(hourly(daily_total(0)))
@@ -241,14 +244,51 @@ async def test_daily_resetting_reads_hourly_states_at_once(
     stats = ["sensor.daily", "sensor.gaps", "sensor.lifetime", "sensor.none", "a:b"]
     before = dt_util.utcnow()
     assert await async_daily_resetting(hass, stats) == {"sensor.daily", "sensor.gaps"}
-    assert len(calls) == 1
+    assert len(calls) == 2
     _, start, end, ids, period, units, types = calls[0]
     assert ids == {"sensor.daily", "sensor.gaps", "sensor.lifetime", "sensor.none"}
-    assert (period, units, types) == ("hour", None, {"state"})
+    assert (period, units) == ("5minute", {"energy": "kWh", "power": "W"})
+    assert types == {"state", "last_reset", "mean", "min"}
     assert end >= before
     assert end - start == timedelta(days=3)
+    assert calls[1][3:5] == ({"sensor.none"}, "hour")
     await async_daily_resetting(hass, ["sensor.daily"], days=5)
-    assert calls[1][2] - calls[1][1] == timedelta(days=5)
+    assert calls[2][4] == "5minute"
+    assert calls[2][2] - calls[2][1] == timedelta(days=5)
+
+
+async def test_daily_check_explains_falls_with_the_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A lifetime net meter with 2 hours of export: its power explains the falls.
+
+    The shape alone takes the two export hours that land near 0 for resets.
+    """
+    await hass.config.async_set_time_zone(ZURICH)
+    _, data = statistics
+    value, states, power = 1.2, [], []
+    for hour in range(72):
+        when = START + timedelta(hours=hour)
+        rate = -1.65 if when.hour in (12, 13) else 0.15
+        value += rate
+        states.append((when, round(value, 4)))
+        power.append(
+            {
+                "start": when.timestamp(),
+                "end": (when + timedelta(hours=1)).timestamp(),
+                "mean": rate * 1000,
+                "min": min(rate * 1000, 0),
+            }
+        )
+    data["sensor.net"] = rows(states)
+    data["sensor.net_power"] = power
+    assert await async_daily_check(hass, ["sensor.net"]) == {"sensor.net"}
+    assert (
+        await async_daily_check(
+            hass, ["sensor.net"], power_of={"sensor.net": "sensor.net_power"}
+        )
+        == set()
+    )
 
 
 async def test_daily_resetting_without_query(
@@ -276,24 +316,60 @@ def _utility_meter(hass: HomeAssistant, entity_id: str, cycle: str) -> None:
     )
 
 
-async def test_utility_meter_daily_cycle(
+async def test_utility_meter_cycle(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
-    """A utility meter with a daily cycle is daily without statistics."""
+    """A utility meter with any cycle but `none` is periodic without statistics."""
     calls, _ = statistics
     _utility_meter(hass, "sensor.daily_meter", "daily")
     _utility_meter(hass, "sensor.monthly_meter", "monthly")
+    _utility_meter(hass, "sensor.lifetime_meter", "none")
     other = MockConfigEntry(domain="test", options={"cycle": "daily"})
     other.add_to_hass(hass)
     er.async_get(hass).async_get_or_create(
         "sensor", "test", "x", suggested_object_id="other", config_entry=other
     )
-    stats = ["sensor.daily_meter", "sensor.monthly_meter", "sensor.other"]
-    assert await async_daily_resetting(hass, stats) == {"sensor.daily_meter"}
-    # The daily utility meter needs no statistics.
-    assert calls[0][3] == {"sensor.monthly_meter", "sensor.other"}
+    stats = [
+        "sensor.daily_meter",
+        "sensor.monthly_meter",
+        "sensor.lifetime_meter",
+        "sensor.other",
+    ]
+    periodic = {"sensor.daily_meter", "sensor.monthly_meter"}
+    assert await async_daily_resetting(hass, stats) == periodic
+    # The periodic utility meters need no statistics.
+    assert calls[0][3] == {"sensor.lifetime_meter", "sensor.other"}
     hass.config.components.remove("recorder")
-    assert await async_daily_resetting(hass, stats) == {"sensor.daily_meter"}
+    assert await async_daily_resetting(hass, stats) == periodic
+
+
+@pytest.mark.usefixtures("sensors", "loaded_entry")
+async def test_weekly_utility_meter_periodic_in_get(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`get` flags a weekly utility meter used as a device meter."""
+
+    async def no_external(hass: HomeAssistant, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(candidates_module, "async_list_statistic_ids", no_external)
+    entity = er.async_get(hass).async_get("sensor.garage_energy")
+    assert entity is not None
+    entry = MockConfigEntry(domain="utility_meter", options={"cycle": "weekly"})
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_update_entity(
+        "sensor.garage_energy", config_entry_id=entry.entry_id
+    )
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
+    response = await client.receive_json()
+    assert response["success"], response
+    stats = response["result"]["stats"]
+    assert stats["sensor.garage_energy"]["daily_reset"] is True
+    assert stats["sensor.main_energy"]["daily_reset"] is False
 
 
 @pytest.mark.usefixtures("sensors", "loaded_entry")
@@ -335,7 +411,8 @@ async def test_get_includes_daily_reset(
         "sensor.water_meter": False,
         "sensor.gas_meter": False,
     }
-    assert len(calls) == 1
+    # One 5-minute query, one hourly query for the meters without 5-minute rows.
+    assert [call[4] for call in calls] == ["5minute", "hour"]
     meters = {
         device["stat_consumption"] for device in result["prefs"]["device_consumption"]
     } | {
@@ -344,7 +421,12 @@ async def test_get_includes_daily_reset(
         for key in ("stat_energy_from", "stat_energy_to")
         if source.get(key)
     }
-    assert calls[0][3] == meters
+    # The devices' power sensors are read with them, to explain falls.
+    assert calls[0][3] == meters | {"sensor.main_power"}
+    assert calls[1][3] == meters - {
+        "sensor.kitchen_energy",
+        "sensor.main_energy",
+    } | {"sensor.main_power"}
 
 
 async def test_daily_resetting_survives_a_failing_recorder(
@@ -359,9 +441,9 @@ async def test_daily_resetting_survives_a_failing_recorder(
     def fail(*args: Any) -> Rows:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(daily_reset, "statistics_during_period", fail)
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fail)
     stats = ["sensor.daily_meter", "sensor.kitchen"]
-    with caplog.at_level("DEBUG", logger=daily_reset.__name__):
+    with caplog.at_level("DEBUG", logger=stats_probe.__name__):
         assert await async_daily_resetting(hass, stats) == {"sensor.daily_meter"}
     assert "database is locked" in caplog.text
 
@@ -369,8 +451,8 @@ async def test_daily_resetting_survives_a_failing_recorder(
         async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
             await asyncio.sleep(1)
 
-    monkeypatch.setattr(daily_reset, "get_instance", SlowRecorder)
-    monkeypatch.setattr(daily_reset, "QUERY_TIMEOUT", 0.01)
+    monkeypatch.setattr(stats_probe, "get_instance", SlowRecorder)
+    monkeypatch.setattr(stats_probe, "QUERY_TIMEOUT", 0.01)
     assert await async_daily_resetting(hass, stats) == {"sensor.daily_meter"}
 
 
@@ -396,7 +478,7 @@ async def test_daily_check_says_when_it_could_not_run(
     def fail(*args: Any) -> Rows:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(daily_reset, "statistics_during_period", fail)
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fail)
     assert await async_daily_check(hass, stats) is None
     # Only utility meters: nothing to read, so nothing can fail.
     assert await async_daily_check(hass, ["sensor.daily_meter"]) == {

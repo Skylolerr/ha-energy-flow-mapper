@@ -31,6 +31,8 @@ from .daily_reset import async_hourly_statistics
 from .hierarchy import (
     DEVICE_KEYS,
     EDITABLE_SOURCE_TYPES,
+    FROM,
+    KEY_DEVICES,
     KEY_SOURCES,
     PARENT,
     RATE,
@@ -186,6 +188,27 @@ def meter_stats(prefs: Prefs) -> set[str]:
     return {
         device[STAT] for key in DEVICE_KEYS.values() for device in prefs.get(key, [])
     } | source_energy_stats(prefs.get(KEY_SOURCES, []))
+
+
+def meter_powers(prefs: Prefs) -> dict[str, str]:
+    """Return the power sensor of each electricity device and solar source meter.
+
+    A meter's own power explains its falls (a net meter exporting near 0).
+    Grid and battery powers are left out: their sign is not the meter's.
+    """
+    powers = {
+        device[STAT]: device[RATE]
+        for device in prefs.get(KEY_DEVICES, [])
+        if isinstance(device.get(RATE), str)
+    }
+    powers |= {
+        source[FROM]: source[RATE]
+        for source in prefs.get(KEY_SOURCES, [])
+        if source.get("type") == "solar"
+        and isinstance(source.get(FROM), str)
+        and isinstance(source.get(RATE), str)
+    }
+    return powers
 
 
 def async_sum_members(hass: HomeAssistant, prefs: Prefs) -> set[str]:

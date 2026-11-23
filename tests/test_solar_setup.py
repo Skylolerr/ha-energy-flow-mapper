@@ -11,9 +11,9 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.template import Template
 
 from custom_components.energy_flow_mapper import (
-    daily_reset,
     energy_access,
     solar_setup,
+    stats_probe,
 )
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import template_meter as template_module
@@ -1121,7 +1121,7 @@ async def test_setup_blocked_when_the_daily_check_fails(
     async def busy(*args: Any, **kwargs: Any) -> None:
         return None  # the statistics query on a timeout or failure
 
-    monkeypatch.setattr(daily_reset, "async_hourly_statistics", busy)
+    monkeypatch.setattr(stats_probe, "async_statistics", busy)
     hass.config.components.add("recorder")
     response = await preview(hass_ws_client, hass)
     result = response["result"]

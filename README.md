@@ -289,9 +289,11 @@ the sensors live.
   flow sum, because their sign depends on the direction; the dialog says which member
   keeps the sum from being created.
 - **Meters that start again at 0 every day** (the daily energy of many micro inverters,
-  utility meters with a daily cycle) are recognised: a meter that jumped towards 0 – to
-  less than half of the hour before, and much more than it usually changes in an hour,
-  from above or from below 0 – on at least 2 of the last 3 days. In a sum with meters that do not reset,
+  utility meters with a cycle, meters whose `last_reset` changes) are recognised: a meter
+  that fell towards 0 – to less than half of the value before, from above or from below
+  0 – on at least 2 of the last 3 days. A fall that the meter's own power sensor explains
+  (a circuit exporting near 0) is no reset; without a power sensor, the fall must be more
+  than twice the meter's usual fall. In a sum with meters that do not reset,
   the sum would drop once a day and Home Assistant would count it all again, so the
   dialog warns. Where the daily meter is a solar with a power sensor, it offers an
   integral of that power instead.

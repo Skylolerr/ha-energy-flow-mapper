@@ -41,10 +41,12 @@ and Home Assistant show when they offer the update.
   others; a power sensor that the meter's device has but that is not set. A dismissed hint
   stays hidden for every admin until *Show ignored suggestions again*. Panel only, not on
   the card.
-- **Meters that start again at 0 every day are recognised:** a jump towards 0 (to less than
-  half of the hour before, and much larger than the meter's usual change in an hour; also
-  from below 0, for a meter that counts both ways) on at least 2 of the last 3 days, or a
-  utility meter with a daily cycle.
+- **Meters that start again at 0 every day (or week, or month) are recognised:** a fall
+  towards 0 (to less than half of the value before, also from below 0) on at least 2 of the
+  last 3 days, read from the 5-minute statistics. With the meter's own power sensor, a fall
+  that its power explains (a circuit exporting near 0) is no reset; without one, the fall
+  must be more than twice the meter's usual fall. Certain: a utility meter with a cycle, or
+  a `last_reset` that changed.
 
 ### 📦 Changed
 

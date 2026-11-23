@@ -18,7 +18,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.util import dt as dt_util
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
-from custom_components.energy_flow_mapper import energy_access
+from custom_components.energy_flow_mapper import energy_access, stats_probe
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import websocket as websocket_module
 from custom_components.energy_flow_mapper.const import DOMAIN, STORAGE_KEY
@@ -84,8 +84,13 @@ async def test_get_reads_daily_resets_of_used_meters_only(
     """
     asked: list[list[str]] = []
 
-    async def fake(hass: HomeAssistant, stats: Any, days: int = 3) -> set[str]:
+    powers: list[Any] = []
+
+    async def fake(
+        hass: HomeAssistant, stats: Any, days: int = 3, power_of: Any = None
+    ) -> set[str]:
         asked.append(list(stats))
+        powers.append(power_of)
         daily = {"sensor.kitchen_energy", "sensor.attic_energy"}
         return {stat for stat in stats if stat in daily}
 
@@ -106,6 +111,8 @@ async def test_get_reads_daily_resets_of_used_meters_only(
             "sensor.solar_energy",
         ]
     ]
+    # The power sensors of devices and solar sources explain their meters' falls.
+    assert powers == [{"sensor.main_energy": "sensor.main_power"}]
     assert result["stats"]["sensor.kitchen_energy"]["daily_reset"] is True
     assert result["stats"]["sensor.main_power"]["daily_reset"] is False
     attic = next(c for c in result["candidates"] if c["stat"] == "sensor.attic_energy")
@@ -3527,3 +3534,108 @@ async def test_set_source_rate_schema_and_errors(
         changes=[{**change, "stat": "sensor.gone", "power_config": None}],
     )
     assert response["error"]["translation_key"] == "unknown_source"
+
+
+class _Recorder:
+    """Run executor jobs like the recorder does."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
+        return func(*args)
+
+
+async def test_daily_check_ws_admin_only(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    hass_read_only_access_token: str,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Only admins can check statistics for periodic counters."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        hass_read_only_access_token,
+        type=f"{DOMAIN}/daily_check",
+        stats=["sensor.main_energy"],
+    )
+    assert not response["success"]
+    assert response["error"]["code"] == "unauthorized"
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_daily_check_returns_evidence(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Saved and draft-only stats; the saved and the given powers are read too."""
+    calls: list[tuple[Any, ...]] = []
+    start = dt_util.utcnow() - timedelta(days=3)
+
+    def fake(*args: Any) -> dict[str, list[dict[str, Any]]]:
+        calls.append(args)
+        if args[4] != "5minute":
+            return {}
+        return {
+            "sensor.draft_energy": [
+                {
+                    "start": (start + timedelta(hours=hour)).timestamp(),
+                    "state": 0.5 * (hour % 24),
+                }
+                for hour in range(72)
+            ]
+        }
+
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fake)
+    monkeypatch.setattr(stats_probe, "get_instance", _Recorder)
+    hass.config.components.add("recorder")
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/daily_check",
+        stats=["sensor.main_energy", "sensor.draft_energy"],
+        power={"sensor.draft_energy": "sensor.draft_power"},
+    )
+    assert response["success"], response
+    result = response["result"]
+    assert result["unknown"] is False
+    assert calls[0][3] == {
+        "sensor.main_energy",
+        "sensor.main_power",
+        "sensor.draft_energy",
+        "sensor.draft_power",
+    }
+    draft = result["evidence"]["sensor.draft_energy"]
+    assert (draft["periodic"], draft["certain"], draft["reason"]) == (
+        True,
+        False,
+        "drops",
+    )
+    assert len(draft["drops"]) == 2
+    assert draft["drops"][0]["before"] == 11.5
+    assert len(draft["series"]) == 72
+    main = result["evidence"]["sensor.main_energy"]
+    assert (main["periodic"], main["reason"]) == (None, "no_data")
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_daily_check_unknown_on_failure(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failing recorder answers `unknown`, so the panel can offer a retry."""
+
+    def fail(*args: Any) -> Any:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fail)
+    monkeypatch.setattr(stats_probe, "get_instance", _Recorder)
+    hass.config.components.add("recorder")
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/daily_check", stats=["sensor.x"]
+    )
+    assert response["success"], response
+    assert response["result"] == {"evidence": {}, "unknown": True}

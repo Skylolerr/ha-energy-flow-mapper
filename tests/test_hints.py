@@ -12,7 +12,7 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
-from custom_components.energy_flow_mapper import daily_reset
+from custom_components.energy_flow_mapper import stats_probe
 from custom_components.energy_flow_mapper.candidates import async_stats_info
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.hints import (
@@ -55,8 +55,8 @@ def statistics(
         calls.append(args)
         return {stat: data[stat] for stat in args[3] if stat in data}
 
-    monkeypatch.setattr(daily_reset, "statistics_during_period", fake)
-    monkeypatch.setattr(daily_reset, "get_instance", FakeRecorder)
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fake)
+    monkeypatch.setattr(stats_probe, "get_instance", FakeRecorder)
     hass.config.components.add("recorder")
     return calls, data
 
@@ -211,7 +211,11 @@ async def test_returned_hint_enabled_and_counting(
     assert len(calls) == 1
     _, start, end, ids, period, units, types = calls[0]
     assert ids == {returned, other_returned}
-    assert (period, units, types) == ("hour", None, {"change"})
+    assert (period, units, types) == (
+        "hour",
+        {"energy": "kWh", "power": "W"},
+        {"change"},
+    )
     assert (end - start).days == 3
 
 
@@ -239,7 +243,7 @@ async def test_no_returned_hint_enabled_but_zero(
     def fail(*args: Any) -> Rows:
         raise RuntimeError("database is locked")
 
-    monkeypatch.setattr(daily_reset, "statistics_during_period", fail)
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fail)
     assert await _hints(hass, prefs) == []
     hass.config.components.remove("recorder")
     assert await _hints(hass, prefs) == []
@@ -593,8 +597,10 @@ async def test_get_returns_hints(
             },
         },
     ]
-    assert len(calls) == 1
+    # One 5-minute query; the meters without 5-minute rows are read hourly.
+    assert [call[4] for call in calls] == ["5minute", "hour"]
     assert "sensor.day_meter" in calls[0][3]
+    assert "sensor.day_meter" not in calls[1][3]
 
 
 @pytest.mark.usefixtures("sensors", "loaded_entry")
@@ -619,15 +625,17 @@ async def test_get_reads_daily_and_returned_at_once(
         return []
 
     monkeypatch.setattr(candidates_module, "async_list_statistic_ids", no_external)
-    monkeypatch.setattr(daily_reset, "get_instance", OrderedRecorder)
+    monkeypatch.setattr(stats_probe, "get_instance", OrderedRecorder)
     _, returned = _shelly(hass, "balcony", returned_disabled=False)
     data[returned] = changes(0.4)
     client = await hass_ws_client(hass)
     await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
     response = await client.receive_json()
     assert response["success"], response
-    assert len(calls) == 2
-    assert events == ["start", "start", "end", "end"]
+    # Daily resets (5-minute, then hourly for the meters without 5-minute
+    # rows) and returned energy: the first two start before either ends.
+    assert [call[4] for call in calls] == ["5minute", "hour", "hour"]
+    assert events[:2] == ["start", "start"]
     assert {
         "code": "returned_energy",
         "stat": "sensor.balcony_energy",
