@@ -1,4 +1,5 @@
 import { css, html, LitElement, nothing, svg, type PropertyValues, type TemplateResult } from "lit";
+import { keyed } from "lit/directives/keyed.js";
 
 import {
   applySourceChanges,
@@ -34,6 +35,8 @@ import {
   newGroupId,
 } from "./groups";
 import { icon, typeIcon, typePath } from "./icons";
+import "./solar-setup";
+import type { SolarCreatedDetail, SolarSetupContext } from "./solar-setup";
 import {
   arrowHead,
   arrowSize,
@@ -89,8 +92,6 @@ import type {
   PowerConfig,
   SaveResult,
   Snapshot,
-  SolarMeterKind,
-  SolarPreview,
   Source,
   Tab,
   StatInfo,
@@ -189,27 +190,10 @@ type Dialog =
    */
   | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string }
   /**
-   * "Solar feeds in here" for the electricity device `stat`: the chosen solar
-   * source, the meter kind (null: the suggested one), the backend's preview
-   * (null while it loads) or its error, and the names of the helpers
-   * (filled with defaults once the first preview arrives).
+   * "Solar feeds in here" for the electricity device `stat`; its own state
+   * (solar, meter kind, preview, names) lives in `<efm-solar-setup>`.
    */
-  | {
-      kind: "solar";
-      stat: string;
-      solar: string | null;
-      meterKind: SolarMeterKind | null;
-      preview: SolarPreview | null;
-      error: string | null;
-      names: SolarNames | null;
-    };
-
-/** Names of the helpers of the solar setup; `integrals` by power sensor. */
-interface SolarNames {
-  energy: string;
-  power: string;
-  integrals: Record<string, string>;
-}
+  | { kind: "solar"; stat: string };
 
 type SolarDialog = Extract<Dialog, { kind: "solar" }>;
 
@@ -401,11 +385,6 @@ function navigate(path: string): void {
   window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
 }
 
-/** Whether the solar setup creates a gross power: both power sensors exist and can be read. */
-function solarWithPower(preview: SolarPreview): boolean {
-  return preview.circuit_power !== null && preview.solar_power !== null && !preview.unusable_power;
-}
-
 export class EnergyFlowMapperPanel extends LitElement {
   static override properties = {
     hass: { attribute: false },
@@ -509,7 +488,6 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _draftChecked = false;
   private _validateRequest = 0;
   private _energyRequest = 0;
-  private _solarRequest = 0;
   /** Counts sum dialogs opened and dialogs closed; a late answer for an earlier one is dropped. */
   private _sumSession = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -583,6 +561,9 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
     return localize(this.hass, key, placeholders);
   }
+
+  /** `_t` for child elements; one function, so passing it does not update them. */
+  private _localize = (key: StringKey, placeholders: Record<string, string> = {}): string => this._t(key, placeholders);
 
   // --- data ---------------------------------------------------------------
 
@@ -2354,118 +2335,39 @@ export class EnergyFlowMapperPanel extends LitElement {
     return (this._snapshot?.prefs.device_consumption ?? []).some((d) => d.stat_consumption === stat);
   }
 
-  /** Open "Solar feeds in here…" for a device; the only solar source is preselected. */
+  /** Open "Solar feeds in here…" for a device; the setup preselects the only solar source. */
   _openSolarSetup(stat: string): void {
-    const solars = this._setupSolars();
-    const dialog: SolarDialog = {
-      kind: "solar",
-      stat,
-      solar: null,
-      meterKind: null,
-      preview: null,
-      error: null,
-      names: null,
-    };
-    this._dialog = dialog;
-    // A preview still on its way belongs to an earlier dialog.
-    this._solarRequest++;
-    if (solars.length === 1 && this._solarDeviceSaved(stat)) {
-      void this._loadSolarPreview(solars[0], null);
-    }
+    this._dialog = { kind: "solar", stat };
   }
 
   /**
-   * Ask the backend what the setup would create for a solar and meter kind
-   * (null: the suggested one). The names are filled with their defaults once
-   * and kept when the kind changes; outdated answers are ignored.
+   * The setup created its helpers: put the gross meter in the device's place
+   * in the draft (`_replace`, one undo step), with the gross power as its
+   * power sensor. The user saves as usual.
    */
-  async _loadSolarPreview(solar: string, meterKind: SolarMeterKind | null): Promise<void> {
-    const current = this._dialog;
-    if (!this.hass || current?.kind !== "solar") {
-      return;
-    }
-    const request = ++this._solarRequest;
-    const stat = current.stat;
-    this._dialog = { ...current, solar, meterKind, preview: null, error: null };
-    let preview: SolarPreview | null = null;
-    let error: string | null = null;
-    try {
-      preview = await this.hass.callWS<SolarPreview>({
-        type: `${DOMAIN}/solar_setup_preview`,
-        stat,
-        solar,
-        ...(meterKind ? { kind: meterKind } : {}),
-      });
-    } catch (err) {
-      error = errorText(this.hass, err);
-    }
-    const dialog = this._dialog;
-    if (
-      request !== this._solarRequest ||
-      dialog?.kind !== "solar" ||
-      dialog.stat !== stat ||
-      dialog.solar !== solar
-    ) {
-      return;
-    }
-    const name = this._name(stat, this.draft);
-    const names: SolarNames = dialog.names ?? {
-      energy: this._t("solar_gross_name", { name }),
-      power: this._t("solar_gross_power_name", { name }),
-      integrals: {},
-    };
-    const integrals = { ...names.integrals };
-    for (const { power } of preview?.integrals ?? []) {
-      integrals[power] ??= `${this._sensorName(power)} ${this._t("energy_suffix")}`;
-    }
-    this._dialog = {
-      ...dialog,
-      preview,
-      error,
-      meterKind: preview?.kind ?? meterKind,
-      names: { ...names, integrals },
-    };
-  }
-
-  /**
-   * Create the helpers of the setup right away, then put the gross meter in
-   * the device's place in the draft (`_replace`, one undo step), with the
-   * gross power as its power sensor. The user saves as usual.
-   */
-  async _createSolarSetup(dialog: SolarDialog): Promise<void> {
-    const { preview, names, solar } = dialog;
-    if (!this.hass || !preview || !names || !solar || preview.blocked) {
-      return;
-    }
-    const name = names.energy.trim();
-    const withPower = solarWithPower(preview);
+  private async _onSolarCreated(detail: SolarCreatedDetail): Promise<void> {
+    const { stat, entity_id, stat_rate, name, old } = detail;
     this._busy = true;
     try {
-      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
-        type: `${DOMAIN}/create_solar_setup`,
-        stat: dialog.stat,
-        solar,
-        kind: preview.kind,
-        name,
-        ...(withPower ? { power_name: names.power.trim() } : {}),
-        ...(preview.integrals.length
-          ? {
-              integral_names: Object.fromEntries(
-                preview.integrals.map(({ power }) => [power, (names.integrals[power] ?? "").trim()]),
-              ),
-            }
-          : {}),
-      });
-      const old = this._name(dialog.stat, this.draft);
       this._dialog = null;
       await this._load();
       const before = this._changes.length;
-      this._replace(dialog.stat, result.entity_id, result.stat_rate);
+      this._replace(stat, entity_id, stat_rate);
       // The device may have left the draft meanwhile: then the meter is only created.
       this._showToast(
         this._t(this._changes.length > before ? "solar_setup_done" : "solar_setup_created_only", { name, old }),
       );
     } catch (err) {
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
+  }
+
+  /** *Set up* failed: the dialog stays open. */
+  private async _onSolarFailed(err: unknown): Promise<void> {
+    this._busy = true;
+    try {
       await this._handleError(err);
     } finally {
       this._busy = false;
@@ -4603,203 +4505,38 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * "Solar feeds in here…": the solar source, the kind of the circuit meter
-   * (both explained, the suggested one preselected with its reason), then
-   * what is created and replaced, with editable names. A blocked setup says
-   * why and offers no *Set up*.
+   * "Solar feeds in here…" in its own element; a new one for each opened
+   * dialog, so a late answer for an earlier one cannot reach it.
    */
   private _renderSolar(dialog: SolarDialog): TemplateResult {
-    const name = this._name(dialog.stat, this.draft);
-    const solars = this._setupSolars();
-    const saved = this._solarDeviceSaved(dialog.stat);
-    const { preview, names } = dialog;
-    const update = (patch: Partial<SolarDialog>) => {
-      if (this._dialog?.kind === "solar") {
-        this._dialog = { ...this._dialog, ...patch };
-      }
+    const prefs = this._snapshot?.prefs;
+    const context: SolarSetupContext = {
+      stat: dialog.stat,
+      deviceName: this._name(dialog.stat, this.draft),
+      saved: this._solarDeviceSaved(dialog.stat),
+      solars: this._setupSolars(),
+      savedSources: prefs?.energy_sources ?? [],
+      draftSources: this.draftSources,
+      savedDevice: (prefs?.device_consumption ?? []).find((d) => d.stat_consumption === dialog.stat),
+      draftDevice: this.draft.find((d) => d.stat_consumption === dialog.stat),
+      busy: this._busy,
+      name: (stat) => this._name(stat),
+      sensorName: (entityId) => this._sensorName(entityId),
     };
-    const setName = (patch: Partial<SolarNames>) => {
-      if (this._dialog?.kind === "solar" && this._dialog.names) {
-        update({ names: { ...this._dialog.names, ...patch } });
-      }
-    };
-    const nameInput = (value: string, set: (value: string) => void) =>
-      html`<input type="text" .value=${value} @input=${(e: Event) => set((e.target as HTMLInputElement).value)} />`;
-    const cancel = html`<div class="dialog-actions">
-      <button @click=${() => this._close()}>${this._t("cancel")}</button>
-    </div>`;
-    const head = html`<h2>${this._t("solar_setup_title", { name })}</h2>
-      <p class="hint">${this._t("solar_setup_intro")}</p>`;
-    if (!saved || solars.length === 0) {
-      return html`${head}
-        <p class="warning solar-save-first">${this._t(saved ? "solar_setup_no_solar" : "solar_setup_save_first")}</p>
-        ${cancel}`;
-    }
-    const kind = dialog.meterKind ?? preview?.kind ?? null;
-    const returned = preview?.returned ?? null;
-    const solarName = dialog.solar ? this._name(dialog.solar) : "";
-    const meterKinds: SolarMeterKind[] = ["net", "draws"];
-    // A disabled returned sensor gets its own note with a link; the reason
-    // below names any other block.
-    const disabledNote = preview !== null && kind === "draws" && preview.returned_disabled && returned !== null;
-    const blocked =
-      preview?.blocked && !(disabledNote && preview.blocked === "returned_disabled")
-        ? errorText(this.hass, {
-            translation_key: preview.blocked,
-            translation_placeholders: {
-              entity_id: preview.blocked_entity ? this._sensorName(preview.blocked_entity) : name,
-            },
-          })
-        : null;
-    const term = (stat: string) => this._sensorName(stat);
-    const energyFormula =
-      preview === null
-        ? ""
-        : kind === "draws" && returned !== null
-          ? `${term(dialog.stat)} − ${term(returned)} + ${solarName}`
-          : `${term(dialog.stat)} + ${solarName}`;
-    // The constant that starts the gross meter above 0 (kWh).
-    const offset = preview?.offset ?? 0;
-    const withPower = preview !== null && solarWithPower(preview);
-    // Every name shown is needed; an empty one would get the backend's untranslated default.
-    const shownNames = [
-      names?.energy,
-      ...(withPower ? [names?.power] : []),
-      ...(preview?.integrals ?? []).map(({ power }) => names?.integrals[power]),
-    ];
-    const namesMissing = shownNames.some((value) => !(value ?? "").trim());
-    // The backend reads the saved power sensors; a draft that changes one is not used yet.
-    const rate = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
-    const savedSource = (this._snapshot?.prefs.energy_sources ?? []).find(
-      (s) => s.type === "solar" && s.stat_energy_from === dialog.solar,
-    );
-    const draftSource = this.draftSources.find((s) => s.type === "solar" && s.stat_energy_from === dialog.solar);
-    const savedDevice = (this._snapshot?.prefs.device_consumption ?? []).find((d) => d.stat_consumption === dialog.stat);
-    const draftDevice = this.draft.find((d) => d.stat_consumption === dialog.stat);
-    const unsavedPower =
-      preview !== null &&
-      (rate(savedSource?.stat_rate) !== rate(draftSource?.stat_rate) ||
-        rate(savedDevice?.stat_rate) !== rate(draftDevice?.stat_rate));
-    return html`${head}
-      <h3>${this._t("solar_setup_source")}</h3>
-      ${solars.length === 1
-        ? html`<p class="solar-source">${this._name(solars[0])}</p>`
-        : html`<div class="solar-sources">
-            ${solars.map(
-              (solar) => html`<label class="check">
-                <input
-                  type="radio"
-                  name="solar-source"
-                  value=${solar}
-                  .checked=${dialog.solar === solar}
-                  @change=${() => void this._loadSolarPreview(solar, dialog.meterKind)}
-                />
-                ${this._name(solar)}
-              </label>`,
-            )}
-          </div>`}
-      ${preview !== null && preview.solar_power === null && dialog.solar
-        ? html`<p class="hint warning solar-no-power">${this._t("solar_setup_no_solar_power")}</p>
-            <button
-              class="solar-set-power"
-              @click=${() =>
-                this._openPowerDialog({ kind: "source", stat: dialog.solar!, role: "production" })}
-            >
-              ${this._t("solar_setup_set_solar_power")}
-            </button>`
-        : nothing}
-      ${unsavedPower ? html`<p class="hint warning solar-unsaved-power">${this._t("solar_setup_unsaved_power")}</p>` : nothing}
-      ${dialog.error ? html`<p class="warning">${dialog.error}</p>` : nothing}
-      ${dialog.solar && preview === null && dialog.error === null ? html`<p>${this._t("checking")}</p>` : nothing}
-      ${preview !== null
-        ? html`<h3>${this._t("solar_setup_kind", { name })}</h3>
-            <div class="solar-kinds">
-              ${meterKinds.map(
-                (meterKind) => html`<label class="check">
-                    <input
-                      type="radio"
-                      name="solar-kind"
-                      value=${meterKind}
-                      .checked=${kind === meterKind}
-                      @change=${() => dialog.solar && void this._loadSolarPreview(dialog.solar, meterKind)}
-                    />
-                    ${this._t(meterKind === "net" ? "solar_kind_net" : "solar_kind_draws")}
-                  </label>
-                  <p class="hint solar-kind-hint">
-                    ${this._t(meterKind === "net" ? "solar_kind_net_hint" : "solar_kind_draws_hint")}
-                  </p>`,
-              )}
-            </div>
-            <p class="hint solar-suggested">
-              ${preview.suggested_kind === "draws" && returned !== null
-                ? this._t("solar_suggested_draws", { entity: term(returned) })
-                : this._t("solar_suggested_net")}
-            </p>
-            ${disabledNote
-              ? html`<p class="warning solar-returned-disabled">
-                    ${this._t("solar_setup_returned_disabled", { entity: term(returned!) })}
-                  </p>
-                  <button @click=${() => this._openEntitySettings(returned!)}>${this._t("solar_setup_open_settings")}</button>`
-              : nothing}
-            <h3>${this._t("solar_setup_preview")}</h3>
-            ${blocked !== null || disabledNote
-              ? blocked !== null
-                ? html`<p class="warning solar-blocked">${blocked}</p>`
-                : nothing
-              : html`<ul class="solar-helpers">
-                    ${preview.integrals.map(
-                      ({ stat, power }) => html`<li>
-                        <label
-                          >${this._t("solar_setup_integral", { power: term(power), meter: term(stat) })}
-                          ${nameInput(names?.integrals[power] ?? "", (value) =>
-                            setName({ integrals: { ...(names?.integrals ?? {}), [power]: value } }),
-                          )}
-                        </label>
-                      </li>`,
-                    )}
-                    <li>
-                      <label
-                        >${this._t("solar_setup_energy", {
-                          formula: offset ? `${energyFormula} + ${offset} kWh` : energyFormula,
-                        })}
-                        ${nameInput(names?.energy ?? "", (energy) => setName({ energy }))}
-                      </label>
-                      ${offset
-                        ? html`<p class="hint solar-offset">${this._t("solar_setup_offset", { offset: String(offset) })}</p>`
-                        : nothing}
-                    </li>
-                    ${withPower
-                      ? html`<li>
-                          <label
-                            >${this._t("solar_setup_power", {
-                              formula: `${term(preview.circuit_power!)} + ${term(preview.solar_power!)}`,
-                            })}
-                            ${nameInput(names?.power ?? "", (power) => setName({ power }))}
-                          </label>
-                        </li>`
-                      : nothing}
-                  </ul>
-                  ${preview.circuit_power === null
-                    ? html`<p class="hint solar-no-circuit-power">${this._t("solar_setup_no_circuit_power", { name })}</p>`
-                    : preview.unusable_power
-                      ? html`<p class="hint solar-unusable-power">
-                          ${this._t("solar_setup_unusable_power", { entity: term(preview.unusable_power) })}
-                        </p>`
-                      : nothing}
-                  <p class="hint">${this._t(withPower ? "solar_setup_text" : "solar_setup_text_no_power", { name })}</p>`}`
-        : nothing}
-      <div class="dialog-actions">
-        <button @click=${() => this._close()}>${this._t("cancel")}</button>
-        ${preview !== null && blocked === null && !disabledNote
-          ? html`<button
-              class="primary"
-              ?disabled=${this._busy || namesMissing}
-              @click=${() => this._createSolarSetup(dialog)}
-            >
-              ${this._busy ? this._t("creating") : this._t("solar_setup_button")}
-            </button>`
-          : nothing}
-      </div>`;
+    return html`${keyed(
+      dialog,
+      html`<efm-solar-setup
+        .hass=${this.hass}
+        .localize=${this._localize}
+        .context=${context}
+        @close=${() => this._close()}
+        @created=${(e: CustomEvent<SolarCreatedDetail>) => void this._onSolarCreated(e.detail)}
+        @failed=${(e: CustomEvent<{ error: unknown }>) => void this._onSolarFailed(e.detail.error)}
+        @set-solar-power=${(e: CustomEvent<{ solar: string }>) =>
+          this._openPowerDialog({ kind: "source", stat: e.detail.solar, role: "production" })}
+        @open-settings=${(e: CustomEvent<{ entity_id: string }>) => this._openEntitySettings(e.detail.entity_id)}
+      ></efm-solar-setup>`,
+    )}`;
   }
 
   /**

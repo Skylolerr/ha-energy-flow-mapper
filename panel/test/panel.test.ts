@@ -5379,8 +5379,43 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     resolve(preview());
     await settle(el);
-    expect(el._dialog).toMatchObject({ kind: "solar", solar: null, preview: null });
+    // The dialog opened again has no solar picked and shows no preview.
+    expect(el._dialog).toMatchObject({ kind: "solar" });
+    const sources = [...dialogEl(el).querySelectorAll<HTMLInputElement>('input[name="solar-source"]')];
+    expect(sources).toHaveLength(2);
+    expect(sources.some((input) => input.checked)).toBe(false);
+    expect(dialogEl(el).querySelector('input[name="solar-kind"]')).toBeNull();
+    expect(dialogEl(el).textContent).not.toContain("Checking");
     expect(dialogButton(el, "Set up")).toBeUndefined();
+  });
+
+  it("setup ignores the preview of a solar picked before the current one", async () => {
+    const snap = solarSnapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.balcony" });
+    snap.stats["sensor.balcony"] = info("sensor.balcony", "Balcony solar");
+    const mock = hintMock(snap);
+    const pending: Record<string, (value: unknown) => void> = {};
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { solar: string }) =>
+      new Promise((r) => (pending[msg.solar] = r));
+    const el = await mount(mock);
+    await openSetup(el);
+    const source = (solar: string) =>
+      dialogEl(el).querySelector<HTMLInputElement>(`input[name="solar-source"][value="${solar}"]`)!;
+    source("sensor.solar").click();
+    await settle(el);
+    source("sensor.balcony").click();
+    await settle(el);
+    // The roof's answer comes late: the balcony is still being checked.
+    pending["sensor.solar"](preview({ offset: 300 }));
+    await settle(el);
+    expect(dialogEl(el).textContent).toContain("Checking");
+    expect(dialogEl(el).querySelector('input[name="solar-kind"]')).toBeNull();
+    pending["sensor.balcony"](preview());
+    await settle(el);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("Server & co − Server returned + Balcony solar");
+    expect(content).not.toContain("300 kWh");
+    expect(dialogButton(el, "Set up")).toBeDefined();
   });
 
   it("setup leaves out the gross power when a power sensor has no usable unit", async () => {

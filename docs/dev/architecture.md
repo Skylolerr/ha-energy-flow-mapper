@@ -112,6 +112,7 @@ touches `panel/`.
 | `groups.ts` | Mirrors `groups.py` |
 | `layout.ts` | Automatic diagram layout |
 | `export.ts` | Diagram as SVG/PNG, anonymised export |
+| `solar-setup.ts` | `<efm-solar-setup>`, the *Solar feeds in here…* dialog: preview and create calls; the panel applies its `created` event through `_replace` |
 | `icons.ts` | Inlined MDI paths (no icon fetch) |
 | `localize.ts`, `translations/` | Panel texts EN/DE/FR/IT |
 | `types.ts` | Minimal HA frontend types and the WebSocket payloads |
