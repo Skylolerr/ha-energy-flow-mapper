@@ -2119,6 +2119,38 @@ async def test_dismiss_hint_and_clear(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+async def test_dismiss_hint_of_gas_source_and_clear_gas(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A gas source's hint can be dismissed; clearing the gas tab brings it back."""
+    await energy_access.async_write(
+        hass,
+        {
+            "energy_sources": [
+                *ENERGY_PREFS["energy_sources"],
+                {"type": "gas", "stat_energy_from": "sensor.gas_meter"},
+            ]
+        },
+    )
+    gas = {"code": "power_available", "kind": "gas", "stat": "sensor.gas_meter"}
+    garage = {
+        "code": "power_available",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **gas)
+    assert response["result"] == {"dismissed": [gas]}
+    await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **garage)
+
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions", kind="gas"
+    )
+    assert response["success"]
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["dismissed_hints"] == [garage]
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_ignore_suggestion_of_unknown_device_is_dropped(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:

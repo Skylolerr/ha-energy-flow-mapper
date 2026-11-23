@@ -123,6 +123,8 @@ _OPTIONAL_TEXT = vol.Any(str, None)
 _KIND = vol.Optional("kind")
 # Only the kinds with devices; gas has sources only.
 _KINDS = vol.In([kind.value for kind in DEVICE_KEYS])
+# Hints are on sources too, so their tab may be gas.
+_TABS = vol.In([kind.value for kind in DeviceKind])
 # Every card asks every minute; HA's check of the energy dashboard runs at most
 # once a minute for all of them.
 CARD_VALIDATION_SECONDS = 60
@@ -1269,7 +1271,7 @@ async def websocket_ignore_suggestion(
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/clear_suggestions",
-        vol.Optional(ATTR_KIND): _KINDS,
+        vol.Optional(ATTR_KIND): _TABS,
     }
 )
 @require_admin
@@ -1287,7 +1289,7 @@ async def websocket_clear_suggestions(
     {
         vol.Required("type"): f"{DOMAIN}/dismiss_hint",
         vol.Required("code"): str,
-        vol.Required(ATTR_KIND): _KINDS,
+        vol.Required(ATTR_KIND): _TABS,
         vol.Required("stat"): str,
         vol.Optional("role"): str,
     }
