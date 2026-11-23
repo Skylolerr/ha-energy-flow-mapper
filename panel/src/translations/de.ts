@@ -367,7 +367,7 @@ export const de: Translations = {
   hint_children_solar: "Vielleicht speist eine Solaranlage in diesen Stromkreis ein: Dann fehlt seinem Zähler, was die Solaranlage darin produziert, und die untergeordneten Geräte scheinen mehr zu verbrauchen.",
   solar_setup: "Solar speist hier ein…",
   solar_setup_title: "Solar speist in {name} ein",
-  solar_setup_intro: "Eine Solaranlage in diesem Stromkreis wird verbraucht, bevor ihre Energie den Zähler erreicht; der Zähler zeigt darum weniger, als der Stromkreis verbraucht. Die Einrichtung baut einen Brutto-Zähler, der die Solaranlage wieder dazuzählt.",
+  solar_setup_intro: "Die Solaranlage speist in diesen Stromkreis ein, und die Geräte daran verbrauchen ihre Energie, bevor sie den Zähler erreicht. Der Zähler zeigt darum weniger, als sie verbrauchen, oder wird sogar negativ. Die Einrichtung baut einen Brutto-Zähler: was die Geräte an diesem Stromkreis wirklich verbrauchen.",
   solar_setup_save_first: "Die Einrichtung arbeitet mit den gespeicherten Energie-Einstellungen, und dieses Gerät ist noch nicht gespeichert. Speichere zuerst deinen Entwurf und starte die Einrichtung dann noch einmal.",
   solar_setup_no_solar: "Die Einrichtung braucht eine gespeicherte Solar-Quelle. Speichere zuerst deinen Entwurf und starte die Einrichtung dann noch einmal.",
   solar_setup_source: "Solaranlage",
@@ -391,6 +391,7 @@ export const de: Translations = {
   solar_setup_unsaved_power: "Dein Entwurf ändert einen Leistungssensor, der hier verwendet wird, aber die Einrichtung verwendet die gespeicherten. Speichere zuerst deinen Entwurf, um den neuen zu verwenden, und starte die Einrichtung dann noch einmal.",
   solar_setup_button: "Einrichten",
   solar_setup_done: "Brutto-Zähler «{name}» angelegt; er nimmt im Entwurf den Platz von {old} ein.",
+  solar_setup_created_only: "Brutto-Zähler «{name}» angelegt. Er konnte im Entwurf nicht den Platz von {old} einnehmen; setze ihn dort mit «Ersetzen durch …» ein.",
   solar_gross_name: "{name} Brutto",
   solar_gross_power_name: "{name} Brutto-Leistung",
 };

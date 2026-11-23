@@ -367,7 +367,7 @@ export const fr: Translations = {
   hint_children_solar: "Peut-être qu’une installation solaire alimente ce circuit : son compteur ne voit alors pas ce qu’elle y produit, et les appareils enfants semblent consommer plus.",
   solar_setup: "Le solaire alimente ici…",
   solar_setup_title: "Le solaire alimente {name}",
-  solar_setup_intro: "Une installation solaire dans ce circuit est consommée avant que son énergie n’atteigne le compteur ; le compteur indique donc moins que ce que le circuit consomme. La configuration crée un compteur brut qui rajoute le solaire.",
+  solar_setup_intro: "L’installation solaire alimente ce circuit, et les appareils qui y sont branchés consomment son énergie avant qu’elle n’atteigne le compteur. Le compteur indique donc moins que ce qu’ils consomment, voire devient négatif. La configuration crée un compteur brut : ce que les appareils de ce circuit consomment vraiment.",
   solar_setup_save_first: "La configuration travaille sur les réglages énergie enregistrés, et cet appareil n’est pas encore enregistré. Enregistre d’abord ton brouillon, puis relance la configuration.",
   solar_setup_no_solar: "La configuration a besoin d’une source solaire enregistrée. Enregistre d’abord ton brouillon, puis relance la configuration.",
   solar_setup_source: "Installation solaire",
@@ -391,6 +391,7 @@ export const fr: Translations = {
   solar_setup_unsaved_power: "Ton brouillon modifie un capteur de puissance utilisé ici, mais la configuration utilise ceux qui sont enregistrés. Enregistre d’abord ton brouillon pour utiliser le nouveau, puis relance la configuration.",
   solar_setup_button: "Configurer",
   solar_setup_done: "Compteur brut « {name} » créé ; il prend la place de {old} dans le brouillon.",
+  solar_setup_created_only: "Compteur brut « {name} » créé. Il n’a pas pu prendre la place de {old} dans le brouillon ; mets-le à sa place avec « Remplacer par … ».",
   solar_gross_name: "{name} brut",
   solar_gross_power_name: "{name} puissance brute",
 };

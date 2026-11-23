@@ -2415,8 +2415,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       const old = this._name(dialog.stat, this.draft);
       this._dialog = null;
       await this._load();
+      const before = this._changes.length;
       this._replace(dialog.stat, result.entity_id, result.stat_rate);
-      this._showToast(this._t("solar_setup_done", { name, old }));
+      // The device may have left the draft meanwhile: then the meter is only created.
+      this._showToast(
+        this._t(this._changes.length > before ? "solar_setup_done" : "solar_setup_created_only", { name, old }),
+      );
     } catch (err) {
       await this._handleError(err);
     } finally {
@@ -4579,6 +4583,13 @@ export class EnergyFlowMapperPanel extends LitElement {
           ? `${term(dialog.stat)} − ${term(returned)} + ${solarName}`
           : `${term(dialog.stat)} + ${solarName}`;
     const withPower = preview !== null && preview.circuit_power !== null && preview.solar_power !== null;
+    // Every name shown is needed; an empty one would get the backend's untranslated default.
+    const shownNames = [
+      names?.energy,
+      ...(withPower ? [names?.power] : []),
+      ...(preview?.integrals ?? []).map(({ power }) => names?.integrals[power]),
+    ];
+    const namesMissing = shownNames.some((value) => !(value ?? "").trim());
     // The backend reads the saved power sensors; a draft that changes one is not used yet.
     const rate = (value: unknown) => (typeof value === "string" && value !== "" ? value : null);
     const savedSource = (this._snapshot?.prefs.energy_sources ?? []).find(
@@ -4695,7 +4706,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${preview !== null && blocked === null && !disabledNote
           ? html`<button
               class="primary"
-              ?disabled=${this._busy || !(names?.energy ?? "").trim()}
+              ?disabled=${this._busy || namesMissing}
               @click=${() => this._createSolarSetup(dialog)}
             >
               ${this._busy ? this._t("creating") : this._t("solar_setup_button")}

@@ -5037,6 +5037,8 @@ describe("hints and solar setup", () => {
       solar: "sensor.solar",
     });
     expect(dialogEl(el).textContent).toContain("Roof solar");
+    // What the setup is for: the devices on the circuit use the solar's energy before the meter.
+    expect(dialogEl(el).textContent).toContain("the devices on it use its energy before it reaches the meter");
     expect(kindRadio(el, "draws").checked).toBe(true);
     expect(kindRadio(el, "net").checked).toBe(false);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
@@ -5120,10 +5122,21 @@ describe("hints and solar setup", () => {
       "Server & co gross",
       "Server & co gross power",
     ]);
-    const name = textInputs(el)[1];
-    name.value = "Circuit F11 gross";
-    name.dispatchEvent(new Event("input"));
-    await settle(el);
+    const type = async (index: number, value: string) => {
+      const input = textInputs(el)[index];
+      input.value = value;
+      input.dispatchEvent(new Event("input"));
+      await settle(el);
+    };
+    // Every name shown is needed: an empty one would get an untranslated default.
+    for (const index of [0, 1, 2]) {
+      const before = textInputs(el)[index].value;
+      await type(index, "  ");
+      expect(dialogButton(el, "Set up")!.disabled).toBe(true);
+      await type(index, before);
+      expect(dialogButton(el, "Set up")!.disabled).toBe(false);
+    }
+    await type(1, "Circuit F11 gross");
     dialogButton(el, "Set up")!.click();
     await settle(el);
     expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toEqual({
@@ -5145,6 +5158,28 @@ describe("hints and solar setup", () => {
     expect(el._selected).toBe("sensor.server_gross");
     el._undoChange();
     expect(el._changes).toEqual([]);
+  });
+
+  it("setup says so when the device left the draft before the meter could take its place", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    mock.responses["energy_flow_mapper/create_solar_setup"] = {
+      entity_id: "sensor.server_gross",
+      stat_rate: "sensor.server_gross_power",
+    };
+    const el = await mount(mock);
+    expect(el._toast).toBeNull();
+    await openSetup(el);
+    // Saved meanwhile without the server (another admin): nothing to replace.
+    const gone = solarSnapshot();
+    gone.prefs.device_consumption = gone.prefs.device_consumption.filter((d) => d.stat_consumption !== "sensor.server");
+    mock.responses["energy_flow_mapper/get"] = gone;
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    expect(el._changes).toEqual([]);
+    expect(el._toast).toBe(
+      "Gross meter “Server & co gross” created. It could not take the place of Server & co in the draft; put it there with “Replace with …”.",
+    );
   });
 
   it("blocked setup offers no set up button", async () => {

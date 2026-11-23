@@ -365,7 +365,7 @@ export const en = {
   hint_children_solar: "Maybe a solar feeds into this circuit: its meter then misses what the solar produces in it, so the children seem to use more.",
   solar_setup: "Solar feeds in here…",
   solar_setup_title: "Solar feeds into {name}",
-  solar_setup_intro: "A solar in this circuit is used up before its energy reaches the meter, so the meter shows less than the circuit uses. The setup builds a gross meter that adds the solar back.",
+  solar_setup_intro: "The solar feeds into this circuit, and the devices on it use its energy before it reaches the meter. So the meter shows less than they use, or even goes negative. The setup builds a gross meter: what the devices on this circuit really use.",
   solar_setup_save_first: "The setup works on the saved energy settings, and this device is not saved yet. Save your draft first, then start the setup again.",
   solar_setup_no_solar: "The setup needs a saved solar source. Save your draft first, then start the setup again.",
   solar_setup_source: "Solar",
@@ -389,6 +389,7 @@ export const en = {
   solar_setup_unsaved_power: "Your draft changes a power sensor used here, but the setup uses the saved ones. Save your draft first to use the new one, then start the setup again.",
   solar_setup_button: "Set up",
   solar_setup_done: "Gross meter “{name}” created; it takes the place of {old} in the draft.",
+  solar_setup_created_only: "Gross meter “{name}” created. It could not take the place of {old} in the draft; put it there with “Replace with …”.",
   solar_gross_name: "{name} gross",
   solar_gross_power_name: "{name} gross power",
 };
