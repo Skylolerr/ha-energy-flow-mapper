@@ -89,14 +89,43 @@ def test_several_drops_on_one_day_count_once() -> None:
 
 
 def test_small_fall_and_zero_meter_not_daily() -> None:
-    """A fall above 5 % of the maximum and a meter that stays 0 are no resets."""
+    """A fall to half or more of the hour before and a meter at 0 are no resets."""
     small = [
         (START + timedelta(days=day, hours=hour), v)
         for day in range(3)
-        for hour, v in enumerate((10.0, 0.6))
+        for hour, v in enumerate((10.0, 5.0))
     ]
     assert not resets_daily(small)
     assert not resets_daily(hourly(lambda when: 0.0))
+
+
+def test_resets_daily_large_first_hour() -> None:
+    """A night boiler: 3 of 14 kWh in the first hour after the reset is daily."""
+
+    def boiler(when: datetime) -> float:
+        # 3 kWh per hour from 00:00 to 04:00, then 2 kWh more until 12:00.
+        return min(3.0 * (when.hour + 1), 12.0) + (2.0 if when.hour >= 12 else 0.0)
+
+    states = hourly(boiler)
+    assert states[23][1] == 14.0
+    assert states[24][1] == 3.0
+    assert resets_daily(states)
+
+
+def test_negative_net_meter_not_daily() -> None:
+    """A net meter that goes below 0 is not daily, whatever it falls to."""
+
+    def net(when: datetime) -> float:
+        # Grows at night, falls below 0 with the solar export during the day.
+        return 4.0 - 0.8 * abs(when.hour - 12)
+
+    states = hourly(net)
+    assert min(value for _, value in states) < 0
+    assert not resets_daily(states)
+    # Only one value below 0 in the window: still not daily.
+    daily = hourly(daily_total(0))
+    daily[30] = (daily[30][0], -0.1)
+    assert not resets_daily(daily)
 
 
 class FakeRecorder:

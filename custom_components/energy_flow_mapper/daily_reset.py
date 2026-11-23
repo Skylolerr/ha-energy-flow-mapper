@@ -13,6 +13,7 @@ import asyncio
 import logging
 from collections.abc import Collection, Sequence
 from datetime import date, datetime, timedelta
+from itertools import pairwise
 from typing import Final
 
 from homeassistant.components.recorder.statistics import statistics_during_period
@@ -27,8 +28,10 @@ _LOGGER = logging.getLogger(__name__)
 # waiting, the flag is extra information.
 QUERY_TIMEOUT: Final = 10
 
-# A value at most this share of the maximum before it is a reset.
-DROP_SHARE: Final = 0.05
+# A value below this share of the hour before is a reset. A meter that only
+# grows never falls; the hourly state after a reset can already hold a large
+# part of a day (a night boiler, an EV), so the share is not near 0.
+FALL_SHARE: Final = 0.5
 # Days with a reset needed: one reset alone is a replaced meter.
 MIN_RESET_DAYS: Final = 2
 UTILITY_METER_DOMAIN: Final = "utility_meter"
@@ -38,20 +41,19 @@ DAILY: Final = "daily"
 
 
 def resets_daily(states: Sequence[tuple[datetime, float]]) -> bool:
-    """Return True if the value falls back to near 0 on at least two days.
+    """Return True if the value falls back on at least two days.
 
     `states` are (start, state) pairs in time order, with local times. A
-    reset is a value of at most 5 % of the maximum since the last reset; it
-    counts once per day, at any time of day.
+    reset is a state below half of the state the hour before; it counts once
+    per day, at any time of day. A meter that goes below 0 in `states` (a net
+    meter) is never daily.
     """
+    if any(value < 0 for _, value in states):
+        return False
     reset_days: set[date] = set()
-    peak: float | None = None
-    for when, value in states:
-        if peak is not None and peak > 0 and value <= DROP_SHARE * peak:
+    for (_, before), (when, value) in pairwise(states):
+        if value < FALL_SHARE * before:
             reset_days.add(when.date())
-            peak = value
-        else:
-            peak = value if peak is None else max(peak, value)
     return len(reset_days) >= MIN_RESET_DAYS
 
 
@@ -84,6 +86,8 @@ async def async_daily_resetting(
         return daily
     end = dt_util.utcnow()
     try:
+        # The timeout only stops waiting; the recorder still finishes the job
+        # in its executor.
         async with asyncio.timeout(QUERY_TIMEOUT):
             rows = await get_instance(hass).async_add_executor_job(
                 statistics_during_period,
