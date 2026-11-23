@@ -64,8 +64,8 @@
     "not_a_power_candidate": {
       "message": "{entity_id} non è un sensore di potenza o di portata senza contatore."
     },
-    "not_a_power_sensor": {
-      "message": "{entity_id} non è un sensore di potenza."
+    "not_a_solar_power": {
+      "message": "{entity_id} non è il sensore di potenza di una fonte solare salvata."
     },
     "integral_failed": {
       "message": "Non è stato possibile creare l’helper del contatore."

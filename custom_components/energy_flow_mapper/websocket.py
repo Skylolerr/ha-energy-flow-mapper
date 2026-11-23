@@ -638,20 +638,27 @@ async def websocket_create_integral(
     """Create an integral helper for a power or flow sensor without meter.
 
     The helper is created at once, not on save; the panel then adds its meter
-    to the draft, in the list `kind` names. With `of_source`, the sensor is a
-    source's power sensor (a sum meter uses its integral in place of a daily
-    resetting solar meter): it is used and has a meter, so any electricity
-    power sensor is accepted.
+    to the draft, in the list `kind` names. With `of_source`, the sensor must
+    be the power sensor of a saved solar source (a sum meter uses its integral
+    in place of a daily resetting solar meter); it is used and has a meter, so
+    the candidate check does not apply.
     """
     runtime = _runtime(hass)
     power = msg[ATTR_POWER_ENTITY_ID]
+    prefs = await energy_access.async_get_prefs(hass)
     kind: DeviceKind | None
     if msg[ATTR_OF_SOURCE]:
-        if not async_is_rate_sensor(hass, power, DeviceKind.ELECTRICITY):
-            raise _error("not_a_power_sensor", entity_id=power)
+        solar = {
+            source.get("stat_rate")
+            for source in prefs.get(KEY_SOURCES, [])
+            if source.get("type") == "solar"
+        }
+        if power not in solar or not async_is_rate_sensor(
+            hass, power, DeviceKind.ELECTRICITY
+        ):
+            raise _error("not_a_solar_power", entity_id=power)
         kind = DeviceKind.ELECTRICITY
     else:
-        prefs = await energy_access.async_get_prefs(hass)
         kind = next(
             (
                 kind

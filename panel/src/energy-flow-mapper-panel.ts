@@ -1893,8 +1893,9 @@ export class EnergyFlowMapperPanel extends LitElement {
    * The rate sensors to add up as well, in the order of `stats`: a device's
    * power sensor, a solar source's, or that of an integral standing in for a
    * solar meter (`integrals`). `rates` is empty unless every member has one;
-   * `missing` are the members without, and a grid or battery member
-   * (`blockedBySource`, its sign depends on the direction) gives no rates.
+   * `missing` are the members without. Any other source (grid and battery:
+   * the sign depends on the direction; water, gas: no consumer) gives no
+   * rates (`blockedBySource`).
    */
   private _sumRates(
     stats: string[],
@@ -1907,17 +1908,11 @@ export class EnergyFlowMapperPanel extends LitElement {
     let blockedBySource = false;
     for (const stat of stats) {
       const row = sources.find((r) => r.stat === stat);
-      if (row !== undefined && (row.type === "grid" || row.type === "battery")) {
+      if (row !== undefined && row.type !== "solar") {
         blockedBySource = true;
         continue;
       }
-      const rate =
-        integrals[stat] ??
-        (row !== undefined
-          ? row.type === "solar"
-            ? row.stat_rate
-            : undefined
-          : devices.find((d) => d.stat_consumption === stat)?.stat_rate);
+      const rate = integrals[stat] ?? (row ?? devices.find((d) => d.stat_consumption === stat))?.stat_rate;
       if (typeof rate === "string" && rate !== "") {
         rates.push(rate);
       } else {
@@ -1937,6 +1932,22 @@ export class EnergyFlowMapperPanel extends LitElement {
     const integrals = dialog.integrals ?? {};
     const devices = all.filter((stat) => this.draft.some((d) => d.stat_consumption === stat));
     return devices.length === 1 && all.some((stat) => sources.has(stat) || stat in integrals) ? devices[0] : null;
+  }
+
+  /**
+   * The power sensor whose integral may stand in for the daily solar meter
+   * `stat` in a sum of `all`, or null. The solar's saved power sensor (the
+   * backend only integrates that one), unchanged in the draft; and every other
+   * member must have the integral's state class `total`, or the sum would mix
+   * state classes.
+   */
+  private _sumIntegralPower(stat: string, all: string[]): string | null {
+    const solar = (sources: Source[]) =>
+      sourceRows(sources, this._tab).find((r) => r.type === "solar" && r.stat === stat)?.stat_rate;
+    const saved = solar(this._snapshot?.prefs.energy_sources ?? []);
+    const others = all.filter((member) => member !== stat);
+    const total = others.every((member) => this.hass?.states[member]?.attributes.state_class === "total");
+    return saved && solar(this.draftSources) === saved && others.length > 0 && total ? saved : null;
   }
 
   /** The members that reset every day, when they are mixed with members that do not. */
@@ -4044,11 +4055,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const { rates, missing, blockedBySource } = this._sumRates(all, dialog.integrals);
     const replaceable = this._sumReplaceable(dialog, all);
     const daily = this._sumDailyMix(all);
-    const solarRates = new Map(
-      sourceRows(this.draftSources, this._tab)
-        .filter((r) => r.type === "solar" && r.stat_rate)
-        .map((r) => [r.stat, r.stat_rate!]),
-    );
+    const integralPowers = new Map(daily.map((stat) => [stat, this._sumIntegralPower(stat, all)]));
     const water = this._tab === "water";
     const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
@@ -4070,7 +4077,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${all.map((stat) => {
           const reason = reasons.get(stat) ?? null;
           const label = this._name(stat);
-          const power = daily.includes(stat) ? solarRates.get(stat) : undefined;
+          const power = integralPowers.get(stat);
           return html`<li class="sum-member" data-stat=${stat}>
             <div class="candidate-text">
               <span class="node-name">${label}</span>
@@ -4103,6 +4110,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       ${daily.length
         ? html`<p class="warning sum-daily-mix">
             ${this._t("sum_daily_mix", { names: daily.map((stat) => this._name(stat)).join(", ") })}
+            ${[...integralPowers.values()].some((power) => power !== null) ? nothing : this._t("sum_daily_mix_setup")}
           </p>`
         : nothing}
       ${dialog.picking
@@ -4130,13 +4138,17 @@ export class EnergyFlowMapperPanel extends LitElement {
             </label>
             <p class="hint">${this._t("sum_replace_reason")}</p>`
         : nothing}
-      <p class="hint">${this._t("sum_text", { helper: name })}</p>
+      <p class="hint">
+        ${replaceable !== null && dialog.replace !== false
+          ? this._t("sum_text_replace", { helper: name, name: this._name(replaceable) })
+          : this._t("sum_text", { helper: name })}
+      </p>
       ${rates.length
         ? html`<p class="hint">
             ${this._t(water ? "sum_rate_hint_water" : "sum_rate_hint", { helper: this._sumRateName(name) })}
           </p>`
         : blockedBySource
-          ? html`<p class="hint sum-rate-none">${this._t("sum_rate_source_sign")}</p>`
+          ? html`<p class="hint sum-rate-none">${this._t(water ? "sum_rate_source_water" : "sum_rate_source_sign")}</p>`
           : missing.length
             ? html`<p class="hint sum-rate-none">
                 ${this._t(water ? "sum_rate_missing_water" : "sum_rate_missing", {

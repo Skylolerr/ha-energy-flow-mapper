@@ -64,8 +64,8 @@
     "not_a_power_candidate": {
       "message": "{entity_id} n’est pas un capteur de puissance ou de débit sans compteur."
     },
-    "not_a_power_sensor": {
-      "message": "{entity_id} n’est pas un capteur de puissance."
+    "not_a_solar_power": {
+      "message": "{entity_id} n’est pas le capteur de puissance d’une source solaire enregistrée."
     },
     "integral_failed": {
       "message": "L’assistant du compteur n’a pas pu être créé."

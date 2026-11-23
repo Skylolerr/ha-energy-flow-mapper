@@ -3703,6 +3703,8 @@ describe("groups", () => {
     expect(dialogEl(el).textContent).toContain(
       "It is already part of the sum; below the new meter it would count twice.",
     );
+    expect(dialogEl(el).textContent).toContain("Its meter then takes the place of Server & co in your draft");
+    expect(dialogEl(el).textContent).not.toContain("every device in the sum moves below it");
     dialogButton(el, "Create").click();
     await settle(el);
     // One step: the new meter takes the server's place, its children and their group.
@@ -3763,6 +3765,7 @@ describe("groups", () => {
     replaceBox(el)!.click();
     await settle(el);
     expect(replaceBox(el)!.checked).toBe(false);
+    expect(dialogEl(el).textContent).toContain("every device in the sum moves below it");
     dialogButton(el, "Create").click();
     await settle(el);
     expect(el._changes).toEqual([
@@ -3793,17 +3796,37 @@ describe("groups", () => {
     });
   });
 
+  function integralButton(el: EnergyFlowMapperPanel, stat: string): HTMLButtonElement | undefined {
+    const member = dialogEl(el).querySelector(`.sum-member[data-stat="${stat}"]`)!;
+    return [...member.querySelectorAll("button")].find((b) => b.textContent!.includes("Use an integral of its power"));
+  }
+
   it("sum warns when a daily meter is mixed", async () => {
+    // The server counts total_increasing; an integral (total) cannot join it.
+    const el = await mount(solarMock(true));
+    await openSum(el, ["sensor.server", "sensor.solar"]);
+    expect(dialogEl(el).textContent).toContain("These meters start again at 0 every day: Roof solar.");
+    expect(integralButton(el, "sensor.solar")).toBeUndefined();
+    expect(dialogEl(el).textContent).toContain(
+      "This sum does not work with a daily meter. For a solar in a circuit, “Solar feeds in here…” on the device builds the gross meter instead.",
+    );
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+  });
+
+  it("sum offers an integral of a daily solar when the others count total", async () => {
     const mock = solarMock(true);
+    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
     mock.responses["energy_flow_mapper/create_integral"] = {
       entity_id: "sensor.roof_solar_energy",
       stat_rate: "sensor.solar_power",
       kind: "electricity",
     };
-    mock.hass.states["sensor.roof_solar_energy"] = meter("sensor.roof_solar_energy");
+    // HA's integral helper counts total.
+    mock.hass.states["sensor.roof_solar_energy"] = meter("sensor.roof_solar_energy", "total");
     const el = await mount(mock);
     await openSum(el, ["sensor.server", "sensor.solar"]);
     expect(dialogEl(el).textContent).toContain("These meters start again at 0 every day: Roof solar.");
+    expect(dialogEl(el).textContent).not.toContain("does not work with a daily meter");
     const solar = dialogEl(el).querySelector('.sum-member[data-stat="sensor.solar"]')!;
     [...solar.querySelectorAll("button")].find((b) => b.textContent!.includes("Use an integral of its power"))!.click();
     await settle(el);
@@ -3822,6 +3845,8 @@ describe("groups", () => {
     );
     // Its power is the solar's, and the server is still replaced.
     expect(replaceBox(el)!.checked).toBe(true);
+    expect(dialogEl(el).textContent).not.toContain("do not all have the same state class");
+    expect(dialogButton(el, "Create").disabled).toBe(false);
     dialogButton(el, "Create").click();
     await settle(el);
     expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toMatchObject({
@@ -3829,6 +3854,29 @@ describe("groups", () => {
       rate_entity_ids: ["sensor.server_power", "sensor.solar_power"],
     });
     expect(el._changes.at(-1)).toEqual({ type: "remove", stat: "sensor.server" });
+    // A power sensor set only in the draft is not offered: the backend integrates saved ones.
+    el._change({ type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.other_power" });
+    await openSum(el, ["sensor.tv", "sensor.solar"]);
+    mock.hass.states["sensor.tv"] = meter("sensor.tv", "total");
+    el.requestUpdate();
+    await settle(el);
+    expect(integralButton(el, "sensor.solar")).toBeUndefined();
+  });
+
+  it("sum with a water source makes no flow sum", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption_water = [{ stat_consumption: "sensor.tap", stat_rate: "sensor.tap_flow" }];
+    snap.prefs.energy_sources.push({ type: "water", stat_energy_from: "sensor.water_main", stat_rate: "sensor.main_flow" });
+    snap.stats["sensor.tap"] = info("sensor.tap", "Garden tap", { unit: "L", device_class: "water" });
+    snap.stats["sensor.water_main"] = info("sensor.water_main", "Water main", { unit: "L", device_class: "water" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    el.setTab("water");
+    await openSum(el, ["sensor.tap", "sensor.water_main"]);
+    expect(dialogEl(el).textContent).toContain("the flow of a water source cannot be added to a flow sum");
+    expect(dialogEl(el).textContent).not.toContain("have no flow sensor");
+    expect(dialogEl(el).textContent).not.toContain("adds up their flow");
   });
 
   it("puts a sum meter of a nested group in the group's place", async () => {

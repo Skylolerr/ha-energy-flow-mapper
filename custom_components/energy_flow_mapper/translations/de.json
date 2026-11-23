@@ -64,8 +64,8 @@
     "not_a_power_candidate": {
       "message": "{entity_id} ist kein Leistungs- oder Durchflusssensor ohne Zähler."
     },
-    "not_a_power_sensor": {
-      "message": "{entity_id} ist kein Leistungssensor."
+    "not_a_solar_power": {
+      "message": "{entity_id} ist nicht der Leistungssensor einer gespeicherten Solar-Quelle."
     },
     "integral_failed": {
       "message": "Der Helfer für den Zähler konnte nicht angelegt werden."
