@@ -326,6 +326,7 @@ export const en = {
   error_sum_not_possible: "{entity} cannot be summed: it needs to be a sensor with the right device class and a total or total-increasing state class.",
   error_sum_state_classes_differ: "The sensors do not all have the same state class (total or total increasing), so their sum would not be accepted as a meter.",
   error_sum_failed: "The sum meter could not be created.",
+  error_template_failed: "The template helper for the meter could not be created.",
   discard_title: "Discard the draft?",
   discard_confirm: "All {count} changes of the draft will be lost. This cannot be undone.",
   tools: "Tools",

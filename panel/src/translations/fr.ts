@@ -328,6 +328,7 @@ export const fr: Translations = {
   error_sum_not_possible: "{entity} ne peut pas être additionné : il doit s’agir d’un capteur avec la bonne classe d’appareil et la classe d’état total ou total_increasing.",
   error_sum_state_classes_differ: "Les capteurs n’ont pas tous la même classe d’état (total ou total_increasing) ; leur somme ne serait donc pas acceptée comme compteur.",
   error_sum_failed: "Le compteur de somme n’a pas pu être créé.",
+  error_template_failed: "L’assistant modèle du compteur n’a pas pu être créé.",
   discard_title: "Abandonner le brouillon ?",
   discard_confirm: "Les {count} modifications du brouillon seront perdues. Impossible de revenir en arrière.",
   tools: "Outils",

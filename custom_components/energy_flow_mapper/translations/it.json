@@ -79,6 +79,9 @@
     "sum_failed": {
       "message": "Non è stato possibile creare il contatore somma."
     },
+    "template_failed": {
+      "message": "Non è stato possibile creare l’helper template del contatore."
+    },
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
     },

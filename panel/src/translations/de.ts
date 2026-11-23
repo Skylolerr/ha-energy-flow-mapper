@@ -328,6 +328,7 @@ export const de: Translations = {
   error_sum_not_possible: "{entity} kann nicht summiert werden: Es muss ein Sensor mit der passenden Geräteklasse und der Zustandsklasse total oder total_increasing sein.",
   error_sum_state_classes_differ: "Die Sensoren haben nicht alle dieselbe Zustandsklasse (total oder total_increasing), darum würde ihre Summe nicht als Zähler akzeptiert.",
   error_sum_failed: "Der Summen-Zähler konnte nicht erstellt werden.",
+  error_template_failed: "Der Template-Helfer für den Zähler konnte nicht erstellt werden.",
   discard_title: "Entwurf verwerfen?",
   discard_confirm: "Alle {count} Änderungen des Entwurfs gehen verloren. Das lässt sich nicht rückgängig machen.",
   tools: "Werkzeuge",

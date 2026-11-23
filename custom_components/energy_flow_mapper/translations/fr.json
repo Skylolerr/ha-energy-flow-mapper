@@ -79,6 +79,9 @@
     "sum_failed": {
       "message": "Le compteur de somme n’a pas pu être créé."
     },
+    "template_failed": {
+      "message": "L’assistant modèle du compteur n’a pas pu être créé."
+    },
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
     },

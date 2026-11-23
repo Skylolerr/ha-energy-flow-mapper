@@ -328,6 +328,7 @@ export const it: Translations = {
   error_sum_not_possible: "{entity} non può essere sommato: deve essere un sensore con la classe di dispositivo corretta e la classe di stato total o total_increasing.",
   error_sum_state_classes_differ: "I sensori non hanno tutti la stessa classe di stato (total o total_increasing); la loro somma non sarebbe quindi accettata come contatore.",
   error_sum_failed: "Non è stato possibile creare il contatore somma.",
+  error_template_failed: "Non è stato possibile creare l’helper template del contatore.",
   discard_title: "Scartare la bozza?",
   discard_confirm: "Tutte le {count} modifiche della bozza andranno perse. Non si può annullare.",
   tools: "Strumenti",

@@ -79,6 +79,9 @@
     "sum_failed": {
       "message": "The sum meter could not be created."
     },
+    "template_failed": {
+      "message": "The template helper for the meter could not be created."
+    },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },

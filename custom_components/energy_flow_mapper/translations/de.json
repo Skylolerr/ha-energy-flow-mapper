@@ -79,6 +79,9 @@
     "sum_failed": {
       "message": "Der Summen-Zähler konnte nicht erstellt werden."
     },
+    "template_failed": {
+      "message": "Der Template-Helfer für den Zähler konnte nicht erstellt werden."
+    },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },
