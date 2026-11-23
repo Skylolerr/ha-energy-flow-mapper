@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from copy import deepcopy
 from typing import Any
 
@@ -320,6 +321,79 @@ async def test_returned_sensor_detection(hass: HomeAssistant) -> None:
     assert returned_sensor(hass, "sensor.unknown") is None
 
 
+async def test_no_returned_hint_when_returned_is_used(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A returned sensor already in the settings is counted: no hint."""
+    calls, data = statistics
+    # A plug measures a balcony inverter: its returned energy is the solar
+    # production, its consumed energy a device (the inverter's standby).
+    plug, plug_returned = _shelly(hass, "balcony", returned_disabled=False)
+    data[plug_returned] = changes(0.5, 0.8)
+    # A Pro EM channel whose returned energy is the grid export.
+    pro_em, pro_em_returned = _shelly(hass, "pro_em", returned_disabled=True)
+    prefs = _prefs(
+        [
+            {"stat_consumption": plug},
+            {"stat_consumption": pro_em},
+            {"stat_consumption": "sensor.heat_pump", "included_in_stat": pro_em},
+        ],
+        [
+            {"type": "solar", "stat_energy_from": plug_returned},
+            {
+                "type": "grid",
+                "stat_energy_from": "sensor.grid_import",
+                "stat_energy_to": pro_em_returned,
+            },
+        ],
+    )
+    assert await _hints(hass, prefs) == []
+    # Nothing left to read.
+    assert calls == []
+    assert returned_sensor(hass, plug, exclude={plug_returned}) is None
+    assert returned_sensor(hass, plug) == (plug_returned, False)
+
+
+async def test_returned_hint_any_sensor_qualifies(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """An enabled sensor that counts nothing does not hide a disabled one."""
+    _, data = statistics
+    meter, enabled = _shelly(hass, "pro_3em", returned_disabled=False)
+    device_id = er.async_get(hass).async_get(meter).device_id
+    _entity(
+        hass,
+        "sensor.pro_3em_phase_a_returned",
+        device_id,
+        unique_id="aabb-pro_3em-emdata:0-a_total_act_ret_energy",
+        translation_key="energy_returned",
+        disabled=True,
+    )
+    data[enabled] = changes(0.0, 0.0)
+    prefs = _prefs(
+        [
+            {"stat_consumption": meter},
+            {"stat_consumption": "sensor.wallbox", "included_in_stat": meter},
+        ]
+    )
+    # The enabled sensor still comes first for the solar setup.
+    assert returned_sensor(hass, meter) == (enabled, False)
+    assert await _hints(hass, prefs) == [
+        {
+            "code": HintCode.RETURNED_ENERGY,
+            "stat": meter,
+            "kind": "electricity",
+            "data": {"entity_id": "sensor.pro_3em_phase_a_returned", "disabled": True},
+        }
+    ]
+    # When the enabled one counts, it is named.
+    data[enabled] = changes(0.0, 0.2)
+    assert (await _hints(hass, prefs))[0]["data"] == {
+        "entity_id": enabled,
+        "disabled": False,
+    }
+
+
 def _group_sum(
     hass: HomeAssistant, entity_id: str, members: list[str], kind: str = "sum"
 ) -> str:
@@ -471,6 +545,7 @@ def energy_prefs() -> dict[str, Any]:
     prefs["device_consumption"] += [
         {"stat_consumption": "sensor.printer_energy"},
         {"stat_consumption": "sensor.house_sum"},
+        {"stat_consumption": "sensor.balcony_energy"},
     ]
     return prefs
 
@@ -520,3 +595,42 @@ async def test_get_returns_hints(
     ]
     assert len(calls) == 1
     assert "sensor.day_meter" in calls[0][3]
+
+
+@pytest.mark.usefixtures("sensors", "loaded_entry")
+async def test_get_reads_daily_and_returned_at_once(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Both recorder queries of `get` run at the same time, not one after the other."""
+    calls, data = statistics
+    events: list[str] = []
+
+    class OrderedRecorder(FakeRecorder):
+        async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
+            events.append("start")
+            await asyncio.sleep(0)
+            events.append("end")
+            return func(*args)
+
+    async def no_external(hass: HomeAssistant, **kwargs: Any) -> list[Any]:
+        return []
+
+    monkeypatch.setattr(candidates_module, "async_list_statistic_ids", no_external)
+    monkeypatch.setattr(daily_reset, "get_instance", OrderedRecorder)
+    _, returned = _shelly(hass, "balcony", returned_disabled=False)
+    data[returned] = changes(0.4)
+    client = await hass_ws_client(hass)
+    await client.send_json_auto_id({"type": f"{DOMAIN}/get"})
+    response = await client.receive_json()
+    assert response["success"], response
+    assert len(calls) == 2
+    assert events == ["start", "start", "end", "end"]
+    assert {
+        "code": "returned_energy",
+        "stat": "sensor.balcony_energy",
+        "kind": "electricity",
+        "data": {"entity_id": returned, "disabled": False},
+    } in response["result"]["hints"]

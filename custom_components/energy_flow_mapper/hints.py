@@ -18,7 +18,7 @@ members of a sum helper) and the recorder (energy counted lately).
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Iterator, Mapping
 from enum import StrEnum
 from typing import Any, Final
 
@@ -41,6 +41,7 @@ from .hierarchy import (
     power_stats,
     source_energy_stats,
     source_kind,
+    used_stats,
 )
 
 
@@ -84,7 +85,9 @@ SHELLY_RETURNED_KEYS: Final = frozenset(
     }
 )
 # Fallback for other integrations: words in the entity name (the user's name or
-# the integration's). Only English names; translated ones need the key above.
+# the integration's). The registry stores `original_name` in the language of
+# the instance, so this only works where Home Assistant runs in English;
+# elsewhere the translation keys above are needed.
 RETURNED_NAME_WORDS: Final = ("returned", "export")
 # Days in which a returned sensor must have counted energy.
 COUNTED_DAYS: Final = 3
@@ -105,35 +108,50 @@ def _is_returned(entry: er.RegistryEntry) -> bool:
     return any(word in name for word in RETURNED_NAME_WORDS)
 
 
-def returned_sensor(
-    hass: HomeAssistant, meter_entity_id: str
-) -> tuple[str, bool] | None:
-    """Return (entity ID, disabled) of the returned sensor of a meter's device.
+def returned_sensors(
+    hass: HomeAssistant, meter_entity_id: str, *, exclude: Collection[str] = ()
+) -> list[tuple[str, bool]]:
+    """Return (entity ID, disabled) of every returned sensor of a meter's device.
 
     Looks at every energy sensor of the meter's HA device, disabled ones too
-    (they have no state, only a registry entry). An enabled sensor comes
-    first, then by entity ID. None when the meter has no device or the device
-    has no returned sensor.
+    (they have no state, only a registry entry). Enabled sensors come first,
+    then by entity ID. Sensors in `exclude` (those already used in the energy
+    settings, such as a solar or grid export statistic) are left out: their
+    energy is counted already.
     """
     registry = er.async_get(hass)
     meter = registry.async_get(meter_entity_id)
     if meter is None or meter.device_id is None:
-        return None
+        return []
     found = [
         entry
         for entry in er.async_entries_for_device(
             registry, meter.device_id, include_disabled_entities=True
         )
         if entry.entity_id != meter_entity_id
+        and entry.entity_id not in exclude
         and entry.domain == "sensor"
         and (entry.device_class or entry.original_device_class)
         == SensorDeviceClass.ENERGY
         and _is_returned(entry)
     ]
-    if not found:
-        return None
-    best = min(found, key=lambda entry: (entry.disabled, entry.entity_id))
-    return best.entity_id, best.disabled
+    return [
+        (entry.entity_id, entry.disabled)
+        for entry in sorted(found, key=lambda entry: (entry.disabled, entry.entity_id))
+    ]
+
+
+def returned_sensor(
+    hass: HomeAssistant, meter_entity_id: str, *, exclude: Collection[str] = ()
+) -> tuple[str, bool] | None:
+    """Return (entity ID, disabled) of the returned sensor of a meter's device.
+
+    The first of `returned_sensors`: an enabled sensor before a disabled one.
+    None when the meter has no device or the device has no returned sensor
+    outside `exclude`.
+    """
+    found = returned_sensors(hass, meter_entity_id, exclude=exclude)
+    return found[0] if found else None
 
 
 def _sum_helper(hass: HomeAssistant, stat: str) -> tuple[str, list[str]] | None:
@@ -210,14 +228,64 @@ def _power(
     )
 
 
-async def _async_counted(hass: HomeAssistant, entity_ids: set[str]) -> set[str]:
-    """Return the sensors whose statistics grew in the last days."""
+def _returned_by_device(prefs: Prefs) -> Iterator[tuple[str, set[str]]]:
+    """Yield (electricity device stat, used statistics) while solar exists."""
+    sources = prefs.get(KEY_SOURCES, [])
+    if not any(source.get("type") == "solar" for source in sources):
+        return
+    used = used_stats(prefs)
+    for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], []):
+        yield device[STAT], used
+
+
+async def async_counted_returned(hass: HomeAssistant, prefs: Prefs) -> set[str]:
+    """Return the enabled returned sensors that counted energy in the last days.
+
+    Only sensors that can give a hint are read, all in one query: enabled
+    returned sensors of electricity devices, not used in the settings, while
+    a solar source exists. A failing recorder gives an empty set.
+    """
+    entity_ids = {
+        entity_id
+        for stat, used in _returned_by_device(prefs)
+        for entity_id, disabled in returned_sensors(hass, stat, exclude=used)
+        if not disabled
+    }
+    if not entity_ids:
+        return set()
     rows = await async_hourly_statistics(hass, entity_ids, COUNTED_DAYS, {"change"})
     return {
         entity_id
         for entity_id in entity_ids
         if sum(row.get("change") or 0 for row in (rows or {}).get(entity_id, [])) > 0
     }
+
+
+def _returned_hints(
+    hass: HomeAssistant, prefs: Prefs, counted: set[str]
+) -> dict[str, dict[str, Any]]:
+    """Return the returned-energy hint of each electricity device, by stat.
+
+    A device gets it when any of its returned sensors qualifies: enabled and
+    in `counted`, or disabled and the device has children. `data` names the
+    first one that does.
+    """
+    parents = {
+        device.get(PARENT)
+        for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])
+    }
+    hints: dict[str, dict[str, Any]] = {}
+    for stat, used in _returned_by_device(prefs):
+        for entity_id, disabled in returned_sensors(hass, stat, exclude=used):
+            if (stat in parents) if disabled else (entity_id in counted):
+                hints[stat] = _hint(
+                    HintCode.RETURNED_ENERGY,
+                    stat,
+                    DeviceKind.ELECTRICITY,
+                    {"entity_id": entity_id, "disabled": disabled},
+                )
+                break
+    return hints
 
 
 def _source_hints(
@@ -261,62 +329,32 @@ async def async_hints(
     prefs: Prefs,
     stats: Mapping[str, dict[str, Any]],
     daily: set[str],
+    counted: set[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Return the hints of the devices, then the sources, in settings order.
 
     `stats` is the statistics info of `get` (for the HA device of a meter),
-    `daily` the statistics that reset every day. Hint dicts are
-    `{code, stat, kind, data}`; dismissals are left to the panel.
+    `daily` the statistics that reset every day, `counted` the result of
+    `async_counted_returned` (read here when not given; `get` reads it
+    together with `daily`). Hint dicts are `{code, stat, kind, data}`;
+    dismissals are left to the panel.
     """
-    sources = prefs.get(KEY_SOURCES, [])
-    solar = any(source.get("type") == "solar" for source in sources)
-    parents = {
-        device.get(PARENT)
-        for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])
-    }
-    # An enabled returned sensor waits as (stat, sensor) for its statistics,
-    # which one query reads for all of them.
-    hints: list[dict[str, Any] | tuple[str, str]] = []
+    if counted is None:
+        counted = await async_counted_returned(hass, prefs)
+    returned = _returned_hints(hass, prefs, counted)
+    hints: list[dict[str, Any]] = []
     for kind, key in DEVICE_KEYS.items():
         for device in prefs.get(key, []):
             stat = device[STAT]
-            returned = (
-                returned_sensor(hass, stat)
-                if solar and kind is DeviceKind.ELECTRICITY
-                else None
-            )
-            if returned is not None and not returned[1]:
-                hints.append((stat, returned[0]))
-            elif returned is not None and stat in parents:
-                hints.append(
-                    _hint(
-                        HintCode.RETURNED_ENERGY,
-                        stat,
-                        kind,
-                        {"entity_id": returned[0], "disabled": True},
-                    )
-                )
+            if kind is DeviceKind.ELECTRICITY and stat in returned:
+                hints.append(returned[stat])
             if (hint := _daily_hint(hass, stat, kind, daily)) is not None:
                 hints.append(hint)
             if not device.get(RATE) and (power := _power(hass, stats, stat, kind)):
                 hints.append(
                     _hint(HintCode.POWER_AVAILABLE, stat, kind, {"entity_id": power})
                 )
-    for source in sources:
+    for source in prefs.get(KEY_SOURCES, []):
         if source.get("type") in EDITABLE_SOURCE_TYPES:
             hints.extend(_source_hints(hass, source, stats, daily))
-
-    waiting = {hint[1] for hint in hints if isinstance(hint, tuple)}
-    counted = await _async_counted(hass, waiting) if waiting else set()
-    return [
-        hint
-        if isinstance(hint, dict)
-        else _hint(
-            HintCode.RETURNED_ENERGY,
-            hint[0],
-            DeviceKind.ELECTRICITY,
-            {"entity_id": hint[1], "disabled": False},
-        )
-        for hint in hints
-        if isinstance(hint, dict) or hint[1] in counted
-    ]
+    return hints

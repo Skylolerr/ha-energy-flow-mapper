@@ -98,7 +98,7 @@ from .hierarchy import (
     untracked,
     validate,
 )
-from .hints import async_hints, async_sum_members
+from .hints import async_counted_returned, async_hints, async_sum_members
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
 from .sum_meter import async_create_sum, check_rate_members, check_sum_members
@@ -390,10 +390,15 @@ async def websocket_get(
     meters = [*stats.values(), *candidates, *water, *gas]
     async_mark_created(hass, meters, runtime.helpers.entries())
     # Members of sum helpers may be neither used nor candidates; their daily
-    # resets come from the same query.
-    daily = await async_daily_resetting(
-        hass,
-        sorted({info["stat"] for info in meters} | async_sum_members(hass, prefs)),
+    # resets come from the same query. Both recorder queries (daily resets,
+    # returned energy counted lately) run at once: a busy recorder makes the
+    # panel wait for one timeout, not two.
+    daily, counted = await asyncio.gather(
+        async_daily_resetting(
+            hass,
+            sorted({info["stat"] for info in meters} | async_sum_members(hass, prefs)),
+        ),
+        async_counted_returned(hass, prefs),
     )
     mark_daily_reset(meters, daily)
     issues = _issues(hass, prefs)
@@ -422,7 +427,7 @@ async def websocket_get(
                 },
             ),
             "ignored_suggestions": runtime.suggestions.ignored(),
-            "hints": await async_hints(hass, prefs, stats, daily),
+            "hints": await async_hints(hass, prefs, stats, daily, counted),
         },
     )
 
