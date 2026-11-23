@@ -193,6 +193,8 @@ export interface SolarPreview {
   /** Why the setup cannot be done (an error key), or null. */
   blocked: string | null;
   blocked_entity: string | null;
+  /** A power sensor without a unit that can be read: then there is no gross power. */
+  unusable_power?: string | null;
 }
 
 /** How a circuit meter counts: both ways (net), or only what it draws. */

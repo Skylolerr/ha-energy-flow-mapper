@@ -401,6 +401,11 @@ function navigate(path: string): void {
   window.dispatchEvent(new CustomEvent("location-changed", { detail: { replace: false } }));
 }
 
+/** Whether the solar setup creates a gross power: both power sensors exist and can be read. */
+function solarWithPower(preview: SolarPreview): boolean {
+  return preview.circuit_power !== null && preview.solar_power !== null && !preview.unusable_power;
+}
+
 export class EnergyFlowMapperPanel extends LitElement {
   static override properties = {
     hass: { attribute: false },
@@ -505,6 +510,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _validateRequest = 0;
   private _energyRequest = 0;
   private _solarRequest = 0;
+  /** Counts sum dialogs opened and dialogs closed; a late answer for an earlier one is dropped. */
+  private _sumSession = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   /** The diagram follows the viewport size until the user zooms or pans. */
@@ -1790,7 +1797,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._change({ type: "assign_source", role, stat, ...(replaces && replace ? { replace } : {}) });
   }
 
-  /** Statistics used by the draft's devices (both tabs) and sources. */
+  /** Statistics used by the draft's devices (both tabs) and sources, with their power sensors. */
   private _usedInDraft(): Set<string> {
     const used = new Set<string>();
     for (const device of [...this.draftOf("electricity"), ...this.draftOf("water")]) {
@@ -1801,6 +1808,11 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     for (const row of sourceRows(this.draftSources)) {
       used.add(row.stat);
+    }
+    for (const source of this.draftSources) {
+      for (const power of powerStats(source)) {
+        used.add(power);
+      }
     }
     return used;
   }
@@ -1938,7 +1950,8 @@ export class EnergyFlowMapperPanel extends LitElement {
     for (const candidate of (flow ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? []) {
       ids.add(candidate.stat);
     }
-    const device = this._snapshot?.stats[stat]?.device_id ?? null;
+    // Saved meters, else the candidates: a meter added in the draft has its device too.
+    const device = this._info(stat)?.device_id ?? null;
     const entities = this.hass?.entities ?? {};
     return [...ids]
       .map((entity_id) => ({
@@ -1973,6 +1986,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const base =
       "group" in from ? (this._groups.find((g) => g.id === from.group)?.name ?? "") : this._name(from.origin, this.draft);
     this._renameValue = `${base} ${this._t(this._tab === "water" ? "water_suffix" : "energy_suffix")}`;
+    this._sumSession++;
     this._dialog =
       "group" in from
         ? { kind: "sum", group: from.group, origin: null, added: [], picking: false }
@@ -2101,6 +2115,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     return saved && solar(this.draftSources) === saved && others.length > 0 && total ? saved : null;
   }
 
+  /**
+   * Whether a solar source is among the members: a net circuit meter (total)
+   * and a solar (total increasing) cannot be summed, but the solar setup
+   * builds their gross meter with templates.
+   */
+  private _sumHasSolar(all: string[]): boolean {
+    const solars = new Set(
+      sourceRows(this.draftSources, this._tab)
+        .filter((row) => row.type === "solar")
+        .map((row) => row.stat),
+    );
+    return all.some((stat) => solars.has(stat));
+  }
+
   /** The members that reset every day, when they are mixed with members that do not. */
   private _sumDailyMix(all: string[]): string[] {
     const daily = all.filter((stat) => this._info(stat)?.daily_reset === true);
@@ -2110,12 +2138,15 @@ export class EnergyFlowMapperPanel extends LitElement {
   /**
    * Create an integral of a daily solar meter's power sensor right away and
    * put its meter into the sum in the solar's place. The solar source itself
-   * stays as it is.
+   * stays as it is. Only the sum dialog that asked takes the answer: not one
+   * opened after it was closed, nor one without the solar any more.
    */
   async _sumIntegral(stat: string, power: string): Promise<void> {
-    if (!this.hass) {
+    const asked = this._dialog;
+    if (!this.hass || asked?.kind !== "sum") {
       return;
     }
+    const session = this._sumSession;
     const base = String(this.hass.states[power]?.attributes.friendly_name ?? "") || this._name(stat);
     const name = `${base} ${this._t("energy_suffix")}`;
     this._busy = true;
@@ -2128,7 +2159,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       });
       await this._load();
       const dialog = this._dialog;
-      if (dialog?.kind === "sum") {
+      if (
+        dialog?.kind === "sum" &&
+        this._sumSession === session &&
+        dialog.origin === asked.origin &&
+        dialog.group === asked.group &&
+        dialog.added.includes(stat)
+      ) {
         this._dialog = {
           ...dialog,
           added: dialog.added.map((s) => (s === stat ? result.entity_id : s)),
@@ -2330,6 +2367,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       names: null,
     };
     this._dialog = dialog;
+    // A preview still on its way belongs to an earlier dialog.
+    this._solarRequest++;
     if (solars.length === 1 && this._solarDeviceSaved(stat)) {
       void this._loadSolarPreview(solars[0], null);
     }
@@ -2361,7 +2400,12 @@ export class EnergyFlowMapperPanel extends LitElement {
       error = errorText(this.hass, err);
     }
     const dialog = this._dialog;
-    if (request !== this._solarRequest || dialog?.kind !== "solar" || dialog.stat !== stat) {
+    if (
+      request !== this._solarRequest ||
+      dialog?.kind !== "solar" ||
+      dialog.stat !== stat ||
+      dialog.solar !== solar
+    ) {
       return;
     }
     const name = this._name(stat, this.draft);
@@ -2394,7 +2438,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     const name = names.energy.trim();
-    const withPower = preview.circuit_power !== null && preview.solar_power !== null;
+    const withPower = solarWithPower(preview);
     this._busy = true;
     try {
       const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
@@ -4396,6 +4440,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   private _close(): void {
+    this._sumSession++;
     this._dialog = null;
   }
 
@@ -4481,7 +4526,12 @@ export class EnergyFlowMapperPanel extends LitElement {
         })}
       </ul>
       ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
-      ${mixed ? html`<p class="warning">${this._t("error_sum_state_classes_differ")}</p>` : nothing}
+      ${mixed
+        ? html`<p class="warning sum-mixed">
+            ${this._t("error_sum_state_classes_differ")}
+            ${this._sumHasSolar(all) ? this._t("sum_mixed_solar_setup") : nothing}
+          </p>`
+        : nothing}
       ${daily.length
         ? html`<p class="warning sum-daily-mix">
             ${this._t("sum_daily_mix", { names: daily.map((stat) => this._name(stat)).join(", ") })}
@@ -4599,7 +4649,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         : kind === "draws" && returned !== null
           ? `${term(dialog.stat)} − ${term(returned)} + ${solarName}`
           : `${term(dialog.stat)} + ${solarName}`;
-    const withPower = preview !== null && preview.circuit_power !== null && preview.solar_power !== null;
+    const withPower = preview !== null && solarWithPower(preview);
     // Every name shown is needed; an empty one would get the backend's untranslated default.
     const shownNames = [
       names?.energy,
@@ -4715,7 +4765,11 @@ export class EnergyFlowMapperPanel extends LitElement {
                   </ul>
                   ${preview.circuit_power === null
                     ? html`<p class="hint solar-no-circuit-power">${this._t("solar_setup_no_circuit_power", { name })}</p>`
-                    : nothing}
+                    : preview.unusable_power
+                      ? html`<p class="hint solar-unusable-power">
+                          ${this._t("solar_setup_unusable_power", { entity: term(preview.unusable_power) })}
+                        </p>`
+                      : nothing}
                   <p class="hint">${this._t(withPower ? "solar_setup_text" : "solar_setup_text_no_power", { name })}</p>`}`
         : nothing}
       <div class="dialog-actions">

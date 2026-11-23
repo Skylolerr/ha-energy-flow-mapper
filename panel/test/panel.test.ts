@@ -3871,6 +3871,49 @@ describe("groups", () => {
     expect(integralButton(el, "sensor.solar")).toBeUndefined();
   });
 
+  it("a late integral stays out of a sum dialog opened meanwhile", async () => {
+    const mock = solarMock(true);
+    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
+    mock.hass.states["sensor.tv"] = meter("sensor.tv", "total");
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_integral"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    await openSum(el, ["sensor.server", "sensor.solar"]);
+    integralButton(el, "sensor.solar")!.click();
+    await settle(el);
+    // Cancelled before the answer; another sum with the same solar is opened.
+    dialogButton(el, "Cancel").click();
+    await settle(el);
+    el._openSum({ origin: "sensor.tv" });
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv", "sensor.solar"], picking: false };
+    await settle(el);
+    resolve({ entity_id: "sensor.roof_solar_energy", stat_rate: "sensor.solar_power", kind: "electricity" });
+    await settle(el);
+    expect(members(el)).toEqual(["sensor.tv", "sensor.solar"]);
+    expect(el._dialog).toMatchObject({ kind: "sum", origin: "sensor.tv" });
+    expect((el._dialog as { integrals?: unknown }).integrals).toBeUndefined();
+    // The helper was created all the same: the toast says so.
+    expect(el._toast).toContain("Roof solar Energy");
+  });
+
+  it("sum of a net meter and a solar points to the solar setup", async () => {
+    // A net sub-panel meter counts total, the solar total_increasing.
+    const mock = solarMock();
+    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
+    const el = await mount(mock);
+    await openSum(el, ["sensor.server", "sensor.solar"]);
+    let text = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(text).toContain("do not all have the same state class");
+    expect(text).toContain(
+      "For a solar in a circuit, “Solar feeds in here…” on the device builds the gross meter instead, with templates that can mix them.",
+    );
+    // Without a solar among them the classes only differ.
+    await openSum(el, ["sensor.server", "sensor.tv"]);
+    text = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(text).toContain("do not all have the same state class");
+    expect(text).not.toContain("Solar feeds in here");
+  });
+
   it("sum with a water source makes no flow sum", async () => {
     const mock = mockHass();
     const snap = snapshot();
@@ -4737,6 +4780,44 @@ describe("power sensors", () => {
     expect(picker(el).options[1].textContent).toContain("TV power · Same device");
   });
 
+  it("power options mark the own device of a meter added in the draft", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.candidates[0] = { ...snap.candidates[0], device_id: "dev-plug" };
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.printer_power"] = sensor("sensor.printer_power", "Printer power");
+    mock.hass.entities = {
+      "sensor.printer_power": { entity_id: "sensor.printer_power", device_id: "dev-plug" },
+    };
+    const el = await mount(mock);
+    el._change({ type: "add", stat: "sensor.printer", parent: null });
+    await settle(el);
+    expect(el._powerOptions("sensor.printer")[0]).toEqual({ entity_id: "sensor.printer_power", sameDevice: true });
+  });
+
+  it("a power sensor given to a source in the draft leaves the free list", async () => {
+    const mock = powerMock();
+    const snap = snapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.solar" });
+    snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar");
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    expect(el._freePowerSensors().map((c) => c.stat)).toEqual(["sensor.ups_power"]);
+    el._change({ type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.ups_power" });
+    await settle(el);
+    expect(el._freePowerSensors()).toEqual([]);
+    // A grid's power_config counts too.
+    el._change({ type: "set_source_rate", stat: "sensor.solar", role: "production" });
+    el._change({
+      type: "set_source_rate",
+      stat: "sensor.import",
+      role: "import",
+      power_config: { stat_rate_from: "sensor.grid_in", stat_rate_to: "sensor.ups_power" },
+    });
+    await settle(el);
+    expect(el._freePowerSensors()).toEqual([]);
+  });
+
   it("explains each power variant for grid and battery", async () => {
     const mock = powerMock();
     const snap = snapshot();
@@ -5253,6 +5334,68 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
     expect(content).toContain("Server & co already adds up the solar, so a gross meter would count the solar twice.");
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+  });
+
+  it("setup ignores a preview that answers after the dialog was opened again", async () => {
+    const snap = solarSnapshot();
+    snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.balcony" });
+    snap.stats["sensor.balcony"] = info("sensor.balcony", "Balcony solar");
+    const mock = hintMock(snap);
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    await openSetup(el);
+    // Two solars: nothing is asked until one is picked.
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toBeUndefined();
+    dialogEl(el).querySelector<HTMLInputElement>('input[name="solar-source"][value="sensor.solar"]')!.click();
+    await settle(el);
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    await openSetup(el);
+    resolve(preview());
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "solar", solar: null, preview: null });
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+  });
+
+  it("setup leaves out the gross power when a power sensor has no usable unit", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({ unusable_power: "sensor.solar_power" });
+    mock.responses["energy_flow_mapper/create_solar_setup"] = { entity_id: "sensor.server_gross", stat_rate: null };
+    const el = await mount(mock);
+    await openSetup(el);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain(
+      "Solar power has no power unit that can be read, so there is no gross power and the gross meter shows no live value.",
+    );
+    expect(content).toContain("and the name you gave Server & co, if any. Save as usual.");
+    expect(textInputs(el).map((i) => i.value)).toEqual(["Server & co gross"]);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).not.toHaveProperty("power_name");
+  });
+
+  it("setup explains why it has to wait", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      blocked: "input_not_ready",
+      blocked_entity: "sensor.solar_power",
+    });
+    const el = await mount(mock);
+    await openSetup(el);
+    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("Solar power has no value right now");
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      blocked: "daily_check_failed",
+      blocked_entity: "sensor.server",
+    });
+    await openSetup(el);
+    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("the recorder did not answer in time. Try again in a moment.");
     expect(dialogButton(el, "Set up")).toBeUndefined();
   });
 

@@ -289,8 +289,9 @@ the sensors live.
   flow sum, because their sign depends on the direction; the dialog says which member
   keeps the sum from being created.
 - **Meters that start again at 0 every day** (the daily energy of many micro inverters,
-  utility meters with a daily cycle) are recognised: a meter that fell below half of the
-  hour before on at least 2 of the last 3 days. In a sum with meters that do not reset,
+  utility meters with a daily cycle) are recognised: a meter that jumped towards 0 – to
+  less than half of the hour before, and much more than it usually changes in an hour,
+  from above or from below 0 – on at least 2 of the last 3 days. In a sum with meters that do not reset,
   the sum would drop once a day and Home Assistant would count it all again, so the
   dialog warns. Where the daily meter is a solar with a power sensor, it offers an
   integral of that power instead.
@@ -339,8 +340,8 @@ saved solar source, so save your draft first.
    «gross» and «gross power»):
    - a template helper for the gross energy, in kWh,
    - a template helper for the gross power, in W: the circuit's power plus the solar's
-     power. Without a power sensor of the circuit there is no gross power, and the
-     preview says so,
+     power. Without a power sensor of the circuit, or with one whose unit cannot be
+     read, there is no gross power, and the preview says so,
    - an integral helper of its own power for every input that starts again at 0 every
      day (the daily energy of many micro inverters), so the gross meter never drops at
      night. If such an input has no power sensor, the setup stops and says why.
@@ -354,7 +355,12 @@ Good to know:
 - The helpers are ordinary Home Assistant template and integral helpers under Settings →
   Helpers. They keep working without Energy Flow Mapper and stay if you undo the draft.
 - A template has no value while one of its inputs has none (for example while a sensor is
-  unavailable).
+  unavailable). The setup itself waits until every input has a value, and it asks you to
+  try again when the check for daily meters could not run (a busy recorder).
+- **The gross meter starts at 1 kWh or more.** A circuit that has returned more than it
+  drew so far would start it below 0, and Home Assistant ignores a meter while it is
+  below 0. The template then adds a fixed number of kWh; that does not change what the
+  meter counts.
 - **Units are fixed when the helpers are created:** an input in Wh or kW is converted to
   kWh or W with a factor written into the template. If an input's unit changes later,
   the template keeps the old factor; edit the template or run the setup again.
