@@ -20,6 +20,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups, helpers the panel created, ignored suggestions |
 | `integral.py`, `sum_meter.py` | Create integral helpers ("Create meter") and sensor group sums ("Create sum meter") |
+| `template_meter.py`, `solar_setup.py` | Create template sensor helpers; the guided setup "Solar feeds in here" (gross energy and power templates, integrals for daily inputs, rollback of the whole request) |
 | `transfer.py` | Export and import of the energy settings as a file |
 | `websocket.py` | All WebSocket commands (admin only, except the read-only card command) |
 | `frontend.py` | Serve the bundles, register the panel, load the card |

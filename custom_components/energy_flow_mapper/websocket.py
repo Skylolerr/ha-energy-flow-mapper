@@ -101,6 +101,7 @@ from .hierarchy import (
 from .hints import async_counted_returned, async_hints, async_sum_members
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
+from .solar_setup import MeterKind, Names, async_create, async_plan
 from .sum_meter import async_create_sum, check_rate_members, check_sum_members
 from .transfer import InvalidImportError, build_export, parse_import
 
@@ -271,6 +272,8 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_restore)
     async_register_command(hass, websocket_create_integral)
     async_register_command(hass, websocket_create_sum_meter)
+    async_register_command(hass, websocket_solar_setup_preview)
+    async_register_command(hass, websocket_create_solar_setup)
     async_register_command(hass, websocket_energy)
     async_register_command(hass, websocket_export)
     async_register_command(hass, websocket_import_check)
@@ -732,6 +735,72 @@ async def websocket_create_sum_meter(
             await runtime.helpers.async_discard(entry_id)
             raise
         await runtime.helpers.async_add(rate_entry_id)
+    connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
+
+
+_METER_KINDS = vol.In([kind.value for kind in MeterKind])
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/solar_setup_preview",
+        vol.Required("stat"): str,
+        vol.Required("solar"): str,
+        vol.Optional(ATTR_KIND): _METER_KINDS,
+    }
+)
+@require_admin
+@async_response
+async def websocket_solar_setup_preview(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Return what "Solar feeds in here" would create for a device and solar.
+
+    `kind` (net or draws) defaults to the suggested one: draws when the
+    meter's HA device has a returned sensor. `blocked` is the reason the setup
+    cannot be done (an exception key, for `blocked_entity`), or None.
+    """
+    _runtime(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    kind = MeterKind(msg[ATTR_KIND]) if ATTR_KIND in msg else None
+    plan = await async_plan(hass, prefs, msg["stat"], msg["solar"], kind)
+    connection.send_result(msg["id"], plan.as_dict())
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/create_solar_setup",
+        vol.Required("stat"): str,
+        vol.Required("solar"): str,
+        vol.Required(ATTR_KIND): _METER_KINDS,
+        vol.Required(ATTR_NAME): str,
+        vol.Optional("power_name"): str,
+        vol.Optional("integral_names"): {str: str},
+    }
+)
+@require_admin
+@async_response
+async def websocket_create_solar_setup(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Create the gross meter (and its power) of "Solar feeds in here".
+
+    The helpers are created at once, not on save; the panel then replaces the
+    device with the gross meter in the draft. Names are passed ready
+    (translated) by the panel; `integral_names` maps a power sensor to the
+    name of its integral. Refused with the preview's `blocked` reason.
+    """
+    runtime = _runtime(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    plan = await async_plan(
+        hass, prefs, msg["stat"], msg["solar"], MeterKind(msg[ATTR_KIND])
+    )
+    entity_id, stat_rate = await async_create(
+        hass,
+        runtime.helpers,
+        plan,
+        Names(msg[ATTR_NAME], msg.get("power_name"), msg.get("integral_names", {})),
+    )
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 

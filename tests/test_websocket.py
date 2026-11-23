@@ -665,6 +665,15 @@ async def test_schema_rejects_unknown_change_type(
             "name": "x",
             "entity_ids": ["sensor.x"],
         },
+        {"type": f"{DOMAIN}/solar_setup_preview", "stat": "x", "solar": "y"},
+        {
+            "type": f"{DOMAIN}/create_solar_setup",
+            "stat": "x",
+            "solar": "y",
+            "kind": "net",
+            "name": "x",
+            "power_name": "x",
+        },
         {
             "type": f"{DOMAIN}/ignore_suggestion",
             "kind": "electricity",

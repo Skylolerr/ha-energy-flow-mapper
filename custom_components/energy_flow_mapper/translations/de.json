@@ -82,6 +82,18 @@
     "template_failed": {
       "message": "Der Template-Helfer für den Zähler konnte nicht erstellt werden."
     },
+    "no_returned_sensor": {
+      "message": "{entity_id} hat auf seinem Gerät keinen Sensor für zurückgespeiste Energie und kann darum nicht als Zähler eingerichtet werden, der nur den Bezug zählt."
+    },
+    "returned_disabled": {
+      "message": "Der Sensor für zurückgespeiste Energie {entity_id} ist deaktiviert. Aktiviere ihn zuerst in seinen Entitätseinstellungen in Home Assistant."
+    },
+    "daily_without_power": {
+      "message": "{entity_id} beginnt jeden Tag wieder bei 0 und hat keinen Leistungssensor, aus dem ein Zähler gebaut werden kann; darum kann der Brutto-Zähler nicht erstellt werden."
+    },
+    "unsupported_input": {
+      "message": "{entity_id} kann nicht im Brutto-Zähler verwendet werden: Es braucht einen Sensor mit einer Energie- oder Leistungseinheit."
+    },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },

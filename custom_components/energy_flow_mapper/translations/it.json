@@ -82,6 +82,18 @@
     "template_failed": {
       "message": "Non è stato possibile creare l’helper template del contatore."
     },
+    "no_returned_sensor": {
+      "message": "Il dispositivo di {entity_id} non ha un sensore dell’energia immessa, quindi non può essere configurato come contatore che conta solo il prelievo."
+    },
+    "returned_disabled": {
+      "message": "Il sensore dell’energia immessa {entity_id} è disattivato. Attivalo prima nelle impostazioni della sua entità in Home Assistant."
+    },
+    "daily_without_power": {
+      "message": "{entity_id} riparte da 0 ogni giorno e non ha un sensore di potenza da cui ricavare un contatore, quindi il contatore lordo non può essere creato."
+    },
+    "unsupported_input": {
+      "message": "{entity_id} non può essere usato nel contatore lordo: deve essere un sensore con un’unità di energia o di potenza."
+    },
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
     },

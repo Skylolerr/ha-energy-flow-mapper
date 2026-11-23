@@ -82,6 +82,18 @@
     "template_failed": {
       "message": "The template helper for the meter could not be created."
     },
+    "no_returned_sensor": {
+      "message": "{entity_id} has no returned energy sensor on its device, so it cannot be set up as a meter that only counts what it draws."
+    },
+    "returned_disabled": {
+      "message": "The returned energy sensor {entity_id} is disabled. Enable it in its entity settings in Home Assistant first."
+    },
+    "daily_without_power": {
+      "message": "{entity_id} starts again at 0 every day and has no power sensor to build a meter from, so the gross meter cannot be created."
+    },
+    "unsupported_input": {
+      "message": "{entity_id} cannot be used in the gross meter: it needs to be a sensor with an energy or power unit."
+    },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },
