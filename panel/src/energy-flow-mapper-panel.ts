@@ -4280,6 +4280,11 @@ export class EnergyFlowMapperPanel extends LitElement {
           name,
           role: this._roleLabel(entry.role),
         });
+      case "source_rate":
+        return this._t(
+          entry.role === "water" || entry.role === "gas" ? "diff_source_rate_flow" : "diff_source_rate",
+          { name, role: this._roleLabel(entry.role) },
+        );
       default:
         return this._t(kind === "water" ? "diff_rate_water" : "diff_rate", { name });
     }

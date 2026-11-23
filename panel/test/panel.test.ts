@@ -1652,6 +1652,14 @@ describe("sources", () => {
     expect(el._roleLabel("weird")).toBe("weird");
     expect(el._roleLabel(undefined)).toBe("");
     expect(el._summaryText({ source_added: 2 })).toBe("2 assigned as source");
+    // A changed power sensor of a source, like the `source_rate` entry of hierarchy.diff.
+    expect(el._diffText({ type: "source_rate", stat: "sensor.import", role: "import" })).toBe(
+      "Power sensor of Grid import (Grid import) changed",
+    );
+    expect(el._diffText({ type: "source_rate", stat: "sensor.attic", role: "gas" })).toBe(
+      "Flow sensor of Attic (Gas) changed",
+    );
+    expect(el._summaryText({ source_rate: 1 })).toBe("1 source(s) with new power sensor");
     expect(assignRole("charge")).toBe("battery");
     expect(assignRole("consumption")).toBeNull();
   });

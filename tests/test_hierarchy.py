@@ -1101,6 +1101,67 @@ def test_diff_sources() -> None:
     ]
 
 
+def test_diff_source_rate() -> None:
+    """A changed power sensor of a source shows once per source.
+
+    HA derives `stat_rate` from `power_config`, so the derived value alone is
+    no change; a source whose energy meter was replaced is matched by its other
+    meter.
+    """
+    grid = {
+        "type": "grid",
+        "stat_energy_from": "sensor.imp",
+        "stat_energy_to": "sensor.exp",
+        "stat_rate": "sensor.grid_power",
+        "power_config": {"stat_rate": "sensor.grid_power"},
+    }
+    solar = {"type": "solar", "stat_energy_from": "sensor.pv"}
+    old = prefs(energy_sources=[grid, solar])
+    same = apply_changes(
+        old,
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.exp",
+                "role": "export",
+                "power_config": {"stat_rate": "sensor.grid_power"},
+            }
+        ],
+    )
+    assert diff(old, same) == []
+    new = apply_changes(
+        old,
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.exp",
+                "role": "export",
+                "power_config": {"stat_rate_inverted": "sensor.grid_power"},
+            },
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.pv",
+                "role": "production",
+                "stat_rate": "sensor.pv_power",
+            },
+            {"type": "assign_source", "role": "import", "stat": "sensor.imp2"},
+        ],
+    )
+    assert diff(old, new) == [
+        {"type": "source_added", "stat": "sensor.imp2", "role": "import"},
+        {"type": "source_removed", "stat": "sensor.imp", "role": "import"},
+        {"type": "source_rate", "stat": "sensor.exp", "role": "export"},
+        {"type": "source_rate", "stat": "sensor.pv", "role": "production"},
+    ]
+    cleared = apply_changes(
+        old, [{"type": "set_source_rate", "stat": "sensor.imp", "role": "import"}]
+    )
+    assert diff(old, cleared) == [
+        {"type": "source_rate", "stat": "sensor.imp", "role": "import"}
+    ]
+    assert summarize(diff(old, cleared)) == {"source_rate": 1}
+
+
 # --- home meter ---------------------------------------------------------------
 
 HOME_SOURCE: dict[str, Any] = {

@@ -306,6 +306,7 @@ export interface DiffEntry {
     | "rate"
     | "source_added"
     | "source_removed"
+    | "source_rate"
     | "group_created"
     | "group_renamed"
     | "group_dissolved"

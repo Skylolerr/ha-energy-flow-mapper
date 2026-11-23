@@ -841,7 +841,8 @@ def _use_as_home_meter(
 def diff(old: Prefs, new: Prefs) -> list[dict[str, Any]]:
     """Describe how devices and sources changed, for confirmations and backups.
 
-    Device entries carry the `kind` of their list.
+    Device entries carry the `kind` of their list. A source whose power sensor
+    changed gets one `source_rate` entry, named by its first meter in both.
     """
     entries: list[dict[str, Any]] = []
     later: list[dict[str, Any]] = []
@@ -861,7 +862,39 @@ def diff(old: Prefs, new: Prefs) -> list[dict[str, Any]]:
         for role, stat in source_roles(old.get(KEY_SOURCES, []))
         if (role, stat) not in new_roles
     )
+    entries.extend(
+        _diff_source_rates(old.get(KEY_SOURCES, []), new.get(KEY_SOURCES, []))
+    )
     return entries + later
+
+
+def _source_power(source: Mapping[str, Any]) -> Any:
+    """Return what sets a source's power: `power_config` if any, else `stat_rate`.
+
+    HA derives `stat_rate` from `power_config`, so it does not count then.
+    """
+    config = source.get("power_config")
+    return dict(config) if isinstance(config, Mapping) else source.get(RATE)
+
+
+def _diff_source_rates(
+    old: Sequence[Mapping[str, Any]], new: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Return a `source_rate` entry for every source whose power changed.
+
+    A source is matched by any (role, statistic) it keeps.
+    """
+    entries: list[dict[str, Any]] = []
+    for source in new:
+        pairs = source_roles([source])
+        for before in old:
+            kept = [pair for pair in pairs if pair in source_roles([before])]
+            if kept:
+                if _source_power(before) != _source_power(source):
+                    role, stat = kept[0]
+                    entries.append({"type": "source_rate", "stat": stat, "role": role})
+                break
+    return entries
 
 
 def _diff_devices(
