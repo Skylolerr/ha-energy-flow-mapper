@@ -5243,6 +5243,19 @@ describe("hints and solar setup", () => {
     expect(dialogButton(el, "Cancel")).toBeDefined();
   });
 
+  it("setup stops when the meter already adds up the solar", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      blocked: "solar_already_in_meter",
+      blocked_entity: "sensor.server",
+    });
+    const el = await mount(mock);
+    await openSetup(el);
+    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("Server & co already adds up the solar, so a gross meter would count the solar twice.");
+    expect(dialogButton(el, "Set up")).toBeUndefined();
+  });
+
   it("offers the setup only for electricity devices with a solar source", async () => {
     const el = await mount(mockHass());
     node(el, "sensor.server").querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();

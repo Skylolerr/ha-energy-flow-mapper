@@ -39,7 +39,7 @@ from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .daily_reset import async_daily_resetting
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
-from .hints import returned_sensor
+from .hints import returned_sensor, sum_members
 from .integral import async_create_integral, energy_unit, entity_unit
 from .template_meter import TemplateKind, async_create_template
 
@@ -64,6 +64,7 @@ class Blocked(StrEnum):
     RETURNED_DISABLED = "returned_disabled"
     DAILY_WITHOUT_POWER = "daily_without_power"
     UNSUPPORTED_INPUT = "unsupported_input"
+    SOLAR_ALREADY_IN_METER = "solar_already_in_meter"
 
 
 def _error(key: str, **placeholders: str) -> ServiceValidationError:
@@ -274,7 +275,8 @@ async def async_plan(
     device's `stat_rate`: for a net meter it is the power of that meter. For a
     meter that only draws it is signed too, so it is the power of drawn minus
     returned, not of either alone: a daily drawn or returned meter then has
-    no power of its own and blocks the setup.
+    no power of its own and blocks the setup. A sum helper that already holds
+    the solar blocks it too.
     """
     device, source = _find(prefs, stat, solar)
     found = returned_sensor(hass, stat, exclude=used_stats(prefs))
@@ -290,6 +292,9 @@ async def async_plan(
         circuit_power=device.get(RATE),
         solar_power=source.get(RATE),
     )
+    # A sum meter that already holds the solar would count it twice.
+    if solar in (sum_members(hass, stat) or []):
+        plan.block(Blocked.SOLAR_ALREADY_IN_METER, stat)
     inputs = _inputs(plan)
     daily = await async_daily_resetting(hass, [entity for entity, _ in inputs])
     for entity, power in inputs:

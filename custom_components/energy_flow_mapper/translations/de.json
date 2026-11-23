@@ -94,6 +94,9 @@
     "unsupported_input": {
       "message": "{entity_id} kann nicht im Brutto-Zähler verwendet werden: Es braucht einen Sensor mit einer Energie- oder Leistungseinheit."
     },
+    "solar_already_in_meter": {
+      "message": "{entity_id} zählt die Solaranlage schon mit, ein Brutto-Zähler würde sie also doppelt zählen. Verwende ihn so, wie er ist, oder nimm die Solaranlage zuerst aus der Summe."
+    },
     "home_not_supported": {
       "message": "Diese Home-Assistant-Version kennt keinen Hauszähler; dafür braucht es 2026.11 oder neuer."
     },

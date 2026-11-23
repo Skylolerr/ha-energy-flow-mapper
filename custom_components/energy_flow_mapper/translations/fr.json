@@ -94,6 +94,9 @@
     "unsupported_input": {
       "message": "{entity_id} ne peut pas être utilisé dans le compteur brut : il doit s’agir d’un capteur avec une unité d’énergie ou de puissance."
     },
+    "solar_already_in_meter": {
+      "message": "{entity_id} additionne déjà l’installation solaire ; un compteur brut la compterait donc deux fois. Utilise-le tel quel, ou retire d’abord l’installation solaire de la somme."
+    },
     "home_not_supported": {
       "message": "Cette version de Home Assistant n’a pas de compteur de la maison ; il faut la 2026.11 ou plus récente."
     },

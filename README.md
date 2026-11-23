@@ -361,7 +361,8 @@ Good to know:
 - A sum meter (meter + solar) also works for a meter that counts both ways, as long as
   both have the same state class and neither starts again at 0 every day. A meter that
   really goes down usually has a different state class than a solar, so the setup uses
-  templates instead.
+  templates instead. If the circuit's meter is such a sum that already adds up the solar,
+  the setup stops: a gross meter would count the solar twice.
 
 **Hints that lead here** (only while a solar source exists):
 

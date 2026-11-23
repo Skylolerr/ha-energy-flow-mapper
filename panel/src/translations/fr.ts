@@ -335,6 +335,7 @@ export const fr: Translations = {
   error_no_returned_sensor: "L’appareil de {entity_id} n’a pas de capteur d’énergie réinjectée ; il ne peut donc pas être configuré comme un compteur qui ne compte que ce qu’il consomme.",
   error_returned_disabled: "Le capteur d’énergie réinjectée {entity_id} est désactivé. Active-le d’abord dans ses réglages d’entité dans Home Assistant.",
   error_daily_without_power: "{entity_id} repart de 0 chaque jour et n’a pas de capteur de puissance pour en faire un compteur ; le compteur brut ne peut donc pas être créé.",
+  error_solar_already_in_meter: "{entity_id} additionne déjà l’installation solaire ; un compteur brut la compterait donc deux fois. Utilise-le tel quel, ou retire d’abord l’installation solaire de la somme.",
   error_unsupported_input: "{entity_id} ne peut pas être utilisé dans le compteur brut : il doit s’agir d’un capteur avec une unité d’énergie ou de puissance.",
   discard_title: "Abandonner le brouillon ?",
   discard_confirm: "Les {count} modifications du brouillon seront perdues. Impossible de revenir en arrière.",

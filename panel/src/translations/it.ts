@@ -335,6 +335,7 @@ export const it: Translations = {
   error_no_returned_sensor: "Il dispositivo di {entity_id} non ha un sensore dell’energia immessa, quindi non può essere configurato come contatore che conta solo il prelievo.",
   error_returned_disabled: "Il sensore dell’energia immessa {entity_id} è disattivato. Attivalo prima nelle impostazioni della sua entità in Home Assistant.",
   error_daily_without_power: "{entity_id} riparte da 0 ogni giorno e non ha un sensore di potenza da cui ricavare un contatore, quindi il contatore lordo non può essere creato.",
+  error_solar_already_in_meter: "{entity_id} somma già l’impianto solare, quindi un contatore lordo lo conterebbe due volte. Usalo così com’è, oppure togli prima l’impianto solare dalla somma.",
   error_unsupported_input: "{entity_id} non può essere usato nel contatore lordo: deve essere un sensore con un’unità di energia o di potenza.",
   discard_title: "Scartare la bozza?",
   discard_confirm: "Tutte le {count} modifiche della bozza andranno perse. Non si può annullare.",

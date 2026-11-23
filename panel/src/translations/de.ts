@@ -335,6 +335,7 @@ export const de: Translations = {
   error_no_returned_sensor: "{entity_id} hat auf seinem Gerät keinen Sensor für zurückgespeiste Energie und kann darum nicht als Zähler eingerichtet werden, der nur den Bezug zählt.",
   error_returned_disabled: "Der Sensor für zurückgespeiste Energie {entity_id} ist deaktiviert. Aktiviere ihn zuerst in seinen Entitätseinstellungen in Home Assistant.",
   error_daily_without_power: "{entity_id} beginnt jeden Tag wieder bei 0 und hat keinen Leistungssensor, aus dem ein Zähler gebaut werden kann; darum kann der Brutto-Zähler nicht erstellt werden.",
+  error_solar_already_in_meter: "{entity_id} zählt die Solaranlage schon mit, ein Brutto-Zähler würde sie also doppelt zählen. Verwende ihn so, wie er ist, oder nimm die Solaranlage zuerst aus der Summe.",
   error_unsupported_input: "{entity_id} kann nicht im Brutto-Zähler verwendet werden: Es braucht einen Sensor mit einer Energie- oder Leistungseinheit.",
   discard_title: "Entwurf verwerfen?",
   discard_confirm: "Alle {count} Änderungen des Entwurfs gehen verloren. Das lässt sich nicht rückgängig machen.",

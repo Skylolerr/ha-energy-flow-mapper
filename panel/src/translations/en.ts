@@ -333,6 +333,7 @@ export const en = {
   error_no_returned_sensor: "{entity_id} has no returned energy sensor on its device, so it cannot be set up as a meter that only counts what it draws.",
   error_returned_disabled: "The returned energy sensor {entity_id} is disabled. Enable it in its entity settings in Home Assistant first.",
   error_daily_without_power: "{entity_id} starts again at 0 every day and has no power sensor to build a meter from, so the gross meter cannot be created.",
+  error_solar_already_in_meter: "{entity_id} already adds up the solar, so a gross meter would count the solar twice. Use it as it is, or remove the solar from the sum first.",
   error_unsupported_input: "{entity_id} cannot be used in the gross meter: it needs to be a sensor with an energy or power unit.",
   discard_title: "Discard the draft?",
   discard_confirm: "All {count} changes of the draft will be lost. This cannot be undone.",

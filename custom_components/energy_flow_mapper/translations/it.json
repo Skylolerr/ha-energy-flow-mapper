@@ -94,6 +94,9 @@
     "unsupported_input": {
       "message": "{entity_id} non può essere usato nel contatore lordo: deve essere un sensore con un’unità di energia o di potenza."
     },
+    "solar_already_in_meter": {
+      "message": "{entity_id} somma già l’impianto solare, quindi un contatore lordo lo conterebbe due volte. Usalo così com’è, oppure togli prima l’impianto solare dalla somma."
+    },
     "home_not_supported": {
       "message": "Questa versione di Home Assistant non ha il contatore della casa; serve la 2026.11 o successiva."
     },

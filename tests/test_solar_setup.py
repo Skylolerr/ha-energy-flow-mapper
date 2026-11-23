@@ -290,6 +290,67 @@ async def test_preview_suggests_net_without_returned_sensor(
     assert result["blocked_entity"] == "sensor.main_energy"
 
 
+CIRCUIT_SUM = "sensor.circuit_sum"
+# The circuit meter is a sum helper (from "Create sum meter").
+WITH_SUM_DEVICE = {
+    **ENERGY_PREFS,
+    "device_consumption": [
+        *ENERGY_PREFS["device_consumption"],
+        {"stat_consumption": CIRCUIT_SUM},
+    ],
+}
+
+
+def _group_sum(hass: HomeAssistant, entity_id: str, members: list[str]) -> None:
+    entry = MockConfigEntry(
+        domain="group",
+        options={"group_type": "sensor", "type": "sum", "entities": members},
+    )
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "group",
+        entry.entry_id,
+        suggested_object_id=entity_id.removeprefix("sensor."),
+        config_entry=entry,
+    )
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SUM_DEVICE])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_preview_blocks_solar_already_in_the_meter(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A sum meter that already holds the solar would count it twice."""
+    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", SOLAR])
+    response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
+    result = response["result"]
+    assert result["blocked"] == "solar_already_in_meter"
+    assert result["blocked_entity"] == CIRCUIT_SUM
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_solar_setup",
+        stat=CIRCUIT_SUM,
+        solar=SOLAR,
+        kind="net",
+        name="Gross",
+    )
+    assert not response["success"]
+    assert response["error"]["translation_key"] == "solar_already_in_meter"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SUM_DEVICE])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_preview_allows_a_sum_without_the_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A sum of other meters is a circuit meter like any other."""
+    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy"])
+    response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
+    assert response["result"]["blocked"] != "solar_already_in_meter"
+
+
 @pytest.mark.usefixtures("loaded_entry", "daily")
 async def test_preview_reports_disabled_returned_sensor(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator

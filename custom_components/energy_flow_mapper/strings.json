@@ -94,6 +94,9 @@
     "unsupported_input": {
       "message": "{entity_id} cannot be used in the gross meter: it needs to be a sensor with an energy or power unit."
     },
+    "solar_already_in_meter": {
+      "message": "{entity_id} already adds up the solar, so a gross meter would count the solar twice. Use it as it is, or remove the solar from the sum first."
+    },
     "home_not_supported": {
       "message": "This Home Assistant release has no home meter; it needs 2026.11 or newer."
     },
