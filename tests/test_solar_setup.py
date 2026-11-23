@@ -340,6 +340,112 @@ async def test_preview_blocks_solar_already_in_the_meter(
     assert response["error"]["translation_key"] == "solar_already_in_meter"
 
 
+SOLAR_INTEGRAL = "sensor.solar_integral"
+GROSS_TEMPLATE = "sensor.f11_brutto"
+# The solar has a power sensor; the circuit meter is a sum or a template helper.
+WITH_HELPER_DEVICES = {
+    **WITH_SOLAR_POWER,
+    "device_consumption": [
+        *ENERGY_PREFS["device_consumption"],
+        {"stat_consumption": CIRCUIT_SUM},
+        {"stat_consumption": GROSS_TEMPLATE},
+    ],
+}
+
+
+def _helper(
+    hass: HomeAssistant, domain: str, entity_id: str, options: dict[str, Any]
+) -> None:
+    """Add a helper config entry with its sensor entity."""
+    entry = MockConfigEntry(domain=domain, options=options)
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        domain,
+        entry.entry_id,
+        suggested_object_id=entity_id.removeprefix("sensor."),
+        config_entry=entry,
+    )
+
+
+def _integral(hass: HomeAssistant, entity_id: str, source: str) -> None:
+    _helper(hass, "integration", entity_id, {"source": source, "method": "left"})
+
+
+def _template_sensor(hass: HomeAssistant, entity_id: str, state: str) -> None:
+    _helper(hass, "template", entity_id, {"template_type": "sensor", "state": state})
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
+@pytest.mark.usefixtures("daily")
+async def test_setup_blocked_when_sum_contains_integral_of_solar(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A sum with an integral of the solar's power already holds the solar."""
+    _integral(hass, SOLAR_INTEGRAL, SOLAR_POWER)
+    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", SOLAR_INTEGRAL])
+    response = await preview(hass_ws_client, hass, stat=CIRCUIT_SUM)
+    assert response["result"]["blocked"] == "solar_already_in_meter"
+    assert response["result"]["blocked_entity"] == CIRCUIT_SUM
+    integrals = hass.config_entries.async_entries("integration")
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_solar_setup",
+        stat=CIRCUIT_SUM,
+        solar=SOLAR,
+        kind="net",
+        name="Gross",
+    )
+    assert not response["success"]
+    assert response["error"]["translation_key"] == "solar_already_in_meter"
+    assert hass.config_entries.async_entries("template") == []
+    assert hass.config_entries.async_entries("integration") == integrals
+    assert loaded_entry.runtime_data.helpers.entries() == []
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.parametrize("solar_input", [SOLAR_INTEGRAL, SOLAR, SOLAR_POWER])
+async def test_setup_blocked_on_gross_template(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, solar_input: str
+) -> None:
+    """A gross template that already adds the solar would add it twice."""
+    _integral(hass, SOLAR_INTEGRAL, SOLAR_POWER)
+    _template_sensor(
+        hass,
+        GROSS_TEMPLATE,
+        "{{ states('sensor.a') | float - states('sensor.b') | float"
+        f" + states('{solar_input}') | float }}}}",
+    )
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE)
+    assert response["result"]["blocked"] == "solar_already_in_meter"
+    assert response["result"]["blocked_entity"] == GROSS_TEMPLATE
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_setup_not_blocked_by_unrelated_template_or_integral(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Templates and integrals of other sensors do not hold the solar."""
+    _integral(hass, "sensor.heat_pump_integral", "sensor.main_power")
+    _integral(hass, "sensor.broken_integral", "")
+    _group_sum(hass, CIRCUIT_SUM, ["sensor.main_energy", "sensor.heat_pump_integral"])
+    # Another sensor whose ID starts like the solar's is not the solar.
+    _template_sensor(
+        hass,
+        GROSS_TEMPLATE,
+        "{{ states('sensor.main_energy') | float"
+        f" + states('{SOLAR}_yesterday') | float }}}}",
+    )
+    for stat in (CIRCUIT_SUM, GROSS_TEMPLATE):
+        response = await preview(hass_ws_client, hass, stat=stat)
+        assert response["result"]["blocked"] != "solar_already_in_meter"
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_SUM_DEVICE])
 @pytest.mark.usefixtures("loaded_entry", "daily")
 async def test_preview_allows_a_sum_without_the_solar(
