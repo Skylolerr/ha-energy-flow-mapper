@@ -5190,6 +5190,23 @@ describe("hints and solar setup", () => {
     );
   });
 
+  it("setup text names the gross power only when there is one", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    const el = await mount(mock);
+    await openSetup(el);
+    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("and the name you gave Server & co, if any. It gets the gross power as its power sensor.");
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({ circuit_power: null });
+    await openSetup(el);
+    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    expect(content).toContain("has no power sensor, so there is no gross power");
+    expect(content).toContain("and the name you gave Server & co, if any. Save as usual.");
+    expect(content).not.toContain("gross power as its power sensor");
+  });
+
   it("blocked setup offers no set up button", async () => {
     const mock = hintMock();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({

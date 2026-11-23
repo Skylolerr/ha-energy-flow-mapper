@@ -4704,7 +4704,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                   ${preview.circuit_power === null
                     ? html`<p class="hint solar-no-circuit-power">${this._t("solar_setup_no_circuit_power", { name })}</p>`
                     : nothing}
-                  <p class="hint">${this._t("solar_setup_text", { name })}</p>`}`
+                  <p class="hint">${this._t(withPower ? "solar_setup_text" : "solar_setup_text_no_power", { name })}</p>`}`
         : nothing}
       <div class="dialog-actions">
         <button @click=${() => this._close()}>${this._t("cancel")}</button>

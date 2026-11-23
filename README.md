@@ -345,8 +345,9 @@ saved solar source, so save your draft first.
      day (the daily energy of many micro inverters), so the gross meter never drops at
      night. If such an input has no power sensor, the setup stops and says why.
 4. **Set up:** the helpers are created right away. The gross meter takes the device's
-   place in your draft – with its child devices, group and name – and gets the gross
-   power as its power sensor. Check and save as usual.
+   place in your draft – with its child devices and group, and the name you gave the
+   device, if any – and gets the gross power as its power sensor when there is one. Check
+   and save as usual.
 
 Good to know:
 
