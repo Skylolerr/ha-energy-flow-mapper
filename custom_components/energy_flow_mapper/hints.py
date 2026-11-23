@@ -1,0 +1,322 @@
+"""Find the hints the panel shows at the blocks.
+
+A hint only explains and offers a button; it never changes anything. Hints are
+computed here because they need what the panel cannot see: Home Assistant's
+entity registry (disabled returned-energy sensors), config entries (the
+members of a sum helper) and the recorder (energy counted lately).
+
+- `returned_energy`: an electricity device whose HA device also counts
+  returned energy, while a solar source exists. Shelly plugs and switches have
+  an enabled returned sensor, every Shelly Pro EM channel a disabled one, so
+  the hint needs more than the sensor: an enabled one must have counted energy
+  in the last days, a disabled one needs a device with children.
+- `daily_in_sum`: a meter that is a sensor group sum (ours or the user's) whose
+  members mix meters that reset every day with others.
+- `power_available`: a device or source without a power (flow) sensor whose HA
+  device has one.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from enum import StrEnum
+from typing import Any, Final
+
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.core import HomeAssistant, valid_entity_id
+from homeassistant.helpers import entity_registry as er
+
+from .candidates import METER_CLASSES, rate_sensor
+from .daily_reset import async_hourly_statistics
+from .hierarchy import (
+    DEVICE_KEYS,
+    EDITABLE_SOURCE_TYPES,
+    KEY_SOURCES,
+    PARENT,
+    RATE,
+    SOURCE_ROLES,
+    STAT,
+    DeviceKind,
+    Prefs,
+    power_stats,
+    source_energy_stats,
+    source_kind,
+)
+
+
+class HintCode(StrEnum):
+    """The hints of the panel."""
+
+    RETURNED_ENERGY = "returned_energy"
+    DAILY_IN_SUM = "daily_in_sum"
+    POWER_AVAILABLE = "power_available"
+
+
+# Translation keys of returned (exported) energy sensors, checked in HA 2026.10
+# and 2026.11. The registry keeps them for disabled entities too.
+# - `energy_returned`: Shelly, every returned sensor (Gen1 `emeter`
+#   `energyReturned`; Gen2+ `ret_aenergy` of switches and PM1, `emdata`
+#   `total_act_ret` and per phase, `em1data` `total_act_ret_energy`);
+#   `energy_returned_with_channel_name` when the channel has a name.
+# - `energy_exported`: Matter (cumulative energy exported), SolarEdge Modbus
+#   meters, Homevolt.
+# - `energy_return`: Powerfox, Powerfox Local.
+RETURNED_TRANSLATION_KEYS: Final = frozenset(
+    {
+        "energy_returned",
+        "energy_returned_with_channel_name",
+        "energy_exported",
+        "energy_return",
+    }
+)
+# Shelly's unique IDs end in the key of the sensor description
+# (`<mac>-<channel>-<key>`); this finds an entry stored without translation key.
+SHELLY_RETURNED_KEYS: Final = frozenset(
+    {
+        "energyReturned",
+        "ret_energy",
+        "ret_energy_pm1",
+        "total_act_ret",
+        "total_act_ret_energy",
+        "a_total_act_ret_energy",
+        "b_total_act_ret_energy",
+        "c_total_act_ret_energy",
+    }
+)
+# Fallback for other integrations: words in the entity name (the user's name or
+# the integration's). Only English names; translated ones need the key above.
+RETURNED_NAME_WORDS: Final = ("returned", "export")
+# Days in which a returned sensor must have counted energy.
+COUNTED_DAYS: Final = 3
+
+GROUP_DOMAIN: Final = "group"
+
+
+def _is_returned(entry: er.RegistryEntry) -> bool:
+    """Return True for a registry entry of a returned energy sensor."""
+    if entry.translation_key in RETURNED_TRANSLATION_KEYS:
+        return True
+    if (
+        entry.platform == "shelly"
+        and entry.unique_id.rsplit("-", 1)[-1] in SHELLY_RETURNED_KEYS
+    ):
+        return True
+    name = (entry.name or entry.original_name or "").casefold()
+    return any(word in name for word in RETURNED_NAME_WORDS)
+
+
+def returned_sensor(
+    hass: HomeAssistant, meter_entity_id: str
+) -> tuple[str, bool] | None:
+    """Return (entity ID, disabled) of the returned sensor of a meter's device.
+
+    Looks at every energy sensor of the meter's HA device, disabled ones too
+    (they have no state, only a registry entry). An enabled sensor comes
+    first, then by entity ID. None when the meter has no device or the device
+    has no returned sensor.
+    """
+    registry = er.async_get(hass)
+    meter = registry.async_get(meter_entity_id)
+    if meter is None or meter.device_id is None:
+        return None
+    found = [
+        entry
+        for entry in er.async_entries_for_device(
+            registry, meter.device_id, include_disabled_entities=True
+        )
+        if entry.entity_id != meter_entity_id
+        and entry.domain == "sensor"
+        and (entry.device_class or entry.original_device_class)
+        == SensorDeviceClass.ENERGY
+        and _is_returned(entry)
+    ]
+    if not found:
+        return None
+    best = min(found, key=lambda entry: (entry.disabled, entry.entity_id))
+    return best.entity_id, best.disabled
+
+
+def _sum_helper(hass: HomeAssistant, stat: str) -> tuple[str, list[str]] | None:
+    """Return (config entry ID, members) of a sensor group helper of type sum."""
+    if not valid_entity_id(stat):
+        return None
+    entry = er.async_get(hass).async_get(stat)
+    config_entry = (
+        hass.config_entries.async_get_entry(entry.config_entry_id)
+        if entry is not None and entry.config_entry_id
+        else None
+    )
+    if (
+        config_entry is None
+        or config_entry.domain != GROUP_DOMAIN
+        or config_entry.options.get("group_type") != "sensor"
+        or config_entry.options.get("type") != "sum"
+    ):
+        return None
+    members = [str(member) for member in config_entry.options.get("entities", [])]
+    return config_entry.entry_id, members
+
+
+def sum_members(hass: HomeAssistant, stat: str) -> list[str] | None:
+    """Return the members if `stat` is a sensor group helper of type sum."""
+    helper = _sum_helper(hass, stat)
+    return helper[1] if helper is not None else None
+
+
+def async_sum_members(hass: HomeAssistant, prefs: Prefs) -> set[str]:
+    """Return the members of every sum helper used as a device or source meter.
+
+    `get` reads their daily resets together with the other meters'.
+    """
+    meters = {
+        device[STAT] for key in DEVICE_KEYS.values() for device in prefs.get(key, [])
+    } | source_energy_stats(prefs.get(KEY_SOURCES, []))
+    return {member for stat in meters for member in sum_members(hass, stat) or []}
+
+
+def _hint(
+    code: HintCode, stat: str, kind: DeviceKind, data: dict[str, Any]
+) -> dict[str, Any]:
+    return {"code": code, "stat": stat, "kind": kind, "data": data}
+
+
+def _daily_hint(
+    hass: HomeAssistant, stat: str, kind: DeviceKind, daily: set[str]
+) -> dict[str, Any] | None:
+    """Return the hint of a sum helper that mixes daily and other members."""
+    if (helper := _sum_helper(hass, stat)) is None:
+        return None
+    entry_id, members = helper
+    daily_members = [member for member in members if member in daily]
+    if not daily_members or len(daily_members) == len(members):
+        return None
+    return _hint(
+        HintCode.DAILY_IN_SUM,
+        stat,
+        kind,
+        {"entry_id": entry_id, "members": members, "daily": daily_members},
+    )
+
+
+def _power(
+    hass: HomeAssistant,
+    stats: Mapping[str, dict[str, Any]],
+    stat: str,
+    kind: DeviceKind,
+) -> str | None:
+    """Return the power (flow) sensor of the statistic's HA device, if any."""
+    return rate_sensor(
+        hass, (stats.get(stat) or {}).get("device_id"), METER_CLASSES[kind][1]
+    )
+
+
+async def _async_counted(hass: HomeAssistant, entity_ids: set[str]) -> set[str]:
+    """Return the sensors whose statistics grew in the last days."""
+    rows = await async_hourly_statistics(hass, entity_ids, COUNTED_DAYS, {"change"})
+    return {
+        entity_id
+        for entity_id in entity_ids
+        if sum(row.get("change") or 0 for row in (rows or {}).get(entity_id, [])) > 0
+    }
+
+
+def _source_hints(
+    hass: HomeAssistant,
+    source: Mapping[str, Any],
+    stats: Mapping[str, dict[str, Any]],
+    daily: set[str],
+) -> list[dict[str, Any]]:
+    """Return the hints of a source; a power hint names the role it is for."""
+    kind = source_kind(source)
+    roles = [
+        (role, stat)
+        for key, role in SOURCE_ROLES[source["type"]].items()
+        if isinstance(stat := source.get(key), str)
+    ]
+    hints = [
+        hint
+        for _, stat in roles
+        if (hint := _daily_hint(hass, stat, kind, daily)) is not None
+    ]
+    # Grid and battery: no power sensor means neither `stat_rate` nor
+    # `power_config`. The first role whose HA device has one gets the hint.
+    if not power_stats(source):
+        hints.extend(
+            [
+                _hint(
+                    HintCode.POWER_AVAILABLE,
+                    stat,
+                    kind,
+                    {"entity_id": power, "role": role},
+                )
+                for role, stat in roles
+                if (power := _power(hass, stats, stat, kind))
+            ][:1]
+        )
+    return hints
+
+
+async def async_hints(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    stats: Mapping[str, dict[str, Any]],
+    daily: set[str],
+) -> list[dict[str, Any]]:
+    """Return the hints of the devices, then the sources, in settings order.
+
+    `stats` is the statistics info of `get` (for the HA device of a meter),
+    `daily` the statistics that reset every day. Hint dicts are
+    `{code, stat, kind, data}`; dismissals are left to the panel.
+    """
+    sources = prefs.get(KEY_SOURCES, [])
+    solar = any(source.get("type") == "solar" for source in sources)
+    parents = {
+        device.get(PARENT)
+        for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])
+    }
+    # An enabled returned sensor waits as (stat, sensor) for its statistics,
+    # which one query reads for all of them.
+    hints: list[dict[str, Any] | tuple[str, str]] = []
+    for kind, key in DEVICE_KEYS.items():
+        for device in prefs.get(key, []):
+            stat = device[STAT]
+            returned = (
+                returned_sensor(hass, stat)
+                if solar and kind is DeviceKind.ELECTRICITY
+                else None
+            )
+            if returned is not None and not returned[1]:
+                hints.append((stat, returned[0]))
+            elif returned is not None and stat in parents:
+                hints.append(
+                    _hint(
+                        HintCode.RETURNED_ENERGY,
+                        stat,
+                        kind,
+                        {"entity_id": returned[0], "disabled": True},
+                    )
+                )
+            if (hint := _daily_hint(hass, stat, kind, daily)) is not None:
+                hints.append(hint)
+            if not device.get(RATE) and (power := _power(hass, stats, stat, kind)):
+                hints.append(
+                    _hint(HintCode.POWER_AVAILABLE, stat, kind, {"entity_id": power})
+                )
+    for source in sources:
+        if source.get("type") in EDITABLE_SOURCE_TYPES:
+            hints.extend(_source_hints(hass, source, stats, daily))
+
+    waiting = {hint[1] for hint in hints if isinstance(hint, tuple)}
+    counted = await _async_counted(hass, waiting) if waiting else set()
+    return [
+        hint
+        if isinstance(hint, dict)
+        else _hint(
+            HintCode.RETURNED_ENERGY,
+            hint[0],
+            DeviceKind.ELECTRICITY,
+            {"entity_id": hint[1], "disabled": False},
+        )
+        for hint in hints
+        if isinstance(hint, dict) or hint[1] in counted
+    ]

@@ -327,7 +327,7 @@ def async_stat_units(hass: HomeAssistant, prefs: Prefs) -> dict[str, str | None]
     return units
 
 
-def _rate_sensor(
+def rate_sensor(
     hass: HomeAssistant, device_id: str | None, device_class: SensorDeviceClass
 ) -> str | None:
     """Return the first sensor of a device with that class (power, flow)."""
@@ -368,7 +368,7 @@ def async_candidates(
         ):
             continue
         info = async_stat_info(hass, state.entity_id)
-        info["power"] = _rate_sensor(hass, info["device_id"], rate_class)
+        info["power"] = rate_sensor(hass, info["device_id"], rate_class)
         candidates.append(info)
     return _sorted(candidates)
 

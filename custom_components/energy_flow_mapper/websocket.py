@@ -98,6 +98,7 @@ from .hierarchy import (
     untracked,
     validate,
 )
+from .hints import async_hints, async_sum_members
 from .integral import async_create_integral
 from .models import EnergyFlowMapperData
 from .sum_meter import async_create_sum, check_rate_members, check_sum_members
@@ -373,7 +374,8 @@ async def websocket_get(
     `power_candidates` power sensors
     without an energy meter and `flow_candidates` flow sensors without a water
     meter. `stats` and the meter candidates carry `daily_reset`: the meter
-    falls back to 0 every day.
+    falls back to 0 every day. `hints` are the hints of devices and sources
+    (see `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -387,9 +389,13 @@ async def websocket_get(
     )
     meters = [*stats.values(), *candidates, *water, *gas]
     async_mark_created(hass, meters, runtime.helpers.entries())
-    mark_daily_reset(
-        meters, await async_daily_resetting(hass, [info["stat"] for info in meters])
+    # Members of sum helpers may be neither used nor candidates; their daily
+    # resets come from the same query.
+    daily = await async_daily_resetting(
+        hass,
+        sorted({info["stat"] for info in meters} | async_sum_members(hass, prefs)),
     )
+    mark_daily_reset(meters, daily)
     issues = _issues(hass, prefs)
     validation = await energy_access.async_validation(hass)
     connection.send_result(
@@ -416,6 +422,7 @@ async def websocket_get(
                 },
             ),
             "ignored_suggestions": runtime.suggestions.ignored(),
+            "hints": await async_hints(hass, prefs, stats, daily),
         },
     )
 

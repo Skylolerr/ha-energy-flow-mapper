@@ -14,7 +14,7 @@ import logging
 from collections.abc import Collection, Sequence
 from datetime import date, datetime, timedelta
 from itertools import pairwise
-from typing import Final
+from typing import Any, Final
 
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant, valid_entity_id
@@ -70,6 +70,41 @@ def _daily_utility_meter(hass: HomeAssistant, stat: str) -> bool:
     )
 
 
+async def async_hourly_statistics(
+    hass: HomeAssistant, ids: set[str], days: int, types: set[str]
+) -> dict[str, list[Any]] | None:
+    """Return the hourly statistics `types` of the last `days` days of `ids`.
+
+    One query for all of them, in the recorder's executor. None when there is
+    no recorder, or it fails or is too slow: what needs the statistics is
+    extra information and must not keep the panel waiting.
+    """
+    if "recorder" not in hass.config.components:
+        return None
+    end = dt_util.utcnow()
+    try:
+        # The timeout only stops waiting; the recorder still finishes the job
+        # in its executor.
+        async with asyncio.timeout(QUERY_TIMEOUT):
+            rows: dict[str, list[Any]] = await get_instance(
+                hass
+            ).async_add_executor_job(
+                statistics_during_period,
+                hass,
+                end - timedelta(days=days),
+                end,
+                ids,
+                "hour",
+                None,
+                types,
+            )
+    except Exception:
+        # Usually the recorder is busy or not ready yet after a restart.
+        _LOGGER.debug("Reading the hourly statistics failed", exc_info=True)
+        return None
+    return rows
+
+
 async def async_daily_resetting(
     hass: HomeAssistant, stats: Collection[str], days: int = 3
 ) -> set[str]:
@@ -82,26 +117,10 @@ async def async_daily_resetting(
     """
     daily = {stat for stat in stats if _daily_utility_meter(hass, stat)}
     ids = {stat for stat in stats if valid_entity_id(stat) and stat not in daily}
-    if not ids or "recorder" not in hass.config.components:
-        return daily
-    end = dt_util.utcnow()
-    try:
-        # The timeout only stops waiting; the recorder still finishes the job
-        # in its executor.
-        async with asyncio.timeout(QUERY_TIMEOUT):
-            rows = await get_instance(hass).async_add_executor_job(
-                statistics_during_period,
-                hass,
-                end - timedelta(days=days),
-                end,
-                ids,
-                "hour",
-                None,
-                {"state"},
-            )
-    except Exception:
-        # Usually the recorder is busy or not ready yet after a restart.
-        _LOGGER.debug("Reading the hourly statistics failed", exc_info=True)
+    if (
+        not ids
+        or (rows := await async_hourly_statistics(hass, ids, days, {"state"})) is None
+    ):
         return daily
     for stat in ids:
         states = [
