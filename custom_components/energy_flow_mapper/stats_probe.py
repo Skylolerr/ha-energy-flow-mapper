@@ -189,9 +189,11 @@ def periodic_from_series(
       `JUMP_TOLERANCE` margin.
     - With the meter's own power (`power`, rows of (start, end, mean W)): a
       fall is a reset unless the power's energy over the step (the rows from
-      the end of the row before to the end of the row) has the fall's sign and
-      is close to it: within `POWER_MATCH` of the fall, or within the shape
-      rule's margin (a meter's resolution and update lag matter near 0). A net
+      the end of the row before to the end of the row, or that widened by one
+      row back or forward) has the fall's sign and is within `POWER_MATCH` of
+      it. A fall no larger than the shape rule's margin only needs the sign
+      (a meter's resolution and update lag matter near 0), so the power is
+      never weaker than the shape rule. A net
       meter exporting near 0 falls with its power; a reset falls while the
       power is 0 or positive. A power that disagrees with the meter's other
       steps of that direction (unsigned, reversed) is not used for them.
@@ -244,12 +246,15 @@ def periodic_from_series(
             reset = abs(change) > margin
         else:
             # A meter reports a little late or early: the step, or the step
-            # widened by one row back or forward, may explain the fall.
-            tolerance = max(POWER_MATCH * abs(change), margin)
+            # widened by one row back or forward, may explain the fall. The
+            # shape rule's margin only lets through falls it would not take
+            # for a reset anyway (resolution near 0): power of the fall's
+            # sign never hides a fall larger than the margin.
+            small = abs(change) <= margin
             reset = not any(
                 found is not None
                 and found * change > 0
-                and abs(found - change) <= tolerance
+                and (small or abs(found - change) <= POWER_MATCH * abs(change))
                 for found in (
                     energy,
                     energy_of(start - length, end),

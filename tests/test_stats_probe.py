@@ -329,6 +329,59 @@ def test_unsigned_or_reversed_power_is_not_trusted(
     assert periodic_from_series(five_minute(opendtu), power_of(opendtu_power, FIVE))[0]
 
 
+def per_day_meter(
+    rate: Rate, step: int
+) -> tuple[list[tuple[datetime, float]], list[tuple[datetime, datetime, float]]]:
+    """Return a per-day net meter (0 at midnight) and its power, from START."""
+    value, states, power = 0.0, [], []
+    for index in range(72 * 60 // step):
+        when = START + timedelta(minutes=step * index)
+        if when.hour == 0 and when.minute == 0:
+            value = 0.0
+        value += rate(when) * step / 60
+        states.append((when, round(value, 4)))
+        power.append((when, when + timedelta(minutes=step), rate(when) * 1000))
+    return states, power
+
+
+@pytest.mark.parametrize(
+    ("step", "load", "export", "day_end"),
+    [(HOUR, 0.5, 1.6, -1.1), (HOUR, 1.5, 3.2, -3.1), (FIVE, 0.5, 1.4, -0.1)],
+)
+def test_power_of_the_falls_sign_does_not_hide_a_reset(
+    step: int, load: float, export: float, day_end: float
+) -> None:
+    """A per-day net meter ends the day below 0 and resets while importing.
+
+    The import right after midnight has the reset's sign but is a fraction of
+    it: the power never explains a fall the shape rule takes for a reset.
+    """
+
+    def rate(when: datetime) -> float:
+        if 10 <= when.hour < 15:
+            return -export
+        return load if 17 <= when.hour < 23 else 0.3
+
+    states, power = per_day_meter(rate, step)
+    assert states[24 * 60 // step - 1][1] == pytest.approx(day_end)
+    assert periodic_from_series(states)[0]
+    assert periodic_from_series(states, power)[0]
+
+
+@pytest.mark.parametrize("step", [HOUR, FIVE])
+def test_battery_export_at_midnight_does_not_hide_a_reset(step: int) -> None:
+    """A per-day net meter at 2 kWh resets while a battery exports 0.5 kW."""
+
+    def rate(when: datetime) -> float:
+        if when.hour >= 22 or when.hour < 2:
+            return -0.5
+        return -1.0 if 10 <= when.hour < 15 else 0.6
+
+    states, power = per_day_meter(rate, step)
+    assert states[24 * 60 // step - 1][1] == pytest.approx(2.0)
+    assert periodic_from_series(states, power)[0]
+
+
 def test_power_explains_a_fall_only_when_it_matches() -> None:
     """The power's energy must have the fall's sign and be within 30 % of it."""
     series = [
