@@ -179,7 +179,7 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
     counts is unknown (`['sensor.a'] | map('states')`). Text with `expand(`,
     a function that lists entities, or that iterates states is rendered: the
     render adds the entities it reads (iterated states add none) and the
-    signs are unknown then.
+    signs are unknown then. Jinja comments are no part of the text read.
     """
     registry = er.async_get(hass)
 
@@ -190,8 +190,9 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
             if valid_entity_id(entity) and _known(hass, registry, entity)
         }
 
-    entities = known([*_ENTITY.findall(text), *_ENTITY_FILTER.findall(text)])
-    literals = known(_LITERAL_ENTITY.findall(text))
+    read = _COMMENT.sub(" ", text)
+    entities = known([*_ENTITY.findall(read), *_ENTITY_FILTER.findall(read)])
+    literals = known(_LITERAL_ENTITY.findall(read))
     signed_known = literals <= entities
     entities |= literals
     template = Template(text, hass)

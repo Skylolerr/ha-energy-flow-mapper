@@ -548,6 +548,43 @@ async def test_shared_input_number_does_not_hold_the_solar(
     assert response["result"]["blocked"] != "solar_already_in_meter"
 
 
+@pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_shared_helper_sensor_does_not_hold_the_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Only energy and power sensors count: a date both templates read is no solar."""
+    _meter(hass, INVERTER)
+    hass.states.async_set("sensor.date", "2026-11-23")
+    _template_sensor(
+        hass,
+        PV_TODAY,
+        f"{{{{ states('{INVERTER}') | float if states('sensor.date') else 0 }}}}",
+    )
+    _template_sensor(
+        hass,
+        GROSS_TEMPLATE,
+        f"{MAIN_PLUS}(1 if states('sensor.date') else 0) }}}}",
+    )
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE, solar=PV_TODAY)
+    assert response["result"]["blocked"] != "solar_already_in_meter"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_setup_not_blocked_by_commented_out_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar named only in a Jinja comment is not in the meter."""
+    _template_sensor(
+        hass,
+        GROSS_TEMPLATE,
+        f"{{# old: states('{SOLAR}') #}}{{{{ states('sensor.main_energy') }}}}",
+    )
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE)
+    assert response["result"]["blocked"] != "solar_already_in_meter"
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
 @pytest.mark.usefixtures("loaded_entry", "daily")
 async def test_setup_not_blocked_by_unrelated_template_or_integral(

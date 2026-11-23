@@ -37,12 +37,19 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any, Final
 
-from homeassistant.const import ATTR_FRIENDLY_NAME, UnitOfEnergy, UnitOfPower
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.const import (
+    ATTR_DEVICE_CLASS,
+    ATTR_FRIENDLY_NAME,
+    UnitOfEnergy,
+    UnitOfPower,
+)
 from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 
+from .candidates import ENERGY_UNITS, POWER_UNITS
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .daily_reset import async_daily_check
@@ -307,15 +314,33 @@ def _holds_solar(
     made of: a sum with the solar, a template that reads it in any form, an
     integral of the solar's power, the inverter's counter behind a daily
     utility meter used as the solar. Subtracted or not, it is in the meter
-    already. Only sensors count, so a factor both use is no solar.
+    already. The solar's statistic and power always count; what they are
+    made of only if it is an energy or power sensor, so a factor or a date
+    both read is no solar.
     """
     cache: Cache = {}
-    solar_side = {solar}
-    for entity in (solar, solar_power):
-        if entity is not None:
-            solar_side |= {entity} | meter_inputs(hass, entity, cache)["entities"]
-    shared = meter_inputs(hass, stat, cache)["entities"] & solar_side
-    return any(entity.startswith("sensor.") for entity in shared)
+    held = meter_inputs(hass, stat, cache)["entities"]
+    own = {solar} if solar_power is None else {solar, solar_power}
+    if not held.isdisjoint(own):
+        return True
+    made_of: set[str] = set()
+    for entity in own:
+        made_of |= meter_inputs(hass, entity, cache)["entities"]
+    return any(_energy_or_power(hass, entity) for entity in held & made_of)
+
+
+def _energy_or_power(hass: HomeAssistant, entity_id: str) -> bool:
+    """Return True for a sensor in an energy or power unit or of that class."""
+    if not entity_id.startswith("sensor."):
+        return False
+    if entity_unit(hass, entity_id) in ENERGY_UNITS | POWER_UNITS:
+        return True
+    state = hass.states.get(entity_id)
+    entry = er.async_get(hass).async_get(entity_id)
+    device_class = (
+        state.attributes.get(ATTR_DEVICE_CLASS) if state is not None else None
+    ) or (entry.device_class or entry.original_device_class if entry else None)
+    return device_class in (SensorDeviceClass.ENERGY, SensorDeviceClass.POWER)
 
 
 def _find(

@@ -113,6 +113,20 @@ async def test_inputs_template_text_forms(
     }
 
 
+async def test_inputs_ignore_comments(hass: HomeAssistant) -> None:
+    """Code in a Jinja comment is no input."""
+    _template(
+        hass,
+        "sensor.t",
+        "{# old: states('sensor.b') + 'sensor.c' | states #}{{ states('sensor.a') }}",
+    )
+    assert meter_inputs(hass, "sensor.t") == {
+        "entities": {A},
+        "signed_known": True,
+        "subtracted": set(),
+    }
+
+
 async def test_inputs_template_text_needs_a_known_entity(hass: HomeAssistant) -> None:
     """A name that is no entity is not an input; one with only a state is."""
     hass.states.async_set("sensor.yaml_only", "1")
