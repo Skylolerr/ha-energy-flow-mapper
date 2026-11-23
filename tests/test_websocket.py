@@ -682,6 +682,12 @@ async def test_schema_rejects_unknown_change_type(
             "parent": "y",
         },
         {"type": f"{DOMAIN}/clear_suggestions"},
+        {
+            "type": f"{DOMAIN}/dismiss_hint",
+            "code": "daily_reset",
+            "kind": "electricity",
+            "stat": "x",
+        },
     ],
 )
 async def test_admin_required(
@@ -2064,6 +2070,52 @@ async def test_ignore_and_clear_suggestions(
 
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions")
     assert response["result"] == {"ignored": []}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_dismiss_hint_and_clear(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Dismissed hints come back with `get`; clearing shows them again."""
+    hint = {
+        "code": "power_available",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **hint)
+    assert response["result"] == {"dismissed": [hint]}
+    with_role = {**hint, "role": "home"}
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", role="home", **hint
+    )
+    assert response["result"] == {"dismissed": [hint, with_role]}
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["dismissed_hints"] == [hint, with_role]
+
+    # A source's statistic counts as known, an unknown one is dropped.
+    source_hint = {
+        "code": "daily_reset",
+        "kind": "electricity",
+        "stat": "sensor.grid_import",
+    }
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **source_hint
+    )
+    assert response["result"] == {"dismissed": [hint, with_role, source_hint]}
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/dismiss_hint",
+        code="daily_reset",
+        kind="electricity",
+        stat="sensor.gone",
+    )
+    assert response["result"] == {"dismissed": [hint, with_role, source_hint]}
+
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions")
+    assert response["result"] == {"ignored": []}
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["result"]["dismissed_hints"] == []
 
 
 @pytest.mark.usefixtures("loaded_entry")

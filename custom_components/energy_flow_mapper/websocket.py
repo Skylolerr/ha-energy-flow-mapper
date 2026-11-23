@@ -281,6 +281,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_card)
     async_register_command(hass, websocket_ignore_suggestion)
     async_register_command(hass, websocket_clear_suggestions)
+    async_register_command(hass, websocket_dismiss_hint)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -430,6 +431,7 @@ async def websocket_get(
                 },
             ),
             "ignored_suggestions": runtime.suggestions.ignored(),
+            "dismissed_hints": runtime.suggestions.dismissed(),
             "hints": await async_hints(hass, prefs, stats, daily, counted),
         },
     )
@@ -1216,6 +1218,31 @@ async def websocket_import(
     connection.send_result(msg["id"], result)
 
 
+def _known_stats(
+    hass: HomeAssistant, prefs: Prefs, *, with_sources: bool
+) -> set[tuple[str, str]]:
+    """Return (kind, stat) of devices and free meters, and of sources if wanted.
+
+    A draft may add a free meter as a device.
+    """
+    known = {
+        (kind.value, device[STAT])
+        for kind, key in DEVICE_KEYS.items()
+        for device in prefs.get(key, [])
+    } | {
+        (kind.value, candidate["stat"])
+        for kind in DEVICE_KEYS
+        for candidate in async_candidates(hass, prefs, kind)
+    }
+    if with_sources:
+        known |= {
+            (source_kind(source).value, stat)
+            for source in prefs.get(KEY_SOURCES, [])
+            for stat in source_energy_stats([source])
+        }
+    return known
+
+
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/ignore_suggestion",
@@ -1232,18 +1259,9 @@ async def websocket_ignore_suggestion(
     """Stop suggesting `stat` below `parent`; returns the ignored list."""
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
-    # Devices and free meters: a draft may add a free meter as a device.
-    known = {
-        (kind.value, device[STAT])
-        for kind, key in DEVICE_KEYS.items()
-        for device in prefs.get(key, [])
-    } | {
-        (kind.value, candidate["stat"])
-        for kind in DEVICE_KEYS
-        for candidate in async_candidates(hass, prefs, kind)
-    }
     await runtime.suggestions.async_ignore(
-        {"kind": msg[ATTR_KIND], "stat": msg["stat"], "parent": msg["parent"]}, known
+        {"kind": msg[ATTR_KIND], "stat": msg["stat"], "parent": msg["parent"]},
+        _known_stats(hass, prefs, with_sources=False),
     )
     connection.send_result(msg["id"], {"ignored": runtime.suggestions.ignored()})
 
@@ -1263,3 +1281,27 @@ async def websocket_clear_suggestions(
     runtime = _runtime(hass)
     await runtime.suggestions.async_clear(msg.get(ATTR_KIND))
     connection.send_result(msg["id"], {"ignored": runtime.suggestions.ignored()})
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/dismiss_hint",
+        vol.Required("code"): str,
+        vol.Required(ATTR_KIND): _KINDS,
+        vol.Required("stat"): str,
+        vol.Optional("role"): str,
+    }
+)
+@require_admin
+@async_response
+async def websocket_dismiss_hint(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Hide a hint for good, for every admin; returns the dismissed hints."""
+    runtime = _runtime(hass)
+    prefs = await energy_access.async_get_prefs(hass)
+    hint = {key: msg[key] for key in ("code", ATTR_KIND, "stat", "role") if key in msg}
+    await runtime.suggestions.async_dismiss(
+        hint, _known_stats(hass, prefs, with_sources=True)
+    )
+    connection.send_result(msg["id"], {"dismissed": runtime.suggestions.dismissed()})

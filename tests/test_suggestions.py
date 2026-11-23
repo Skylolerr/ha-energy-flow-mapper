@@ -24,7 +24,10 @@ async def test_ignore_saves_and_prunes_unknown(
     await store.async_ignore(PAIR, KNOWN)
     await store.async_ignore(PAIR, KNOWN)
     assert store.ignored() == [PAIR]
-    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {"ignored": [PAIR]}
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
+        "ignored": [PAIR],
+        "dismissed": [],
+    }
 
     reloaded = SuggestionStore(hass)
     await reloaded.async_load()
@@ -46,7 +49,10 @@ async def test_clear(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
     await store.async_ignore(PAIR, KNOWN)
     await store.async_clear()
     assert store.ignored() == []
-    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {"ignored": []}
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
+        "ignored": [],
+        "dismissed": [],
+    }
 
 
 async def test_remove(hass: HomeAssistant, hass_storage: dict[str, Any]) -> None:
@@ -89,4 +95,116 @@ async def test_clear_one_kind(
     await store.async_ignore(water, known)
     await store.async_clear("water")
     assert store.ignored() == [PAIR]
-    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {"ignored": [PAIR]}
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
+        "ignored": [PAIR],
+        "dismissed": [],
+    }
+
+
+HINT = {"code": "daily_reset", "kind": "electricity", "stat": "sensor.o1"}
+HINT_KNOWN = {("electricity", "sensor.o1")}
+
+
+async def test_store_migrates_v1(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Version 1 files only had `ignored`; they gain an empty `dismissed`."""
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 1,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {"ignored": [PAIR]},
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.ignored() == [PAIR]
+    assert store.dismissed() == []
+    await store.async_dismiss(HINT, HINT_KNOWN | KNOWN)
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["version"] == 2
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
+        "ignored": [PAIR],
+        "dismissed": [HINT],
+    }
+
+
+async def test_dismiss_hint_persists(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """A dismissal is saved at once; a role keeps two hints of one stat apart."""
+    store = SuggestionStore(hass)
+    await store.async_load()
+    grid = {**HINT, "code": "power_available", "role": "grid_import"}
+    home = {**HINT, "code": "power_available", "role": "home"}
+    await store.async_dismiss(HINT, HINT_KNOWN)
+    await store.async_dismiss(HINT, HINT_KNOWN)
+    await store.async_dismiss(grid, HINT_KNOWN)
+    await store.async_dismiss(home, HINT_KNOWN)
+    assert store.dismissed() == [HINT, grid, home]
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"]["dismissed"] == [
+        HINT,
+        grid,
+        home,
+    ]
+
+    reloaded = SuggestionStore(hass)
+    await reloaded.async_load()
+    assert reloaded.dismissed() == [HINT, grid, home]
+
+
+async def test_dismiss_hint_drops_unknown(hass: HomeAssistant) -> None:
+    """Dismissals of statistics that left the settings are dropped."""
+    store = SuggestionStore(hass)
+    await store.async_load()
+    gone = {**HINT, "stat": "sensor.gone"}
+    await store.async_dismiss(gone, {("electricity", "sensor.gone")})
+    await store.async_dismiss(HINT, HINT_KNOWN)
+    assert store.dismissed() == [HINT]
+
+
+async def test_clear_suggestions_brings_back_hints(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Clearing one kind clears its ignores and dismissals; all clears both."""
+    store = SuggestionStore(hass)
+    await store.async_load()
+    water = {"code": "daily_reset", "kind": "water", "stat": "sensor.tap"}
+    known = {*KNOWN, *HINT_KNOWN, ("water", "sensor.tap")}
+    await store.async_ignore(PAIR, known)
+    await store.async_dismiss(HINT, known)
+    await store.async_dismiss(water, known)
+    await store.async_clear("water")
+    assert store.dismissed() == [HINT]
+    assert store.ignored() == [PAIR]
+    await store.async_clear()
+    assert store.dismissed() == []
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] == {
+        "ignored": [],
+        "dismissed": [],
+    }
+
+
+async def test_load_skips_broken_dismissals(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Damaged dismissals are left out, a non-string role makes one invalid."""
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 2,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {
+            "ignored": [],
+            "dismissed": [
+                HINT,
+                {**HINT, "role": "home", "extra": 1},
+                {**HINT, "role": 5},
+                {"code": "daily_reset"},
+                "nonsense",
+            ],
+        },
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.dismissed() == [HINT, {**HINT, "role": "home"}]
+
+    hass_storage[SUGGESTIONS_STORAGE_KEY]["data"] = {"dismissed": None}
+    other = SuggestionStore(hass)
+    await other.async_load()
+    assert other.dismissed() == []
