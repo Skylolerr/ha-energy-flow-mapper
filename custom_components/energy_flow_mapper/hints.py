@@ -82,6 +82,7 @@ from .hierarchy import (
 from .meter_inputs import Cache, direct_inputs
 from .solar_setup import KIND_GROSS_ENERGY, KIND_SOLAR_ENERGY
 from .stats_probe import (
+    FALL_SHARE,
     HOURLY,
     SHORT_TERM,
     Downtime,
@@ -626,7 +627,12 @@ def _overlap(downtimes: Sequence[Downtime], begin: float, end: float) -> float:
 
 
 def _fallen(inputs: list[str], rows: Rows, start: float) -> str | None:
-    """Return the input whose counter fell most (at least OFF_KWH) in the hour."""
+    """Return the input whose counter was reset in the hour, the largest fall.
+
+    Reset-shaped only: it fell by at least OFF_KWH and landed less than
+    FALL_SHARE as far from 0 as before (the rule of `stats_probe`). A signed
+    Net meter that falls through export (97 -> 94) is no reset.
+    """
     falls = [
         (before - after, entity)
         for entity in inputs
@@ -638,6 +644,7 @@ def _fallen(inputs: list[str], rows: Rows, start: float) -> str | None:
         is not None
         and (after := states.get(start)) is not None
         and before - after >= OFF_KWH
+        and abs(after) < FALL_SHARE * abs(before)
     ]
     return max(falls)[1] if falls else None
 

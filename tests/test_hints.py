@@ -1145,6 +1145,49 @@ async def test_gross_off_reports_a_reset_in_a_power_cut(
     ]
 
 
+async def test_gross_off_net_export_is_no_reset(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+) -> None:
+    """A Net meter that falls through export is no reset, also next to a restart.
+
+    4 kW solar, 1 kW load: HA is off for 30 minutes, the Net meter books the
+    export meanwhile and the solar term nothing (the solar-term check sees
+    that loss).
+    """
+    _, data = statistics
+    prefs, records = _setup(hass, "net")
+    base = _hour_base()
+    data[GROSS] = _hourly("change", [1, 1, -1.0, 1, 1], base)
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 5, base)
+    data[DRAWN] = _hourly("state", [100, 97, 94, 91, 88], base)
+    downtimes.append((base + 7200.0 + 600, base + 7200.0 + 2400))
+    assert await _watch_hints(hass, prefs, records) == []
+
+
+async def test_gross_off_net_with_an_inverted_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """Net exporting with a gross power of the wrong sign: `sign`, not `input`."""
+    _, data = statistics
+    prefs, records = _setup(hass, "net")
+    base = _hour_base()
+    data[GROSS] = _hourly("change", [1.0] * 5, base)
+    data[GROSS_POWER] = _hourly("mean", [-2000.0] * 5, base)
+    data[DRAWN] = _hourly("state", [100, 97, 94, 91, 88], base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(
+            base + 3 * 3600,
+            "jump",
+            "net",
+            change_kwh=1.0,
+            power_kwh=-2.0,
+            cause="sign",
+        )
+    ]
+
+
 async def test_gross_off_short_restart_masks_nothing(
     hass: HomeAssistant,
     statistics: tuple[list[tuple[Any, ...]], Rows],
