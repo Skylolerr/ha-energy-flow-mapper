@@ -1081,6 +1081,52 @@ async def test_create_integral_refuses_other_sensors(
     assert response["error"]["translation_placeholders"] == {"entity_id": power}
 
 
+async def test_create_integral_of_a_source_power(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A source's power sensor may already have a meter; it must be power."""
+    # The printer's power sensor has a meter, so it is no candidate.
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id="sensor.printer_power",
+        name="Solar energy",
+        of_source=True,
+    )
+    assert response["success"], response
+    assert response["result"]["stat_rate"] == "sensor.printer_power"
+    assert response["result"]["kind"] == "electricity"
+    entries = hass.config_entries.async_entries("integration")
+    helper = next(
+        e for e in entries if e.options.get("source") == "sensor.printer_power"
+    )
+    assert helper.title == "Solar energy"
+    assert loaded_entry.runtime_data.helpers.entries() == [helper.entry_id]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "power", ["sensor.nope", "sensor.tap_flow", "sensor.printer_energy"]
+)
+async def test_create_integral_of_a_source_needs_power(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, power: str
+) -> None:
+    """For a source, unknown sensors, flows and meters are refused."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_integral",
+        power_entity_id=power,
+        name="x",
+        of_source=True,
+    )
+    assert response["error"]["translation_key"] == "not_a_power_sensor"
+    assert response["error"]["translation_placeholders"] == {"entity_id": power}
+
+
 @pytest.mark.usefixtures("loaded_entry")
 async def test_create_integral_flow_failure(
     hass: HomeAssistant,

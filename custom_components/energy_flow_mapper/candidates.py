@@ -490,6 +490,23 @@ def async_power_candidates(
 
 
 @callback
+def async_is_rate_sensor(hass: HomeAssistant, entity_id: str, kind: DeviceKind) -> bool:
+    """Return whether `entity_id` is a power (or flow) sensor a meter can be made of.
+
+    Unlike `async_power_candidates`, a sensor that is used or has a meter
+    counts too: the power sensor of a source has the source's meter.
+    """
+    _, rate_class = METER_CLASSES[kind]
+    state = hass.states.get(entity_id)
+    return (
+        entity_id.startswith("sensor.")
+        and state is not None
+        and state.attributes.get(ATTR_DEVICE_CLASS) == rate_class
+        and state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) in RATE_UNITS[kind]
+    )
+
+
+@callback
 def async_mark_created(
     hass: HomeAssistant,
     infos: Collection[dict[str, Any]],

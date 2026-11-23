@@ -160,8 +160,19 @@ type Dialog =
   /**
    * A sum meter: from a group (its devices are fixed) or free from a device
    * (`origin`, whose parent the meter takes); `added` are the chosen sensors.
+   * `replace` is false once the user unticks *Replace <device>*; `integrals`
+   * maps an integral meter that stands in for a daily solar meter to its
+   * power sensor (the solar's).
    */
-  | { kind: "sum"; group: string | null; origin: string | null; added: string[]; picking: boolean }
+  | {
+      kind: "sum";
+      group: string | null;
+      origin: string | null;
+      added: string[];
+      picking: boolean;
+      replace?: boolean;
+      integrals?: Record<string, string>;
+    }
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" }
   /** Discard a draft of several changes? */
@@ -1878,11 +1889,96 @@ export class EnergyFlowMapperPanel extends LitElement {
     return new Set(stats.map((stat) => String(this.hass?.states[stat]?.attributes.state_class)));
   }
 
-  /** The rate sensors to add up as well: only when every sensor is a device with one. */
-  private _sumRates(stats: string[]): string[] {
+  /**
+   * The rate sensors to add up as well, in the order of `stats`: a device's
+   * power sensor, a solar source's, or that of an integral standing in for a
+   * solar meter (`integrals`). `rates` is empty unless every member has one;
+   * `missing` are the members without, and a grid or battery member
+   * (`blockedBySource`, its sign depends on the direction) gives no rates.
+   */
+  private _sumRates(
+    stats: string[],
+    integrals: Record<string, string> = {},
+  ): { rates: string[]; missing: string[]; blockedBySource: boolean } {
     const devices = this.draft;
-    const rates = stats.map((stat) => devices.find((d) => d.stat_consumption === stat)?.stat_rate);
-    return rates.every((rate): rate is string => typeof rate === "string" && rate !== "") ? rates : [];
+    const sources = sourceRows(this.draftSources, this._tab);
+    const rates: string[] = [];
+    const missing: string[] = [];
+    let blockedBySource = false;
+    for (const stat of stats) {
+      const row = sources.find((r) => r.stat === stat);
+      if (row !== undefined && (row.type === "grid" || row.type === "battery")) {
+        blockedBySource = true;
+        continue;
+      }
+      const rate =
+        integrals[stat] ??
+        (row !== undefined
+          ? row.type === "solar"
+            ? row.stat_rate
+            : undefined
+          : devices.find((d) => d.stat_consumption === stat)?.stat_rate);
+      if (typeof rate === "string" && rate !== "") {
+        rates.push(rate);
+      } else {
+        missing.push(stat);
+      }
+    }
+    return { rates: blockedBySource || missing.length ? [] : rates, missing, blockedBySource };
+  }
+
+  /**
+   * The device a sum may replace: the only device of the sum, when the sum
+   * also has a source (or an integral standing in for one). Below the new
+   * meter it would count twice. Null otherwise.
+   */
+  private _sumReplaceable(dialog: SumDialog, all: string[]): string | null {
+    const sources = new Set(sourceRows(this.draftSources, this._tab).map((r) => r.stat));
+    const integrals = dialog.integrals ?? {};
+    const devices = all.filter((stat) => this.draft.some((d) => d.stat_consumption === stat));
+    return devices.length === 1 && all.some((stat) => sources.has(stat) || stat in integrals) ? devices[0] : null;
+  }
+
+  /** The members that reset every day, when they are mixed with members that do not. */
+  private _sumDailyMix(all: string[]): string[] {
+    const daily = all.filter((stat) => this._info(stat)?.daily_reset === true);
+    return daily.length > 0 && daily.length < all.length ? daily : [];
+  }
+
+  /**
+   * Create an integral of a daily solar meter's power sensor right away and
+   * put its meter into the sum in the solar's place. The solar source itself
+   * stays as it is.
+   */
+  async _sumIntegral(stat: string, power: string): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    const base = String(this.hass.states[power]?.attributes.friendly_name ?? "") || this._name(stat);
+    const name = `${base} ${this._t("energy_suffix")}`;
+    this._busy = true;
+    try {
+      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string }>({
+        type: `${DOMAIN}/create_integral`,
+        power_entity_id: power,
+        name,
+        of_source: true,
+      });
+      await this._load();
+      const dialog = this._dialog;
+      if (dialog?.kind === "sum") {
+        this._dialog = {
+          ...dialog,
+          added: dialog.added.map((s) => (s === stat ? result.entity_id : s)),
+          integrals: { ...dialog.integrals, [result.entity_id]: result.stat_rate },
+        };
+      }
+      this._showToast(this._t("sum_integral_created", { name }));
+    } catch (err) {
+      await this._handleError(err);
+    } finally {
+      this._busy = false;
+    }
   }
 
   /** «Kitchen Power» for the meter «Kitchen Energy» (water: «… Flow»). */
@@ -1923,8 +2019,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   /**
    * Create the sum helper(s) right away, then put the new meter into the
    * draft as one step: at the parent, the group's nested groups and every
-   * device of the sum below it (sources stay sources). A group left empty
-   * disappears by itself. Undo takes back the draft; the helper stays.
+   * device of the sum below it (sources stay sources). When the sum replaces
+   * its only device (see `_sumReplaceable`), the new meter takes that
+   * device's place instead (`_replaceSteps`). A group left empty disappears
+   * by itself. Undo takes back the draft; the helper stays.
    */
   async _createSum(dialog: SumDialog): Promise<void> {
     if (!this.hass) {
@@ -1940,7 +2038,11 @@ export class EnergyFlowMapperPanel extends LitElement {
     const nested = dialog.group !== null ? groups.filter((g) => g.group === dialog.group).map((g) => g.id) : [];
     const following = new Set(nested.flatMap((id) => groupDevices(groups, id)));
     const moves = all.filter((stat) => devices.some((d) => d.stat_consumption === stat) && !following.has(stat));
-    const rates = this._sumRates(all);
+    const { rates } = this._sumRates(all, dialog.integrals);
+    const replacing = dialog.replace === false ? null : this._sumReplaceable(dialog, all);
+    // A group's meter takes the group's place, a free one the device's group.
+    const replaceGroup =
+      dialog.group !== null ? enclosing : (groups.find((g) => g.members.includes(replacing ?? ""))?.id ?? null);
     this._busy = true;
     try {
       const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
@@ -1954,12 +2056,19 @@ export class EnergyFlowMapperPanel extends LitElement {
       await this._load();
       const stat = result.entity_id;
       const kind = this._kind();
-      this._changeAll([
-        { type: "add", stat, parent, ...(result.stat_rate ? { stat_rate: result.stat_rate } : {}), ...kind },
-        ...(enclosing !== null ? [{ type: "set_group" as const, stat, group: enclosing, ...kind }] : []),
-        ...nested.map((id) => ({ type: "move_group" as const, id, parent: stat, ...kind })),
-        ...moves.map((member) => ({ type: "move" as const, stat: member, parent: stat, ...kind })),
-      ]);
+      const groupMoves = nested.map((id) => ({ type: "move_group" as const, id, parent: stat, ...kind }));
+      const replaced =
+        replacing !== null ? this._replaceSteps(replacing, stat, result.stat_rate, replaceGroup, groupMoves) : [];
+      this._changeAll(
+        replaced.length
+          ? replaced
+          : [
+              { type: "add", stat, parent, ...(result.stat_rate ? { stat_rate: result.stat_rate } : {}), ...kind },
+              ...(enclosing !== null ? [{ type: "set_group" as const, stat, group: enclosing, ...kind }] : []),
+              ...groupMoves,
+              ...moves.map((member) => ({ type: "move" as const, stat: member, parent: stat, ...kind })),
+            ],
+      );
       this._selected = stat;
       this._showToast(this._t("sum_created", { name }));
     } catch (err) {
@@ -1978,20 +2087,40 @@ export class EnergyFlowMapperPanel extends LitElement {
    * is selected.
    */
   _replace(oldStat: string, newStat: string, newRate: string | null = null): void {
-    const kind = this._kind();
     const groupOf = this._groups.find((g) => g.members.includes(oldStat))?.id ?? null;
-    const changes = replaceChanges(this.draft, groupOf, oldStat, newStat, { kind: this._deviceKind(), newRate });
+    const changes = this._replaceSteps(oldStat, newStat, newRate, groupOf);
     if (changes.length === 0) {
       return;
     }
-    const groupMoves = this._groups
+    this._changeAll(changes);
+    this._selected = newStat;
+  }
+
+  /**
+   * The changes of `_replace`, with the new meter in the group `groupOf`;
+   * `groupMoves` (a sum's nested groups) move along with the groups below
+   * the old meter. Nothing for an unknown device. `newStat` must not be in
+   * the draft yet.
+   */
+  private _replaceSteps(
+    oldStat: string,
+    newStat: string,
+    newRate: string | null,
+    groupOf: string | null,
+    groupMoves: Change[] = [],
+  ): Change[] {
+    const kind = this._kind();
+    const changes = replaceChanges(this.draft, groupOf, oldStat, newStat, { kind: this._deviceKind(), newRate });
+    if (changes.length === 0) {
+      return [];
+    }
+    const below = this._groups
       .filter((g) => g.parent === oldStat && g.group === null)
       .map((g) => ({ type: "move_group" as const, id: g.id, parent: newStat, ...kind }));
     // Before the device moves, which would take the children out of their groups.
     const firstMove = changes.findIndex((c) => c.type === "move" || c.type === "remove");
-    changes.splice(firstMove, 0, ...groupMoves);
-    this._changeAll(changes);
-    this._selected = newStat;
+    changes.splice(firstMove, 0, ...groupMoves, ...below);
+    return changes;
   }
 
   /** Free sensors of the tab that are not added in the draft yet, matching `search`. */
@@ -3912,7 +4041,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     const blocked = [...reasons.values()].some((reason) => reason !== null);
     const mixed = !blocked && this._sumStateClasses(all).size > 1;
     const name = this._renameValue.trim();
-    const rates = this._sumRates(all);
+    const { rates, missing, blockedBySource } = this._sumRates(all, dialog.integrals);
+    const replaceable = this._sumReplaceable(dialog, all);
+    const daily = this._sumDailyMix(all);
+    const solarRates = new Map(
+      sourceRows(this.draftSources, this._tab)
+        .filter((r) => r.type === "solar" && r.stat_rate)
+        .map((r) => [r.stat, r.stat_rate!]),
+    );
     const water = this._tab === "water";
     const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
@@ -3934,10 +4070,20 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${all.map((stat) => {
           const reason = reasons.get(stat) ?? null;
           const label = this._name(stat);
+          const power = daily.includes(stat) ? solarRates.get(stat) : undefined;
           return html`<li class="sum-member" data-stat=${stat}>
             <div class="candidate-text">
               <span class="node-name">${label}</span>
               ${reason ? html`<span class="sub warning">${reason}</span>` : nothing}
+              ${power
+                ? html`<button
+                    class="sum-integral"
+                    ?disabled=${this._busy}
+                    @click=${() => void this._sumIntegral(stat, power)}
+                  >
+                    ${this._t("sum_use_integral")}
+                  </button>`
+                : nothing}
             </div>
             ${fixed.includes(stat)
               ? nothing
@@ -3954,6 +4100,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       </ul>
       ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
       ${mixed ? html`<p class="warning">${this._t("error_sum_state_classes_differ")}</p>` : nothing}
+      ${daily.length
+        ? html`<p class="warning sum-daily-mix">
+            ${this._t("sum_daily_mix", { names: daily.map((stat) => this._name(stat)).join(", ") })}
+          </p>`
+        : nothing}
       ${dialog.picking
         ? options.length
           ? html`<ul class="targets">
@@ -3967,12 +4118,32 @@ export class EnergyFlowMapperPanel extends LitElement {
             </ul>`
           : html`<p class="empty">${this._t("sum_no_sensors")}</p>`
         : html`<button class="sum-add" @click=${() => update(dialog.added, true)}>${this._t("sum_add")}</button>`}
+      ${replaceable !== null
+        ? html`<label class="check sum-replace">
+              <input
+                type="checkbox"
+                .checked=${dialog.replace !== false}
+                @change=${(e: Event) =>
+                  (this._dialog = { ...dialog, replace: (e.target as HTMLInputElement).checked })}
+              />
+              ${this._t("sum_replace", { name: this._name(replaceable) })}
+            </label>
+            <p class="hint">${this._t("sum_replace_reason")}</p>`
+        : nothing}
       <p class="hint">${this._t("sum_text", { helper: name })}</p>
       ${rates.length
         ? html`<p class="hint">
             ${this._t(water ? "sum_rate_hint_water" : "sum_rate_hint", { helper: this._sumRateName(name) })}
           </p>`
-        : nothing}
+        : blockedBySource
+          ? html`<p class="hint sum-rate-none">${this._t("sum_rate_source_sign")}</p>`
+          : missing.length
+            ? html`<p class="hint sum-rate-none">
+                ${this._t(water ? "sum_rate_missing_water" : "sum_rate_missing", {
+                  names: missing.map((stat) => this._name(stat)).join(", "),
+                })}
+              </p>`
+            : nothing}
       <div class="dialog-actions">
         <button @click=${() => this._close()}>${this._t("cancel")}</button>
         <button

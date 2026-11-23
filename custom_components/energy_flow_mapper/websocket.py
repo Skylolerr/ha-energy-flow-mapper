@@ -33,6 +33,7 @@ from .candidates import (
     async_child_pairs,
     async_external_candidates,
     async_external_statistics,
+    async_is_rate_sensor,
     async_mark_created,
     async_power_candidates,
     async_stat_info,
@@ -106,6 +107,7 @@ ATTR_BASE_HASH = "base_hash"
 ATTR_CHANGES = "changes"
 ATTR_BACKUP_ID = "backup_id"
 ATTR_POWER_ENTITY_ID = "power_entity_id"
+ATTR_OF_SOURCE = "of_source"
 ATTR_NAME = "name"
 ATTR_PERIOD = "period"
 ATTR_DOCUMENT = "document"
@@ -625,6 +627,7 @@ async def websocket_restore(
         vol.Required("type"): f"{DOMAIN}/create_integral",
         vol.Required(ATTR_POWER_ENTITY_ID): str,
         vol.Required(ATTR_NAME): str,
+        vol.Optional(ATTR_OF_SOURCE, default=False): bool,
     }
 )
 @require_admin
@@ -635,19 +638,29 @@ async def websocket_create_integral(
     """Create an integral helper for a power or flow sensor without meter.
 
     The helper is created at once, not on save; the panel then adds its meter
-    to the draft, in the list `kind` names.
+    to the draft, in the list `kind` names. With `of_source`, the sensor is a
+    source's power sensor (a sum meter uses its integral in place of a daily
+    resetting solar meter): it is used and has a meter, so any electricity
+    power sensor is accepted.
     """
     runtime = _runtime(hass)
     power = msg[ATTR_POWER_ENTITY_ID]
-    prefs = await energy_access.async_get_prefs(hass)
-    kind = next(
-        (
-            kind
-            for kind in DEVICE_KEYS
-            if power in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
-        ),
-        None,
-    )
+    kind: DeviceKind | None
+    if msg[ATTR_OF_SOURCE]:
+        if not async_is_rate_sensor(hass, power, DeviceKind.ELECTRICITY):
+            raise _error("not_a_power_sensor", entity_id=power)
+        kind = DeviceKind.ELECTRICITY
+    else:
+        prefs = await energy_access.async_get_prefs(hass)
+        kind = next(
+            (
+                kind
+                for kind in DEVICE_KEYS
+                if power
+                in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
+            ),
+            None,
+        )
     if kind is None:
         raise _error("not_a_power_candidate", entity_id=power)
     entry_id, entity_id = await async_create_integral(
