@@ -6,6 +6,7 @@ own module.
 
 from __future__ import annotations
 
+import sys
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -129,9 +130,22 @@ async def test_read_downtimes_with_the_recorder(
         read_downtimes, hass, ago(48).timestamp()
     )
     current = instance.recorder_runs_manager.current.start.timestamp()
-    assert found == [
+    assert list(found or ()) == [
         pytest.approx((ago(40).timestamp(), ago(38).timestamp())),
         pytest.approx((ago(33).timestamp(), ago(30).timestamp())),
         pytest.approx((ago(20).timestamp(), ago(10).timestamp())),
         pytest.approx((ago(5).timestamp(), current)),
     ]
+
+
+async def test_read_downtimes_survives_a_changed_recorder(
+    recorder_mock: Any, hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recorder schema that cannot be imported only loses the downtimes."""
+    monkeypatch.setitem(
+        sys.modules, "homeassistant.components.recorder.db_schema", None
+    )
+    found = await get_instance(hass).async_add_executor_job(
+        read_downtimes, hass, dt_util.utcnow().timestamp() - 3600
+    )
+    assert found is None

@@ -25,14 +25,12 @@ from enum import StrEnum
 from itertools import pairwise
 from typing import Any, Final, Literal
 
-from homeassistant.components.recorder.db_schema import RecorderRuns, States
-from homeassistant.components.recorder.models import process_timestamp
 from homeassistant.components.recorder.statistics import statistics_during_period
 from homeassistant.core import HomeAssistant, valid_entity_id
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.recorder import get_instance, session_scope
 from homeassistant.util import dt as dt_util
-from sqlalchemy import func, select
+from sqlalchemy import select
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -356,11 +354,12 @@ class Reading:
     """What one reading found.
 
     The rows of each query, Home Assistant's downtimes since the earliest
-    query's start, and when it was read (UTC timestamp).
+    query's start (None when they could not be read), and when it was read
+    (UTC timestamp).
     """
 
     rows: tuple[Rows, ...]
-    downtimes: tuple[Downtime, ...]
+    downtimes: tuple[Downtime, ...] | None
     read_at: float
 
 
@@ -372,7 +371,7 @@ class ReadingCache:
     reading: Reading | None = None
 
 
-def read_downtimes(hass: HomeAssistant, since: float) -> list[Downtime]:
+def read_downtimes(hass: HomeAssistant, since: float) -> tuple[Downtime, ...] | None:
     """Return the times Home Assistant was off that ended after `since`.
 
     A downtime runs from the end of one recorder run to the start of the
@@ -380,52 +379,78 @@ def read_downtimes(hass: HomeAssistant, since: float) -> list[Downtime]:
     start as its end; it really ended with its last state written. While
     Home Assistant is off, the recorder later fills the statistics with the
     last values: flat rows, no gaps. Must run in the recorder's executor.
+    The recorder's tables are internal: any failure, also of the import,
+    gives None.
     """
-    with session_scope(hass=hass, read_only=True) as session:
-        runs = session.execute(
-            select(
-                RecorderRuns.start, RecorderRuns.end, RecorderRuns.closed_incorrect
-            ).order_by(RecorderRuns.start)
-        ).all()
-        found: list[Downtime] = []
-        for (start, end, incorrect), (restart, _, _) in pairwise(runs):
-            back = process_timestamp(restart).timestamp()
-            if back <= since:
-                continue
-            begin = process_timestamp(start).timestamp()
-            if incorrect or end is None:
-                # `last_updated_ts` is indexed.
-                last = session.execute(
-                    select(func.max(States.last_updated_ts)).where(
-                        States.last_updated_ts >= begin,
-                        States.last_updated_ts < back,
-                    )
-                ).scalar()
-                stop = begin if last is None else float(last)
-            else:
-                stop = process_timestamp(end).timestamp()
-            if stop < back:
-                found.append((stop, back))
-    return found
+    try:
+        # Imported here: a change of the recorder only loses the downtimes.
+        from homeassistant.components.recorder.db_schema import (  # noqa: PLC0415
+            RecorderRuns,
+            States,
+        )
+        from homeassistant.components.recorder.models import (  # noqa: PLC0415
+            process_timestamp,
+        )
+
+        with session_scope(hass=hass, read_only=True) as session:
+            runs = session.execute(
+                select(
+                    RecorderRuns.start, RecorderRuns.end, RecorderRuns.closed_incorrect
+                ).order_by(RecorderRuns.start)
+            ).all()
+            found: list[Downtime] = []
+            for (start, end, incorrect), (restart, _, _) in pairwise(runs):
+                back = process_timestamp(restart).timestamp()
+                if back <= since:
+                    continue
+                begin = process_timestamp(start).timestamp()
+                if incorrect or end is None:
+                    # `last_updated_ts` is indexed.
+                    last = session.execute(
+                        select(States.last_updated_ts)
+                        .where(
+                            States.last_updated_ts >= begin,
+                            States.last_updated_ts < back,
+                        )
+                        .order_by(States.last_updated_ts.desc())
+                        .limit(1)
+                    ).scalar()
+                    stop = begin if last is None else float(last)
+                else:
+                    stop = process_timestamp(end).timestamp()
+                if stop < back:
+                    found.append((stop, back))
+    except Exception:
+        _LOGGER.debug("Reading the downtimes failed", exc_info=True)
+        return None
+    return tuple(found)
 
 
 def _read(hass: HomeAssistant, queries: tuple[Query, ...], end: datetime) -> Reading:
-    """Run the queries and read the downtimes; in the recorder's executor."""
+    """Run the queries and read the downtimes; in the recorder's executor.
+
+    No query reaches back further than the recorder keeps its runs
+    (`keep_days`): older downtimes are unknown. The downtimes are read on
+    their own; when they fail, the rows stay.
+    """
+    keep = get_instance(hass).keep_days
+    days = [min(query.days, keep) for query in queries]
     rows = tuple(
         statistics_during_period(
             hass,
-            end - timedelta(days=query.days),
+            end - timedelta(days=back),
             end,
             set(query.ids),
             query.period,
             UNITS,
             set(query.types),
         )
-        for query in queries
+        for query, back in zip(queries, days, strict=True)
     )
-    since = end - timedelta(days=max(query.days for query in queries))
+    since = end - timedelta(days=max(days))
+    downtimes = read_downtimes(hass, since.timestamp())
     return Reading(
-        rows, tuple(read_downtimes(hass, since.timestamp())), end.timestamp()
+        rows, None if downtimes is None else tuple(downtimes), end.timestamp()
     )
 
 

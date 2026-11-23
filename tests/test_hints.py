@@ -35,6 +35,7 @@ from custom_components.energy_flow_mapper.solar_setup import (
     gross_power_template,
     solar_power_template,
 )
+from custom_components.energy_flow_mapper.stats_probe import read_downtimes
 
 from .common import MockConfigEntry, WebSocketGenerator
 from .conftest import ENERGY_PREFS, _meter
@@ -46,6 +47,8 @@ SOLAR = {"type": "solar", "stat_energy_from": "sensor.solar_energy"}
 
 class FakeRecorder:
     """Run executor jobs like the recorder does."""
+
+    keep_days = 10
 
     def __init__(self, hass: HomeAssistant) -> None:
         """Keep the instance like get_instance would return it."""
@@ -895,10 +898,53 @@ async def test_gross_off_on_fall_and_on_jump(
     assert await _watch_hints(hass, prefs, records) == [
         _gross_off(hour, "jump", change_kwh=3.0, power_kwh=1.0, cause="sign")
     ]
-    # Less than the power and nothing fell: the solar term lost energy.
+    # Less than the power and nothing fell, while the solar term counted less
+    # than the solar itself in that hour: the solar term lost energy.
     data[GROSS] = _hourly("change", [1, 1, 1, 1, 1, 0.2, 1, 1, 1, 1], base)
+    data[TERM] = _hourly("change", [2, 2, 2, 2, 2, 1.0, 2, 2, 2, 2], base)
+    data[PV_ENERGY] = _hourly("change", [2.0] * 10, base)
     assert await _watch_hints(hass, prefs, records) == [
         _gross_off(hour, "fall", change_kwh=0.2, power_kwh=1.0, cause="solar_term")
+    ]
+    # The term counted all: the gross power has the wrong sign.
+    data[TERM] = _hourly("change", [2.0] * 10, base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(hour, "fall", change_kwh=0.2, power_kwh=1.0, cause="sign")
+    ]
+
+
+async def test_gross_off_cause_of_an_inverted_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """EM while exporting: the gross power says 3.5 kW, the meter 0.5 kWh."""
+    _, data = statistics
+    prefs, records = _setup(hass)
+    base = _hour_base()
+    data[GROSS] = _hourly("change", [0.5] * 5, base)
+    data[GROSS_POWER] = _hourly("mean", [3500.0] * 5, base)
+    data[TERM] = _hourly("change", [3.0] * 5, base)
+    data[PV_ENERGY] = _hourly("change", [3.0] * 5, base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(base + 3 * 3600, "fall", change_kwh=0.5, power_kwh=3.5, cause="sign")
+    ]
+
+
+async def test_gross_off_cause_of_a_solar_dropout(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A 45-minute solar dropout while exporting takes the hour below 0."""
+    _, data = statistics
+    prefs, records = _setup(hass)
+    base = _hour_base()
+    # 3 kW solar, 0.5 kW load; held 10 minutes, then 35 minutes at 0.
+    data[GROSS] = _hourly("change", [0.5, 0.5, -1.25, 0.5, 0.5], base)
+    data[GROSS_POWER] = _hourly("mean", [500.0] * 5, base)
+    data[TERM] = _hourly("change", [3.0, 3.0, 1.25, 3.0, 3.0], base)
+    data[PV_ENERGY] = _hourly("change", [3.0] * 5, base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(
+            base + 7200, "fall", change_kwh=-1.25, power_kwh=0.5, cause="solar_term"
+        )
     ]
 
 
@@ -1067,6 +1113,92 @@ async def test_gross_off_skips_a_power_cut(
     data[GROSS_POWER] = _hourly("mean", [1500.0] * 8, base)
     downtimes.append((base + 7200.0 + 720, base + 3600.0 * 5 + 1800))
     assert await _watch_hints(hass, prefs, records) == []
+
+
+async def test_gross_off_reports_a_reset_in_a_power_cut(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+) -> None:
+    """A plug that starts again at 0 after a power cut that took HA down too.
+
+    The recorder fills a downtime flat and never makes a counter fall, so a
+    fallen input is sure evidence even next to a downtime.
+    """
+    _, data = statistics
+    prefs, records = _setup(hass, "plug")
+    base = _hour_base()
+    data[GROSS] = _hourly("change", [1, 1, 0, 0, 1 - 150, 1, 1, 1], base)
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 8, base)
+    data[DRAWN] = _hourly("state", [100, 101, 101, 101, 0.5, 1.5, 2.5, 3.5], base)
+    downtimes.append((base + 7200.0, base + 4 * 3600.0 + 300))
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(
+            base + 4 * 3600,
+            "fall",
+            "plug",
+            change_kwh=-149.0,
+            power_kwh=1.0,
+            input=DRAWN,
+            cause="input",
+        )
+    ]
+
+
+async def test_gross_off_short_restart_masks_nothing(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    downtimes: list[tuple[float, float]],
+) -> None:
+    """A routine 2-minute restart leaves the hours around it checked."""
+    _, data = statistics
+    prefs, records = _setup(hass, "power")
+    base = _hour_base()
+    data[GROSS_POWER] = _hourly("mean", [500.0] * 4, base)
+    data[GROSS] = _hourly("change", [0.5, 0.5, -3.0, 0.5], base)
+    downtimes.append((base + 7200.0 + 600, base + 7200.0 + 720))
+    assert [hint["code"] for hint in await _watch_hints(hass, prefs, records)] == [
+        HintCode.GROSS_OFF
+    ]
+
+
+async def test_watch_without_downtimes(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unreadable downtimes: no gross hints, the solar term is still checked."""
+    _, data = statistics
+    # The real reader, without a recorder database behind it.
+    monkeypatch.setattr(stats_probe, "read_downtimes", read_downtimes)
+    prefs, records = _setup(hass)
+    base = _hour_base()
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 4, base)
+    data[GROSS] = _hourly("change", [1, 1, -9, 1], base)
+    start, end = _day()
+    data[TERM] = _day_rows(8.0, start, end)
+    data[PV_ENERGY] = _day_rows(10.0, start, end)
+    assert [hint["code"] for hint in await _watch_hints(hass, prefs, records)] == [
+        HintCode.SOLAR_TERM_SHORT
+    ]
+
+
+async def test_watch_reads_only_what_the_recorder_keeps(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Downtimes older than `keep_days` are purged: no older hours are read."""
+    calls, _ = statistics
+
+    class ShortRecorder(FakeRecorder):
+        keep_days = 3
+
+    monkeypatch.setattr(stats_probe, "get_instance", ShortRecorder)
+    prefs, records = _setup(hass)
+    await _watch_hints(hass, prefs, records)
+    hourly = next(call for call in calls if call[4] == "hour")
+    assert (hourly[2] - hourly[1]).days == 3
 
 
 def _last_row(now: float) -> float:

@@ -111,8 +111,11 @@ statistic). One recorder executor job (`stats_probe.async_read`) reads a week of
 and a day of 5-minute statistics plus Home Assistant's downtimes from the recorder runs,
 together with the other queries of `get`; the reading is kept for 5 minutes per set of
 statistics (`watch_cache` in the runtime data). The recorder fills a downtime with the last
-values (flat rows, no gaps), so hours around a downtime are skipped and downtime is not
-counted as a gap. A failing check only loses its hint.
+values (flat rows, no gaps), so hours around a downtime of 10 minutes or more are skipped
+(unless an input's counter fell) and downtime is not counted as a gap. The windows never
+reach back further than the recorder's `keep_days`. The recorder runs are internal tables:
+they are imported and read inside a guard, and when that fails the gross checks are left
+out while the solar-term check stays. A failing check only loses its hint.
 
 ## Panel and card (`panel/`)
 

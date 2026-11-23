@@ -145,6 +145,9 @@ SHORT_TYPES: Final[frozenset[StatType]] = frozenset({"state", "mean"})
 HOURLY_ROWS: Final = 0
 SHORT_ROWS: Final = 1
 HOUR_SECONDS: Final = 3600.0
+# A shorter downtime (a routine restart) masks no hour: what the recorder
+# fills in stays below the threshold up to about 3 kW.
+MIN_DOWNTIME: Final = 600.0
 SHORT_SECONDS: Final = 300.0
 # The solar term's day differs from its source by more than max(TERM_KWH,
 # TERM_SHARE of the source).
@@ -639,24 +642,42 @@ def _fallen(inputs: list[str], rows: Rows, start: float) -> str | None:
     return max(falls)[1] if falls else None
 
 
-def _cause(
-    gross: _Gross,
-    direction: Direction,
-    fallen: str | None,
-    power_kwh: float | None,
-    change: float,
-) -> Cause | None:
-    """Return the likely cause of a gross_off step, if one can be told."""
-    if fallen is not None:
+def _term_short(
+    gross: _Gross, rows: Rows, start: float, term_sources: Mapping[str, str]
+) -> bool:
+    """Return True if a solar term counted clearly less than its solar that hour."""
+    return any(
+        (theirs := _values(rows, source, "change").get(start)) is not None
+        and (own := _values(rows, term, "change").get(start)) is not None
+        and theirs - own > max(OFF_KWH, OFF_SHARE * abs(theirs))
+        for term in gross.terms
+        if (source := term_sources.get(term)) is not None
+    )
+
+
+def _cause(gross: _Gross, data: Mapping[str, Any], *, term_short: bool) -> Cause | None:
+    """Return the likely cause of a gross_off step, if one can be told.
+
+    A fallen input first, then a solar term that counted less than its
+    solar in that hour. Otherwise a jump, a gross power below 0, or (EM,
+    Plug, Net) a meter that did not go below 0 is a wrong sign.
+    """
+    if "input" in data:
         return Cause.INPUT
-    if direction is Direction.JUMP or (power_kwh is not None and power_kwh < 0):
-        return Cause.SIGN
-    if gross.terms and change >= 0:
+    if term_short:
         return Cause.SOLAR_TERM
+    if (
+        data["direction"] is Direction.JUMP
+        or data.get("power_kwh", 0.0) < 0
+        or (gross.method != Method.POWER and data["change_kwh"] >= 0)
+    ):
+        return Cause.SIGN
     return None
 
 
-def _gross_off(gross: _Gross, reading: Reading) -> dict[str, Any] | None:
+def _gross_off(
+    gross: _Gross, reading: Reading, term_sources: Mapping[str, str]
+) -> dict[str, Any] | None:
     """Return the gross_off hint of the latest step, or None.
 
     An hour is a step when both two-hour windows around it are off the same
@@ -668,9 +689,18 @@ def _gross_off(gross: _Gross, reading: Reading) -> dict[str, Any] | None:
     the gross power agrees: a gross consumption meter never falls (a wrong
     invert, a battery feeding in). Without the gross power only a fall
     counts, one the next hour does not make up (the hour before gives the
-    usual consumption).
+    usual consumption). Next to a downtime of MIN_DOWNTIME or longer only
+    an input whose counter fell counts, with the hour below -OFF_KWH: the
+    recorder's fill is flat and never makes a counter fall (a plug that
+    starts again at 0 after the power cut that took HA down too).
+    `term_sources` maps solar terms to their solar's meter, for the cause.
     """
     rows = reading.rows[HOURLY_ROWS]
+    masks = [
+        (begin, end)
+        for begin, end in reading.downtimes or ()
+        if end - begin >= MIN_DOWNTIME
+    ]
     changes = _values(rows, gross.stat, "change")
     # A mean of W over an hour is that many Wh.
     energy = {
@@ -690,9 +720,13 @@ def _gross_off(gross: _Gross, reading: Reading) -> dict[str, Any] | None:
     def step(start: float) -> Direction | None:
         before, after = start - HOUR_SECONDS, start + HOUR_SECONDS
         hours = (before, start, after)
-        if any(hour not in changes for hour in hours) or _overlap(
-            reading.downtimes, before, after + HOUR_SECONDS
-        ):
+        if _overlap(masks, before, after + HOUR_SECONDS):
+            fell = (
+                changes[start] < -OFF_KWH
+                and _fallen(gross.inputs, rows, start) is not None
+            )
+            return Direction.FALL if fell else None
+        if any(hour not in changes for hour in hours):
             return None
         if any(hour not in energy for hour in hours):
             usual = max(changes[before], 0.0)
@@ -727,7 +761,9 @@ def _gross_off(gross: _Gross, reading: Reading) -> dict[str, Any] | None:
     if (fallen := _fallen(gross.inputs, rows, start)) is not None:
         data["input"] = fallen
     if (
-        cause := _cause(gross, direction, fallen, energy.get(start), changes[start])
+        cause := _cause(
+            gross, data, term_short=_term_short(gross, rows, start, term_sources)
+        )
     ) is not None:
         data["cause"] = cause
     return _hint(HintCode.GROSS_OFF, gross.stat, DeviceKind.ELECTRICITY, data)
@@ -770,7 +806,7 @@ def _gross_unknown(
     spans.append((starts[-1] + SHORT_SECONDS, reading.read_at))
     found: tuple[float, float, list[str]] | None = None
     for begin, end in spans:
-        unknown = end - begin - _overlap(reading.downtimes, begin, end)
+        unknown = end - begin - _overlap(reading.downtimes or (), begin, end)
         if unknown <= GAP_SECONDS:
             continue
         missing = sorted(
@@ -888,7 +924,7 @@ async def async_watch(
     terms = {term for gross in grosses for term in gross.terms}
     queries = (
         Query(
-            frozenset(stats | powers | inputs | set(sources) | set(sources.values())),
+            frozenset(stats | powers | inputs | terms | set(sources)),
             WATCH_DAYS,
             HOURLY,
             HOURLY_TYPES,
@@ -902,11 +938,20 @@ async def async_watch(
     )
     if (reading := await async_read(hass, queries, cache)) is None:
         return watched
-    for gross in grosses:
-        _add(watched.devices, gross.stat, partial(_gross_off, gross, reading))
-        _add(
-            watched.devices, gross.stat, partial(_gross_unknown, gross, reading, solar)
-        )
+    if reading.downtimes is not None:
+        # Unknown downtimes: their flat fills would look like falls and gaps.
+        term_sources = {term: source for source, term in sources.items()}
+        for gross in grosses:
+            _add(
+                watched.devices,
+                gross.stat,
+                partial(_gross_off, gross, reading, term_sources),
+            )
+            _add(
+                watched.devices,
+                gross.stat,
+                partial(_gross_unknown, gross, reading, solar),
+            )
     for source, term in sources.items():
         _add(watched.sources, source, partial(_term_off, term, source, reading))
     return watched
