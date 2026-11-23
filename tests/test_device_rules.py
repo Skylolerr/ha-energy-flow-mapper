@@ -18,6 +18,7 @@ from custom_components.energy_flow_mapper.device_rules import (
     default_inverted,
     family,
     paired_power,
+    preselect_returned,
     returned_candidates,
 )
 from custom_components.energy_flow_mapper.stats_probe import StatsEvidence
@@ -445,6 +446,70 @@ async def test_returned_shelly_channel_first(hass: HomeAssistant) -> None:
     assert returned_candidates(hass, meter, ()) == [(own, True), (other, False)]
 
 
+async def test_returned_shelly_name_is_not_returned(hass: HomeAssistant) -> None:
+    """A Shelly channel named "PV export" does not make its import returned."""
+    device = _device(hass, "pv")
+    meter = _entity(
+        hass,
+        "sensor.pv_energy_consumed",
+        device,
+        f"{MAC}-switch:0-consumed_energy_switch",
+        translation_key="energy_consumed",
+        name="PV export energy consumed",
+    )
+    _entity(
+        hass,
+        "sensor.pv_export_energy",
+        device,
+        f"{MAC}-switch:0-energy",
+        name="PV export energy",
+    )
+    returned = _entity(
+        hass,
+        "sensor.pv_export_returned",
+        device,
+        f"{MAC}-switch:0-ret_energy",
+        name="PV export energy returned",
+    )
+    assert returned_candidates(hass, meter, ()) == [(returned, False)]
+
+
+async def test_preselect_returned_needs_own_channel(hass: HomeAssistant) -> None:
+    """A keyed meter preselects only a returned sensor of its own channel."""
+    ids = _pro_3em(hass)
+    assert preselect_returned(hass, ids["a"], set()) == ids["a_ret"]
+    assert preselect_returned(hass, ids["total"], set()) == ids["total_ret"]
+    # The phase's own returned sensor is used: not the total's.
+    assert preselect_returned(hass, ids["a"], {ids["a_ret"]}) is None
+    assert preselect_returned(hass, ids["a"], {ids["a_ret"], ids["total_ret"]}) is None
+
+
+async def test_preselect_returned_without_channel(hass: HomeAssistant) -> None:
+    """Without a channel key only a sole candidate is preselected."""
+    device = _device(hass, "meter", platform="test")
+    meter = _entity(hass, "sensor.meter", device, "meter", platform="test")
+    assert preselect_returned(hass, meter, set()) is None
+    first = _entity(
+        hass,
+        "sensor.first_returned",
+        device,
+        "first_returned",
+        platform="test",
+        translation_key="energy_returned",
+    )
+    assert preselect_returned(hass, meter, set()) == first
+    second = _entity(
+        hass,
+        "sensor.second_returned",
+        device,
+        "second_returned",
+        platform="test",
+        translation_key="energy_returned",
+    )
+    assert preselect_returned(hass, meter, set()) is None
+    assert preselect_returned(hass, meter, {first}) == second
+
+
 # --- paired_power -----------------------------------------------------------
 
 
@@ -543,6 +608,56 @@ async def test_pair_opendtu_channel(hass: HomeAssistant) -> None:
     )
     assert paired_power(hass, ac, ()) == ac_power
     assert paired_power(hass, dc, ()) == dc_power
+
+
+async def test_pair_dtu_ac_not_dc(hass: HomeAssistant) -> None:
+    """The AC yield (ch0) pairs with the AC power, never a DC power."""
+    for platform_id, ac_field, dc_field in (
+        ("116190000001", "Power", "PowerDC"),
+        ("114181234567", "P_AC", "P_DC"),
+    ):
+        inverter = _device(hass, platform_id, platform="mqtt")
+        ac = _entity(
+            hass,
+            f"sensor.dtu_{platform_id}_yieldtotal",
+            inverter,
+            f"{platform_id}_ch0_YieldTotal",
+            platform="mqtt",
+        )
+        _power(
+            hass,
+            f"sensor.dtu_{platform_id}_dc",
+            inverter,
+            f"{platform_id}_ch0_{dc_field}",
+            platform="mqtt",
+        )
+        ac_power = _power(
+            hass,
+            f"sensor.dtu_{platform_id}_ac",
+            inverter,
+            f"{platform_id}_ch0_{ac_field}",
+            platform="mqtt",
+        )
+        assert paired_power(hass, ac, ()) == ac_power
+        assert paired_power(hass, ac, {ac_power}) is None
+
+
+async def test_pair_prefers_own_device(hass: HomeAssistant) -> None:
+    """Without a rule the meter's own device comes before its family."""
+    parent = _device(hass, "parent", platform="test")
+    device = _device(hass, "device", platform="test", via=parent)
+    child = _device(hass, "child", platform="test", via=device)
+    meter = _entity(hass, "sensor.meter", device, "meter", platform="test")
+    # Own device has none: the single power of the parent.
+    up = _power(hass, "sensor.up_power", parent, "up_power", platform="test")
+    assert paired_power(hass, meter, ()) == up
+    # Own device has one, a child another: the own one.
+    _power(hass, "sensor.down_power", child, "down_power", platform="test")
+    own = _power(hass, "sensor.own_power", device, "own_power", platform="test")
+    assert paired_power(hass, meter, ()) == own
+    # Own device has two: no pair.
+    _power(hass, "sensor.own_2_power", device, "own_2_power", platform="test")
+    assert paired_power(hass, meter, ()) is None
 
 
 async def test_pair_none_when_two_unused(hass: HomeAssistant) -> None:

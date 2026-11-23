@@ -123,7 +123,12 @@ RETURNED_NAME_WORDS: Final = ("returned", "export")
 # IoTaWatt inputs: `{mac}-input-{channel}-Watts` / `-WattHours`.
 IOTAWATT_INPUT: Final = re.compile(r"^(.+-input-[^-]+)-(?:Watts|WattHours)$")
 # OpenDTU and AhoyDTU: `{serial}_ch{N}_{Field}` (ch0 is AC).
-DTU_CHANNEL: Final = re.compile(r"^([0-9A-Fa-f]+_ch\d+)_.+$")
+DTU_CHANNEL: Final = re.compile(r"^([0-9A-Fa-f]+_ch(\d+))_(.+)$")
+DTU_AC: Final = "0"
+# DC power fields of ch0 (OpenDTU `PowerDC`, AhoyDTU `P_DC`): they never pair
+# with the AC yield.
+DTU_DC_POWER: Final = frozenset({"PowerDC", "P_DC"})
+DTU_DC: Final = "dc"
 # Zigbee2MQTT: `{ieee}_{property}_zigbee2mqtt`; channels end in `_a`, `_l1` ...
 Z2M_SUFFIX: Final = "_zigbee2mqtt"
 Z2M_CHANNEL: Final = re.compile(r"_(a|b|c|l1|l2|l3)$")
@@ -226,8 +231,12 @@ def _mqtt_channel(entry: er.RegistryEntry) -> Hashable | None:
         ieee, _, prop = unique_id.removesuffix(Z2M_SUFFIX).partition("_")
         suffix = Z2M_CHANNEL.search(prop)
         return ieee, suffix.group(1) if suffix else None
-    match = DTU_CHANNEL.match(unique_id)
-    return match.group(1) if match else None
+    if (match := DTU_CHANNEL.match(unique_id)) is None:
+        return None
+    channel, number, field = match.groups()
+    if number == DTU_AC and field in DTU_DC_POWER:
+        return channel, DTU_DC
+    return channel
 
 
 CHANNEL_RULES: Final[dict[str, Callable[[er.RegistryEntry], Hashable | None]]] = {
@@ -261,11 +270,9 @@ def is_returned(entry: er.RegistryEntry) -> bool:
     """Return True for a registry entry of a returned energy sensor."""
     if entry.translation_key in RETURNED_TRANSLATION_KEYS:
         return True
-    if (
-        entry.platform == SHELLY
-        and entry.unique_id.rsplit("-", 1)[-1] in SHELLY_RETURNED_KEYS
-    ):
-        return True
+    if entry.platform == SHELLY:
+        # The channel name is in every sensor's name ("PV export energy").
+        return entry.unique_id.rsplit("-", 1)[-1] in SHELLY_RETURNED_KEYS
     name = (entry.name or entry.original_name or "").casefold()
     return any(word in name for word in RETURNED_NAME_WORDS)
 
@@ -321,15 +328,10 @@ def _energy_sensors(
     ]
 
 
-def returned_candidates(
+def _returned(
     hass: HomeAssistant, meter: str, exclude: Collection[str]
-) -> list[tuple[str, bool]]:
-    """Return (entity ID, disabled) of the returned sensors in a meter's family.
-
-    Ranked: the meter's own channel (Shelly component index and phase) first,
-    then enabled before disabled, then by entity ID. Sensors in `exclude`
-    (used in the settings or the draft) are left out.
-    """
+) -> tuple[Hashable | None, list[er.RegistryEntry]]:
+    """Return the meter's channel key and its ranked returned sensors."""
     members = family(hass, meter)
     own = next((entry for entry in members if entry.entity_id == meter), None)
     channel = _channel(own) if own is not None else None
@@ -345,7 +347,38 @@ def returned_candidates(
         other = channel is None or _channel(entry) != channel
         return other, entry.disabled, entry.entity_id
 
-    return [(entry.entity_id, entry.disabled) for entry in sorted(found, key=rank)]
+    return channel, sorted(found, key=rank)
+
+
+def returned_candidates(
+    hass: HomeAssistant, meter: str, exclude: Collection[str]
+) -> list[tuple[str, bool]]:
+    """Return (entity ID, disabled) of the returned sensors in a meter's family.
+
+    Ranked: the meter's own channel (Shelly component index and phase) first,
+    then enabled before disabled, then by entity ID. Sensors in `exclude`
+    (used in the settings or the draft) are left out.
+    """
+    _, found = _returned(hass, meter, exclude)
+    return [(entry.entity_id, entry.disabled) for entry in found]
+
+
+def preselect_returned(
+    hass: HomeAssistant, energy_entity_id: str, used: Collection[str]
+) -> str | None:
+    """Return the returned sensor to preselect for a meter, or None.
+
+    The first of `returned_candidates`, only when it is trusted: a meter with
+    a channel key needs a candidate of its own channel (a Pro 3EM phase never
+    gets the total's returned sensor); a meter without one needs a sole
+    candidate.
+    """
+    channel, found = _returned(hass, energy_entity_id, used)
+    if channel is not None:
+        if found and _channel(found[0]) == channel:
+            return found[0].entity_id
+        return None
+    return found[0].entity_id if len(found) == 1 else None
 
 
 def _has_returned(hass: HomeAssistant, meter: er.RegistryEntry) -> bool:
@@ -393,9 +426,10 @@ def classify_meter(
 def paired_power(hass: HomeAssistant, energy: str, used: Collection[str]) -> str | None:
     """Return the power sensor of an energy sensor's channel, or None.
 
-    A known integration pairs by its channel key; otherwise the family must
-    hold exactly one unused power sensor. Used and disabled sensors (a
-    disabled one has no state) are never suggested.
+    A known integration pairs by its channel key. Otherwise the meter's own
+    device must hold exactly one unused power sensor; only when it holds none,
+    the family must. Used and disabled sensors (a disabled one has no state)
+    are never suggested.
     """
     members = family(hass, energy)
     own = next((entry for entry in members if entry.entity_id == energy), None)
@@ -412,6 +446,8 @@ def paired_power(hass: HomeAssistant, energy: str, used: Collection[str]) -> str
     ]
     if (channel := _channel(own)) is not None:
         powers = [entry for entry in powers if _channel(entry) == channel]
+    elif same_device := [entry for entry in powers if entry.device_id == own.device_id]:
+        powers = same_device
     return powers[0].entity_id if len(powers) == 1 else None
 
 
