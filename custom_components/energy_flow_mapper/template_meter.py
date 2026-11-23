@@ -7,11 +7,9 @@ device class and state class are set so the energy dashboard accepts it.
 
 from __future__ import annotations
 
-from contextlib import suppress
-from typing import Any, Literal
+from typing import Literal
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
-from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import (
     CONF_DEVICE_CLASS,
     CONF_NAME,
@@ -21,15 +19,9 @@ from homeassistant.const import (
     UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import (
-    FlowManager,
-    FlowResultType,
-    InvalidData,
-    UnknownFlow,
-)
 from homeassistant.exceptions import HomeAssistantError
-from homeassistant.helpers import entity_registry as er
 
+from ._flow import async_run_helper_flow
 from .const import DOMAIN
 
 TEMPLATE_DOMAIN = "template"
@@ -56,23 +48,6 @@ def _failed() -> HomeAssistantError:
     )
 
 
-def _abort(manager: FlowManager[Any, Any, Any], flow_id: str) -> None:
-    """Leave no flow behind."""
-    with suppress(UnknownFlow):
-        manager.async_abort(flow_id)
-
-
-async def _configure(
-    manager: FlowManager[Any, Any, Any], flow_id: str, user_input: dict[str, Any]
-) -> Any:
-    """Run one flow step; refused input and lost flows end in `template_failed`."""
-    try:
-        return await manager.async_configure(flow_id, user_input)
-    except (InvalidData, UnknownFlow) as err:
-        _abort(manager, flow_id)
-        raise _failed() from err
-
-
 async def async_create_template(
     hass: HomeAssistant, name: str, state: str, kind: TemplateKind
 ) -> tuple[str, str]:
@@ -82,20 +57,12 @@ async def async_create_template(
     sensor (`measurement`). If anything fails once the helper exists, it is
     removed again: it was made by this request and nobody uses it.
     """
-    flow = hass.config_entries.flow
-    result = await flow.async_init(TEMPLATE_DOMAIN, context={"source": SOURCE_USER})
-    result = await _configure(flow, result["flow_id"], {"next_step_id": "sensor"})
-    result = await _configure(
-        flow,
-        result["flow_id"],
-        {CONF_NAME: name, CONF_STATE: state, **SENSOR_OPTIONS[kind]},
+    return await async_run_helper_flow(
+        hass,
+        TEMPLATE_DOMAIN,
+        [
+            {"next_step_id": "sensor"},
+            {CONF_NAME: name, CONF_STATE: state, **SENSOR_OPTIONS[kind]},
+        ],
+        _failed,
     )
-    if result["type"] is not FlowResultType.CREATE_ENTRY:
-        _abort(flow, result["flow_id"])
-        raise _failed()
-    entry_id = result["result"].entry_id
-    entities = er.async_entries_for_config_entry(er.async_get(hass), entry_id)
-    if not entities:
-        await hass.config_entries.async_remove(entry_id)
-        raise _failed()
-    return entry_id, entities[0].entity_id

@@ -633,9 +633,10 @@ export function sourceRows(sources: Source[], kind?: Tab): SourceRow[] {
       continue;
     }
     const [from, to] = SOURCE_ROLES[source.type] ?? ["consumption", null];
+    const config = parsePowerConfig(source.power_config);
     const rate = {
       ...(typeof source.stat_rate === "string" ? { stat_rate: source.stat_rate } : {}),
-      ...(isEmpty(source.power_config) ? {} : { power_config: source.power_config as PowerConfig }),
+      ...(config === null ? {} : { power_config: config }),
     };
     if (source.stat_energy_from) {
       rows.push({ type: source.type, role: from, stat: source.stat_energy_from, name: source.name, ...rate });
@@ -679,7 +680,7 @@ const POWER_CONFIG_SHAPES: readonly (readonly string[])[] = [
 ];
 
 /** Whether `config` is one of HA's power_config shapes, with a sensor in each key. */
-function validPowerConfig(config: unknown): boolean {
+function validPowerConfig(config: unknown): config is PowerConfig {
   if (typeof config !== "object" || config === null || Array.isArray(config)) {
     return false;
   }
@@ -688,6 +689,16 @@ function validPowerConfig(config: unknown): boolean {
     POWER_CONFIG_SHAPES.some((shape) => shape.length === keys.length && shape.every((k) => keys.includes(k))) &&
     Object.values(config).every((value) => typeof value === "string" && value !== "")
   );
+}
+
+/** `raw` as a `PowerConfig` if it is one of HA's shapes with a sensor in each key, else null. */
+export function parsePowerConfig(raw: unknown): PowerConfig | null {
+  return validPowerConfig(raw) ? ({ ...raw } as PowerConfig) : null;
+}
+
+/** The device list a tab shows: water has its own, electricity is the default, gas has none. */
+export function tabKind(tab: Tab): DeviceKind {
+  return tab === "water" ? "water" : "electricity";
 }
 
 /**

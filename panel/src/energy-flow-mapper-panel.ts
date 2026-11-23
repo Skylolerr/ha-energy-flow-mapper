@@ -18,6 +18,7 @@ import {
   sourceRows,
   type SourceRole,
   subtree,
+  tabKind,
   type TreeNode,
   untracked,
   untrackedMissing,
@@ -771,7 +772,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** Format a value of `_values` for the current period and tab. */
   _formatValue(value: number): string {
-    if (this._tab === "water") {
+    if (tabKind(this._tab) === "water") {
       return this._period === "now"
         ? formatFlow(this.hass, value, this._waterUnit())
         : formatVolume(this.hass, value, this._waterUnit());
@@ -824,12 +825,12 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** The device list of the current tab (electricity on the gas tab, which has none). */
   private _deviceKind(): DeviceKind {
-    return this._tab === "water" ? "water" : "electricity";
+    return tabKind(this._tab);
   }
 
   /** Device changes of the water tab name their list. */
   private _kind(): { kind?: DeviceKind } {
-    return this._tab === "water" ? { kind: "water" } : {};
+    return tabKind(this._tab) === "water" ? { kind: "water" } : {};
   }
 
   /** Free meters of a tab, as the backend found them. */
@@ -946,7 +947,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Display name; devices of the current tab come first, then the other tab. */
   private _name(
     stat: string,
-    devices: Device[] = this._tab === "water"
+    devices: Device[] = tabKind(this._tab) === "water"
       ? [...this.draftOf("water"), ...this.draftOf("electricity")]
       : [...this.draftOf("electricity"), ...this.draftOf("water")],
   ): string {
@@ -1804,13 +1805,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     const sensors =
       this._tab === "gas"
         ? []
-        : ((this._tab === "water" ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? []);
+        : ((tabKind(this._tab) === "water" ? this._snapshot?.flow_candidates : this._snapshot?.power_candidates) ?? []);
     return sensors.filter((c) => !used.has(c.stat));
   }
 
   /** Name of the meter helper for a power or flow sensor. */
   private _meterName(stat: string): string {
-    return `${this._info(stat)?.name || stat} ${this._t(this._tab === "water" ? "water_suffix" : "energy_suffix")}`;
+    return `${this._info(stat)?.name || stat} ${this._t(tabKind(this._tab) === "water" ? "water_suffix" : "energy_suffix")}`;
   }
 
   async _createMeter(stat: string): Promise<void> {
@@ -1966,7 +1967,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   _openSum(from: { group: string } | { origin: string }): void {
     const base =
       "group" in from ? (this._groups.find((g) => g.id === from.group)?.name ?? "") : this._name(from.origin, this.draft);
-    this._renameValue = `${base} ${this._t(this._tab === "water" ? "water_suffix" : "energy_suffix")}`;
+    this._renameValue = `${base} ${this._t(tabKind(this._tab) === "water" ? "water_suffix" : "energy_suffix")}`;
     this._sumSession++;
     this._dialog =
       "group" in from
@@ -2006,7 +2007,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (state === undefined) {
       return this._t("sum_reason_unavailable");
     }
-    const expected = this._tab === "water" ? "water" : "energy";
+    const expected = tabKind(this._tab) === "water" ? "water" : "energy";
     if ((state.attributes.device_class ?? info?.device_class) !== expected) {
       return this._t("sum_reason_device_class", { device_class: expected });
     }
@@ -2163,7 +2164,7 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** «Kitchen Power» for the meter «Kitchen Energy» (water: «… Flow»). */
   private _sumRateName(name: string): string {
-    const water = this._tab === "water";
+    const water = tabKind(this._tab) === "water";
     const suffix = ` ${this._t(water ? "water_suffix" : "energy_suffix")}`;
     const base = name.endsWith(suffix) ? name.slice(0, -suffix.length) : name;
     return `${base} ${this._t(water ? "flow_suffix" : "power_suffix")}`;
@@ -2547,7 +2548,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       values,
       rest,
       this._collapsed,
-      this._tab === "water"
+      tabKind(this._tab) === "water"
         ? WATER_PLACEHOLDER_ROLES
         : this._tab === "gas"
           ? GAS_PLACEHOLDER_ROLES
@@ -3927,7 +3928,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (sensors.length === 0) {
       return nothing;
     }
-    const water = this._tab === "water";
+    const water = tabKind(this._tab) === "water";
     return html`<h3>${this._t(water ? "flow_only" : "power_only")}</h3>
       <p class="hint">${this._t(water ? "flow_only_hint" : "power_only_hint")}</p>
       <ul class="candidates power-only">
@@ -3956,7 +3957,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       </section>`;
     }
     const info = this._info(stat);
-    const water = this._tab === "water";
+    const water = tabKind(this._tab) === "water";
     const rate = this.hass ? rateValue(this.hass, device.stat_rate, this._deviceKind()) : null;
     const rateText =
       rate === null
@@ -4388,7 +4389,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         : mixed && this._sumHasSolar(all)
           ? "mixed"
           : null;
-    const water = this._tab === "water";
+    const water = tabKind(this._tab) === "water";
     const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
     return html`<h2>${this._t("sum_create")}</h2>
@@ -4648,7 +4649,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               ${this._t("rename")}
             </button>
             <button @click=${() => this._openPowerDialog({ kind: "device", stat: dialog.stat })}>
-              ${this._t(this._tab === "water" ? "flow_sensor" : "power_sensor")}
+              ${this._t(tabKind(this._tab) === "water" ? "flow_sensor" : "power_sensor")}
             </button>
             ${this._freeCandidates("").length
               ? html`<button @click=${() => (this._dialog = { kind: "replace", stat: dialog.stat })}>
@@ -4709,7 +4710,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         return html`<h2>${this._t("add_title", { name })}</h2>
           ${candidate?.power
             ? html`<p class="hint">
-                ${this._t(this._tab === "water" ? "with_flow" : "with_power", { entity: candidate.power })}
+                ${this._t(tabKind(this._tab) === "water" ? "with_flow" : "with_power", { entity: candidate.power })}
               </p>`
             : nothing}
           ${this._targetList(targets, (parent) => {
@@ -4745,7 +4746,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                             c.area_name,
                             c.device_name,
                             c.power
-                              ? this._t(this._tab === "water" ? "with_flow" : "with_power", { entity: c.power })
+                              ? this._t(tabKind(this._tab) === "water" ? "with_flow" : "with_power", { entity: c.power })
                               : null,
                           ]
                             .filter(Boolean)
@@ -4978,7 +4979,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           </div>`;
       case "integral": {
         const name = this._info(dialog.stat)?.name || dialog.stat;
-        const water = this._tab === "water";
+        const water = tabKind(this._tab) === "water";
         return html`<h2>${this._t(water ? "create_water_meter_title" : "create_meter_title", { name })}</h2>
           <p>
             ${this._t(water ? "create_water_meter_text" : "create_meter_text", {

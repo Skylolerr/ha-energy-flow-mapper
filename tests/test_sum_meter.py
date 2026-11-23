@@ -9,6 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData, UnknownFlow
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from custom_components.energy_flow_mapper import _flow
 from custom_components.energy_flow_mapper import sum_meter as sum_module
 from custom_components.energy_flow_mapper import websocket as ws_module
 from custom_components.energy_flow_mapper.const import DOMAIN
@@ -144,7 +145,7 @@ async def test_without_entity_is_reported(
 ) -> None:
     """An entry without entity is reported."""
     monkeypatch.setattr(
-        sum_module.er,
+        _flow.er,
         "async_entries_for_config_entry",
         lambda registry, entry_id: [],
     )
@@ -317,7 +318,7 @@ async def test_missing_entity_removes_the_helper(
 ) -> None:
     """A helper without entity is removed again."""
     monkeypatch.setattr(
-        sum_module.er, "async_entries_for_config_entry", lambda registry, entry: []
+        _flow.er, "async_entries_for_config_entry", lambda registry, entry: []
     )
     with pytest.raises(HomeAssistantError):
         await sum_module.async_create_sum(hass, "x", ["sensor.kitchen_energy"])

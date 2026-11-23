@@ -16,6 +16,8 @@ import {
   ambiguousDevices,
   homeNow,
   moveTargets,
+  parsePowerConfig,
+  tabKind,
   powerInWatts,
   rateValue,
   sourceKind,
@@ -963,5 +965,44 @@ describe("sourcePower", () => {
     const source = { power_config: { stat_rate_inverted: "sensor.a" } };
     expect(sourceNow(hass, source, "import")).toBe(0);
     expect(sourceNow(hass, source, "export")).toBe(500);
+  });
+});
+
+describe("parsePowerConfig", () => {
+  it("accepts HA's three shapes", () => {
+    expect(parsePowerConfig({ stat_rate: "a" })).toEqual({ stat_rate: "a" });
+    expect(parsePowerConfig({ stat_rate_inverted: "a" })).toEqual({ stat_rate_inverted: "a" });
+    expect(parsePowerConfig({ stat_rate_from: "a", stat_rate_to: "b" })).toEqual({
+      stat_rate_from: "a",
+      stat_rate_to: "b",
+    });
+  });
+
+  it("rejects foreign keys", () => {
+    expect(parsePowerConfig({ stat_rate: "a", other: "b" })).toBeNull();
+    expect(parsePowerConfig({ other: "b" })).toBeNull();
+    expect(parsePowerConfig({ stat_rate_from: "a" })).toBeNull();
+  });
+
+  it("rejects anything that is not an object of non-empty strings", () => {
+    expect(parsePowerConfig(null)).toBeNull();
+    expect(parsePowerConfig("stat_rate")).toBeNull();
+    expect(parsePowerConfig([])).toBeNull();
+    expect(parsePowerConfig({})).toBeNull();
+    expect(parsePowerConfig({ stat_rate: "" })).toBeNull();
+    expect(parsePowerConfig({ stat_rate: 3 })).toBeNull();
+  });
+
+  it("drops an invalid power_config from the source rows", () => {
+    const grid = { ...NEW_GRID, stat_energy_from: "m", power_config: { stat_rate: "p", other: "x" } };
+    expect(sourceRows([grid as never])[0].power_config).toBeUndefined();
+  });
+});
+
+describe("tabKind", () => {
+  it("names the device list of a tab", () => {
+    expect(tabKind("electricity")).toBe("electricity");
+    expect(tabKind("water")).toBe("water");
+    expect(tabKind("gas")).toBe("electricity");
   });
 });

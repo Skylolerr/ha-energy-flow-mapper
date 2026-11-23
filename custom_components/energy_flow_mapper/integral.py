@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
-from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import (
     ATTR_UNIT_OF_MEASUREMENT,
     CONF_METHOD,
@@ -18,10 +17,10 @@ from homeassistant.const import (
     UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 
+from ._flow import async_run_helper_flow
 from .candidates import FLOW_TIME_UNITS, INTEGRATION_DOMAIN
 from .const import DOMAIN
 from .hierarchy import DeviceKind
@@ -96,22 +95,12 @@ async def async_create_integral(
     the energy dashboard only accepts water meters with that class.
     """
     options = _options(hass, source, kind)
-    result = await hass.config_entries.flow.async_init(
-        INTEGRATION_DOMAIN, context={"source": SOURCE_USER}
+    entry_id, entity_id = await async_run_helper_flow(
+        hass,
+        INTEGRATION_DOMAIN,
+        [{CONF_NAME: name, "source": source, **options}],
+        _failed,
     )
-    result = await hass.config_entries.flow.async_configure(
-        result["flow_id"],
-        {CONF_NAME: name, "source": source, **options},
-    )
-    if result["type"] is not FlowResultType.CREATE_ENTRY:
-        raise _failed()
-    entry_id = result["result"].entry_id
-    entities = er.async_entries_for_config_entry(er.async_get(hass), entry_id)
-    if not entities:
-        # Do not leave the entry behind; a retry would meet it.
-        await hass.config_entries.async_remove(entry_id)
-        raise _failed()
-    entity_id = entities[0].entity_id
     if kind is DeviceKind.WATER:
         er.async_get(hass).async_update_entity(
             entity_id, device_class=SensorDeviceClass.WATER

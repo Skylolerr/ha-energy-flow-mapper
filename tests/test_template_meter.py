@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType, InvalidData, UnknownFlow
 from homeassistant.exceptions import HomeAssistantError
 
-from custom_components.energy_flow_mapper import template_meter as template_module
+from custom_components.energy_flow_mapper import _flow
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.template_meter import async_create_template
 
@@ -143,7 +143,7 @@ async def test_missing_entity_removes_the_helper(
 ) -> None:
     """A helper without entity is removed again."""
     monkeypatch.setattr(
-        template_module.er,
+        _flow.er,
         "async_entries_for_config_entry",
         lambda registry, entry_id: [],
     )
