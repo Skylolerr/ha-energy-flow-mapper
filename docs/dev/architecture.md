@@ -31,7 +31,12 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 All in `.storage/`, each with its own version:
 
 - `energy_flow_mapper.backups` (`STORAGE_VERSION` / `STORAGE_MINOR_VERSION`)
-- `energy_flow_mapper.helpers`, `energy_flow_mapper.suggestions`, `energy_flow_mapper.groups`
+- `energy_flow_mapper.helpers`, `energy_flow_mapper.groups`
+- `energy_flow_mapper.suggestions` (version 2): ignored suggestions and dismissed hints
+  (code, kind, stat, optional source role). The migration from version 1 keeps the ignored
+  suggestions and adds an empty list of dismissed hints. Entries of meters no longer in
+  the settings are dropped on the next write. `clear_suggestions` clears both. Not part
+  of backups, export or import.
 
 Any change of a store format bumps its version and adds a migration, with a test.
 
@@ -48,6 +53,42 @@ Saving is refused only for errors that the change *adds*. Errors that were alrea
 saved settings are kept and listed apart in the check dialog (`new_errors` / `issue_dicts`
 in `hierarchy.py`, weighted with a counter so "one more of the same" still counts as new).
 
+### Draft changes
+
+The panel collects changes in a draft. `hierarchy.apply_changes` (mirrored in `draft.ts`)
+knows `add`, `move`, `rename`, `set_rate` (a device's power or flow sensor; `null` clears
+it), `remove`, `assign_source`, `unassign_source`, `set_source_rate` and
+`use_as_home_meter`; `groups.apply_all` applies them in order together with the group
+changes. `set_source_rate` is addressed by role like `unassign_source`. Grid and battery
+take exactly one `power_config` shape (`stat_rate`, `stat_rate_inverted`, or
+`stat_rate_from` + `stat_rate_to`) and HA derives `stat_rate` on save; clearing removes
+both. Until saved, the panel computes the live value of an inverted or two-sensor config
+itself.
+
+*Replace with …* has no change of its own: `replaceChanges` in `draft.ts` composes add,
+set group, a move of each child and remove into one undo step (the panel adds the moves
+of groups below the old meter). *Create sum meter* and *Solar feeds in here …* use it
+after their helpers exist.
+
+### Helpers created at once
+
+`create_integral`, `create_sum_meter` and `create_solar_setup` create HA helpers right
+away (not on save) and record them in the helpers store; the panel then changes the draft.
+When a later helper of the same request fails, the ones created before are removed again.
+`solar_setup_preview` returns the plan (inputs, daily inputs replaced by integrals, unit
+factors, why it is blocked) without creating anything. `create_integral` with `of_source`
+builds the integral of a saved solar source's power, for a sum that would otherwise hold a
+daily meter.
+
+### Hints
+
+`hints.py` computes the hints and `get` returns them with `dismissed_hints`. They need the
+entity registry (disabled returned sensors), config entries (members of a sum helper) and
+the recorder (energy counted lately, daily resets via `daily_reset.py`), which the panel
+cannot see. The recorder queries are guarded by a timeout: a slow recorder leaves out the
+hints that need it instead of blocking `get`. `dismiss_hint` stores a dismissal. The card
+gets no hints.
+
 ## Panel and card (`panel/`)
 
 Lit + TypeScript, built with Rollup into three bundles in
@@ -63,7 +104,7 @@ touches `panel/`.
 
 | File | Job |
 |---|---|
-| `draft.ts` | Pure draft logic, **mirrors `hierarchy.py`** (untracked, coverage, display names, ambiguous devices, remove/lift) |
+| `draft.ts` | Pure draft logic, **mirrors `hierarchy.py`** (untracked, coverage, display names, ambiguous devices, remove/lift, `set_rate` / `set_source_rate`), plus `replaceChanges` |
 | `groups.ts` | Mirrors `groups.py` |
 | `layout.ts` | Automatic diagram layout |
 | `export.ts` | Diagram as SVG/PNG, anonymised export |

@@ -88,6 +88,11 @@ solar, battery or water meter, and which meters are not used yet.
   Assistant's own words.
 - **Plausibility warnings** – a device is flagged when its child devices used clearly more
   than it did (more than 5 % and 0.1 kWh, water 10 L) – usually a wrong assignment.
+- **Hints** – a small info mark at a block points out what is easy to miss: a circuit that
+  probably has a solar feeding into it, a sum that mixes meters that start again at 0 every
+  day with others, a power sensor that the meter's device has but that is not set. The
+  details explain it and offer a button; *Dismiss* hides a hint for good. Hints only
+  explain, they never change anything, and they show in the panel only, not on the card.
 - **Find a device** – the search field highlights matches, opens collapsed devices and
   moves to them.
 - **Groups** – bundle devices of the same parent into named groups, nested as deep as you
@@ -98,9 +103,16 @@ solar, battery or water meter, and which meters are not used yet.
 
 - **Drag and drop** (or the ⋮ menu on phones) – include a device in another one, move it to
   the top level, rename or remove it.
+- **Replace a device** – ⋮ → *Replace with …* puts another meter in a device's place in one
+  step: it takes over the parent, the child devices, the group and a name you set.
 - **Sources** – drop a sensor onto grid import, grid export, solar, battery, water or gas.
   Prices and compensations of an existing source stay as they are. Each source shows its
   power now (from the power sensor in the energy settings) or its energy in the period.
+- **Power sensors** – set or change the power sensor of a device (⋮ → *Power sensor …*,
+  water: *Flow sensor …*) or of a source (tap it → *Power sensor …*). Sensors of the
+  meter's own device come first. Grid and battery offer the three variants of Home
+  Assistant's energy settings – *Standard*, *Inverted* and *Two sensors* – each explained
+  in one sentence. The block shows the live value right away, in the draft already.
 - **Free sensors** – energy and water meters and external statistics (for example from
   your supplier's portal) that are not in the dashboard yet, added with one drag. The arrow in
   the header folds the column to a slim strip when you need more room for the diagram.
@@ -110,12 +122,16 @@ solar, battery or water meter, and which meters are not used yet.
   another one (an outlet of a power strip, a channel of a multi-channel meter), the panel
   suggests including it there. *Apply* puts it into the draft, *Ignore* hides it for every
   admin. Nothing changes by itself, and connections such as a Zigbee stick never count.
-- **Sum meters** – *Create sum meter* turns a group (or sensors you pick, for example a
-  sub panel plus its solar) into a real Home Assistant sum helper that becomes a device
-  in the energy dashboard, with the members below it. A sub panel plus its solar is only
-  right if the sub panel's meter counts both ways (net). If it counts only what it draws
-  and reports what flows back separately (many Shelly meters), the gross value is
-  *drawn − returned + solar*; use a template helper for that.
+- **Sum meters** – *Create sum meter* turns a group (or sensors you pick) into a real Home
+  Assistant sum helper that becomes a device in the energy dashboard, with the members
+  below it. A solar source in the sum adds its power to the power sum. With a source and
+  exactly one device, *Replace* (with the device's name) is preselected: the new meter
+  takes the device's place, because the device is already part of the sum. The dialog
+  warns about members without a power sensor and about meters that start again at 0
+  every day mixed with meters that do not.
+- **Solar in a circuit** – *Solar feeds in here …* builds the gross meter of a circuit or
+  sub panel with a solar behind its meter, see
+  [Solar in a circuit or sub panel](#solar-in-a-circuit-or-sub-panel).
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. *Undo change*
   takes back a step, and every save stores a backup first. Leave the panel and come back:
@@ -224,11 +240,17 @@ the sensors live.
 | Rename or dissolve a group | ⋮ on the group → *Rename* or *Dissolve group* (members stay) |
 | Group devices by area | *Suggest groups from areas* in the toolbar |
 | Create a sum meter | ⋮ on a group → *Create sum meter*, or ⋮ on a device to pick sensors freely |
+| Put another meter in a device's place | ⋮ → *Replace with …* → pick the meter |
+| Set the power sensor of a device | ⋮ → *Power sensor …* (water: *Flow sensor …*) |
+| Set the power sensor of a source | Tap the source → *Power sensor …* (water and gas: *Flow sensor …*) |
+| Count a solar that feeds into a circuit | ⋮ on the circuit → *Solar feeds in here …* |
+| Read or hide a hint | Tap the block with the info mark; *Dismiss* hides it for good |
 | Show one group on a dashboard | Card option `root: group:<id>`, or pick the group in the card editor |
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
 | Take back a change of the draft | *Undo change* in the bar at the bottom, or Ctrl+Z |
 | See energy instead of power | Switch *Now* to *Today*, *7 days* or *30 days* |
 | Use a suggestion | Tap the device with the light bulb → *Apply* (or *Ignore*) |
+| Bring back ignored suggestions and dismissed hints | *Show ignored suggestions again* in the help line above the diagram |
 | Share or keep a picture | *Save as image*, optionally with *Hide names* |
 | Save | *Save* in the bar at the bottom, check the list of changes, confirm |
 | Go back | *Undo last save* or *Backups* → *Restore* |
@@ -262,7 +284,20 @@ the sensors live.
   Assistant sum helpers with *ignore non-numeric* off. Mixed Wh and kWh members are
   converted by Home Assistant; members with different state classes are refused, and so
   are external statistics (a helper cannot sum them). A power or flow sum is created
-  only when every device in the sum has a power or flow sensor.
+  only when every member has a power or flow sensor; a solar source counts with the power
+  sensor of its energy settings. Grid, battery and water sources never join a power or
+  flow sum, because their sign depends on the direction; the dialog says which member
+  keeps the sum from being created.
+- **Meters that start again at 0 every day** (the daily energy of many micro inverters,
+  utility meters with a daily cycle) are recognised: a meter that fell below half of the
+  hour before on at least 2 of the last 3 days. In a sum with meters that do not reset,
+  the sum would drop once a day and Home Assistant would count it all again, so the
+  dialog warns. Where the daily meter is a solar with a power sensor, it offers an
+  integral of that power instead.
+- **Replace with …** is one step of the draft: *Undo change* takes it back as a whole.
+  The new meter keeps its own name unless you had set one for the old meter, and it does
+  not take over the old meter's power sensor. The old meter keeps its history in Home
+  Assistant; it is only removed from the energy settings.
 - **Your draft survives leaving the panel:** the browser keeps it until you save or
   discard it. If the energy settings were changed in the meantime, it cannot be applied
   any more and is dropped with a message. After a save conflict the panel reloads, keeps
@@ -272,6 +307,69 @@ the sensors live.
   it. The check before saving lists them, marks problems that are already in the saved
   settings, and *Show* takes you to the block.
 </details>
+
+## Solar in a circuit or sub panel
+
+Home Assistant's energy dashboard knows sources only at the top. When a solar – a balcony
+solar, a micro inverter – feeds into a circuit or a sub panel, the devices there use its
+energy before it reaches the circuit's meter. The meter shows less than they use, or even
+goes negative, and the child devices seem to use more than their circuit. What they
+really use is the **gross** value: what the meter counts plus what the solar produces.
+
+How to get it depends on how the circuit's meter counts:
+
+| The meter … | Gross energy |
+|---|---|
+| **counts both ways** (net): it goes negative while the solar produces | meter + solar |
+| **counts only what it draws**, and what flows back has a sensor of its own (many Shelly meters) | drawn − returned + solar |
+
+**The guided setup** builds the gross meter for you: ⋮ on the circuit → *Solar feeds in
+here …* (or the button of a hint). It works on the saved energy settings and needs a
+saved solar source, so save your draft first.
+
+1. **Solar:** pick the solar source; if there is only one, it is preselected. Without a
+   power sensor of the solar, the gross meter counts energy but shows no live value; the
+   setup offers to set the solar's power sensor first.
+2. **How the meter counts:** *Counts both ways* or *Counts only what it draws*, each
+   explained in one sentence. *Only what it draws* is preselected when the meter's
+   device has a returned energy sensor, otherwise *both ways*, and the dialog says why.
+   If the returned sensor is disabled, the dialog says so and opens its settings: enable
+   it there, the setup never enables an entity for you.
+3. **Preview:** what will be created, with names you can change (the device's name plus
+   «gross» and «gross power»):
+   - a template helper for the gross energy, in kWh,
+   - a template helper for the gross power, in W: the circuit's power plus the solar's
+     power. Without a power sensor of the circuit there is no gross power, and the
+     preview says so,
+   - an integral helper of its own power for every input that starts again at 0 every
+     day (the daily energy of many micro inverters), so the gross meter never drops at
+     night. If such an input has no power sensor, the setup stops and says why.
+4. **Set up:** the helpers are created right away. The gross meter takes the device's
+   place in your draft – with its child devices, group and name – and gets the gross
+   power as its power sensor. Check and save as usual.
+
+Good to know:
+
+- The helpers are ordinary Home Assistant template and integral helpers under Settings →
+  Helpers. They keep working without Energy Flow Mapper and stay if you undo the draft.
+- A template has no value while one of its inputs has none (for example while a sensor is
+  unavailable).
+- **Units are fixed when the helpers are created:** an input in Wh or kW is converted to
+  kWh or W with a factor written into the template. If an input's unit changes later,
+  the template keeps the old factor; edit the template or run the setup again.
+- A sum meter (meter + solar) also works for a meter that counts both ways, as long as
+  both have the same state class and neither starts again at 0 every day. A meter that
+  really goes down usually has a different state class than a solar, so the setup uses
+  templates instead.
+
+**Hints that lead here** (only while a solar source exists):
+
+- *Its device also counts returned energy:* the circuit's meter has a returned energy
+  sensor on its device. It shows when that sensor is enabled and counted energy lately,
+  or when it is disabled and the circuit has child devices. Sensors already used in the
+  energy settings never count.
+- *Children use more than their circuit:* the plausibility warning adds that a solar may
+  feed into this circuit and offers the setup.
 
 ## Screenshots
 
@@ -328,7 +426,8 @@ the sensors live.
   settings page and always sends complete lists, so unrelated settings are kept.
 - Backups are stored in `.storage/energy_flow_mapper.backups` (see [Backups](#backups)),
   the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers`, your
-  groups in `.storage/energy_flow_mapper.groups`.
+  groups in `.storage/energy_flow_mapper.groups`, ignored suggestions and dismissed hints
+  in `.storage/energy_flow_mapper.suggestions`.
 - The integration has no entities and no devices.
 - The card is served with the panel. Its small loader is added to every frontend page;
   the card itself only loads when a dashboard shows it. Its one command only reads the
@@ -344,7 +443,11 @@ the sensors live.
   sum meter as a normal device. Everything in a group has the same parent, and there are
   no groups in the Gas tab.
 - A member meter that resets to 0 makes a sum meter drop, as with Home Assistant's own
-  sensor groups; the energy dashboard may count that as a reset.
+  sensor groups; the energy dashboard may count that as a reset. The sum dialog and a
+  hint warn about meters that start again at 0 every day.
+- *Solar feeds in here …* adds one solar source to one circuit, and converts units with
+  a factor fixed at setup. For a battery or a second inverter in the same circuit, build
+  the template helper yourself.
 - A group used as the card's start point (`root: group:<id>`) opens expanded.
 - Prices, costs and solar forecasts are edited in the energy settings of Home Assistant,
   not in the panel.

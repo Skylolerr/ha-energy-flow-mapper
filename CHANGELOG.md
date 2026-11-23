@@ -11,14 +11,53 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+### ✨ Added
+
+- **Solar feeds in here …:** a guided setup for a solar that feeds into a circuit or a sub
+  panel, behind the circuit's meter (device ⋮). Pick the solar and how the meter counts –
+  *both ways* (gross = meter + solar) or *only what it draws* (gross = drawn − returned +
+  solar), preselected from the meter's device with the reason. The preview shows what is
+  created, with names you can change. *Set up* creates template helpers for the gross
+  energy and the gross power at once, plus an integral helper for every input that starts
+  again at 0 every day, and the gross meter takes the device's place in the draft. It works
+  on the saved settings and never enables a disabled entity; units (Wh, kW) are converted
+  with a factor fixed when the helpers are created.
+- **Power sensors in the panel:** set, change or clear the power sensor of a device (⋮ →
+  *Power sensor …*, water: *Flow sensor …*) and of a source (tap it → *Power sensor …*).
+  Sensors of the meter's own device come first. Grid and battery offer Home Assistant's
+  three variants – *Standard*, *Inverted*, *Two sensors* – each explained in one sentence;
+  the live value shows in the draft already.
+- **Replace with …:** another meter takes a device's place in one step, with its parent,
+  child devices, group and a name you set. One undo step.
+- **Hints:** an info mark at a block, with the text, a button and *Dismiss* in the details.
+  A circuit whose device also counts returned energy while you have a solar (when that
+  sensor is enabled and counted lately, or is disabled and the circuit has child devices;
+  sensors used in the settings never count); children that use more than their circuit
+  while you have a solar; a sum that mixes meters that start again at 0 every day with
+  others; a power sensor that the meter's device has but that is not set. A dismissed hint
+  stays hidden for every admin until *Show ignored suggestions again*. Panel only, not on
+  the card.
+- **Meters that start again at 0 every day are recognised:** a fall below half of the hour
+  before on at least 2 of the last 3 days, or a utility meter with a daily cycle.
+
 ### 📦 Changed
 
+- **Create sum meter with a source:** a solar's power joins the power sum. With a source and
+  exactly one device, *Replace* with the device's name is preselected, because the device
+  is already part of the sum; unticked, it moves below the new meter as before. The dialog
+  names the members without a power sensor, says why grid, battery and water sources keep
+  a power or flow sum from being created, and warns when daily meters are mixed with
+  meters that do not reset. Where the daily meter is a solar with a power sensor, it offers
+  an integral of that power instead.
 - **Category in the Marketplace:** Home Assistant's Marketplace (HACS) lists Energy Flow Mapper
   under *Energy → Meters & monitoring*. Nothing changes in how the integration works.
+- **README:** a new section *Solar in a circuit or sub panel* explains both kinds of meters
+  and the setup.
 
 ### 🐛 Fixed
 
-- **Create meter with a kW power sensor:** the new meter counts in kWh with three decimals instead of whole kWh.
+- **Create meter with a kW power sensor:** the new meter counts in kWh with three decimals
+  instead of whole kWh.
 
 ## [0.10.1] - 2026-11-18
 
