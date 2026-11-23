@@ -49,7 +49,7 @@ from .daily_reset import async_daily_check
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
 from .hints import returned_sensor
 from .integral import async_create_integral, energy_unit, entity_unit
-from .meter_inputs import meter_inputs
+from .meter_inputs import Cache, meter_inputs
 from .template_meter import TemplateKind, async_create_template
 
 _LOGGER = logging.getLogger(__name__)
@@ -302,13 +302,20 @@ def _holds_solar(
 ) -> bool:
     """Return True if the meter `stat` already counts the solar.
 
-    It does when the solar's energy statistic or its power sensor is one of
-    the meter's inputs, from any level (`meter_inputs`): a sum with the solar,
-    a template that reads it in any form, an integral of the solar's power in
-    a sum or template. Subtracted or not, it is in the meter already.
+    It does when one of the meter's inputs, from any level (`meter_inputs`),
+    is the solar's energy statistic or power sensor, or what one of them is
+    made of: a sum with the solar, a template that reads it in any form, an
+    integral of the solar's power, the inverter's counter behind a daily
+    utility meter used as the solar. Subtracted or not, it is in the meter
+    already. Only sensors count, so a factor both use is no solar.
     """
-    entities = meter_inputs(hass, stat)["entities"]
-    return solar in entities or (solar_power is not None and solar_power in entities)
+    cache: Cache = {}
+    solar_side = {solar}
+    for entity in (solar, solar_power):
+        if entity is not None:
+            solar_side |= {entity} | meter_inputs(hass, entity, cache)["entities"]
+    shared = meter_inputs(hass, stat, cache)["entities"] & solar_side
+    return any(entity.startswith("sensor.") for entity in shared)
 
 
 def _find(

@@ -62,20 +62,55 @@ def _group(
 
 
 @pytest.mark.parametrize(
-    "state",
+    ("state", "signed_known"),
     [
-        "{{ states('sensor.a') | float + states('sensor.b') | float }}",
-        '{{ states("sensor.a") | float + states.sensor.b.state | float }}',
-        "{{ (state_attr('sensor.a', 'x') or 0) + states.sensor.b.state | float }}",
-        "{% if is_state('sensor.a', 'on') and has_value('sensor.b') %}1{% endif %}",
-        "{{ 'sensor.a' | states | float + \"sensor.b\"|state_attr('x') }}",
+        ("{{ states('sensor.a') | float + states('sensor.b') | float }}", True),
+        ('{{ states("sensor.a") | float + states.sensor.b.state | float }}', True),
+        (
+            "{{ (state_attr('sensor.a', 'x') or 0) + states.sensor.b.state | float }}",
+            True,
+        ),
+        (
+            "{% if is_state('sensor.a', 'on') and has_value('sensor.b') %}1{% endif %}",
+            True,
+        ),
+        ("{{ 'sensor.a' | states | float + \"sensor.b\"|state_attr('x') }}", True),
+        ("{{ states( 'sensor.a' ) | float + states( 'sensor.b' ) | float }}", True),
+        ("{{ states(\n 'sensor.a') | float + states(\n 'sensor.b') | float }}", True),
+        (
+            "{{ states['sensor.a'].state | float + states['sensor.b'].state | float }}",
+            True,
+        ),
+        # Only as quoted literals: inputs, but how they count is unknown.
+        ("{{ ['sensor.a','sensor.b'] | map('states') | map('float',0) | sum }}", False),
+        (
+            (
+                "{% set e = 'sensor.a' %}{% set f = 'sensor.b' %}"
+                "{{ states(e) | float + states(f) | float }}"
+            ),
+            False,
+        ),
+        (
+            (
+                "{{ states.sensor"
+                " | selectattr('entity_id','in',['sensor.a','sensor.b'])"
+                " | map(attribute='state') | map('float', 0) | sum }}"
+            ),
+            False,
+        ),
     ],
 )
-async def test_inputs_template_text_forms(hass: HomeAssistant, state: str) -> None:
+async def test_inputs_template_text_forms(
+    hass: HomeAssistant, state: str, signed_known: bool
+) -> None:
     """Entity IDs are read from the text of a template, in every common form."""
     _template(hass, "sensor.t", state)
     inputs = meter_inputs(hass, "sensor.t")
-    assert inputs == {"entities": {A, B}, "signed_known": True, "subtracted": set()}
+    assert inputs == {
+        "entities": {A, B},
+        "signed_known": signed_known,
+        "subtracted": set(),
+    }
 
 
 async def test_inputs_template_text_needs_a_known_entity(hass: HomeAssistant) -> None:
@@ -97,6 +132,24 @@ async def test_inputs_expand_renders(hass: HomeAssistant) -> None:
         "sensor.t",
         "{{ expand('sensor.a', 'sensor.b') | map(attribute='state')"
         " | map('float') | sum }}",
+    )
+    inputs = meter_inputs(hass, "sensor.t")
+    assert inputs["entities"] == {A, B}
+    assert inputs["signed_known"] is False
+
+
+async def test_inputs_entity_functions_render(hass: HomeAssistant) -> None:
+    """`integration_entities(` and its kind are rendered for the entities read."""
+    entry = MockConfigEntry(domain="meters", title="Meters")
+    entry.add_to_hass(hass)
+    for entity_id in (A, B):
+        er.async_get(hass).async_update_entity(
+            entity_id, config_entry_id=entry.entry_id
+        )
+    _template(
+        hass,
+        "sensor.t",
+        "{{ integration_entities('Meters') | map('states') | map('float', 0) | sum }}",
     )
     inputs = meter_inputs(hass, "sensor.t")
     assert inputs["entities"] == {A, B}
@@ -132,7 +185,7 @@ async def test_inputs_render_failure_is_unknown(
     _template(
         hass,
         "sensor.t",
-        "{{ states('sensor.a') | float + expand('sensor.b') | count }}",
+        "{{ states('sensor.a') | float + expand(label_entities('x')) | count }}",
     )
     assert meter_inputs(hass, "sensor.t") == {
         "entities": {A},
@@ -263,6 +316,28 @@ async def test_inputs_depth_limit(hass: HomeAssistant) -> None:
             ),
             {A},
         ),
+        # A hyphen in a comment or a string is no minus.
+        (
+            (
+                "{# Küche-Summe #}"
+                "{{ states('sensor.a')|float(0) + states('sensor.b')|float(0) }}"
+            ),
+            set(),
+        ),
+        (
+            (
+                "{% if states('sensor.c') != 'un-available'"
+                " and has_value('sensor.b') %}"
+                "{{ states('sensor.a')|float + states('sensor.b')|float }}{% endif %}"
+            ),
+            set(),
+        ),
+        (
+            "{{ 'it\\'s - ' ~ states(\"sensor.a\") ~ \"-\" ~ states('sensor.b') }}",
+            set(),
+        ),
+        # A minus outside the template's code is plain text.
+        ("- {{ states('sensor.a') }} - x", set()),
         # Jinja's whitespace control is no minus.
         ("{{- states('sensor.a') | float + states('sensor.b') | float -}}", set()),
         (

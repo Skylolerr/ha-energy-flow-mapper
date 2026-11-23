@@ -434,6 +434,9 @@ async def test_setup_blocked_on_gross_template(
     assert response["result"]["blocked_entity"] == GROSS_TEMPLATE
 
 
+MAIN_PLUS = "{{ states('sensor.main_energy') | float + "
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
 @pytest.mark.usefixtures("loaded_entry", "daily")
 @pytest.mark.parametrize(
@@ -454,6 +457,29 @@ async def test_setup_blocked_on_gross_template(
             "{{ states('sensor.main_energy') | float + states('sensor.inner') }}",
             [SOLAR_INTEGRAL],
         ),
+        # Spaces, line breaks, brackets, and the solar only as a literal.
+        (f"{MAIN_PLUS}states( '{SOLAR}' ) | float }}}}", []),
+        (f"{MAIN_PLUS}states(\n '{SOLAR}') | float }}}}", []),
+        (f"{MAIN_PLUS}states['{SOLAR}'].state | float }}}}", []),
+        (
+            (
+                f"{MAIN_PLUS}(['sensor.c','{SOLAR}'] | map('states')"
+                " | map('float',0) | sum) }}"
+            ),
+            [],
+        ),
+        (
+            f"{{% set e = '{SOLAR}' %}}{MAIN_PLUS}states(e) | float }}}}",
+            [],
+        ),
+        (
+            (
+                f"{MAIN_PLUS}(states.sensor | selectattr('entity_id','in',"
+                f"['sensor.c','{SOLAR}']) | map(attribute='state') | map('float',0)"
+                " | sum) }}"
+            ),
+            [],
+        ),
     ],
 )
 async def test_solar_already_in_meter_via_inputs(
@@ -469,6 +495,57 @@ async def test_solar_already_in_meter_via_inputs(
     response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE)
     assert response["result"]["blocked"] == "solar_already_in_meter"
     assert response["result"]["blocked_entity"] == GROSS_TEMPLATE
+
+
+PV_TODAY = "sensor.pv_today"
+INVERTER = "sensor.inverter_total"
+# The solar source is a daily utility meter (or a template) of the inverter.
+WITH_DERIVED_SOLAR = {
+    **WITH_HELPER_DEVICES,
+    "energy_sources": [
+        {**source, "stat_energy_from": PV_TODAY}
+        if source["type"] == "solar"
+        else source
+        for source in WITH_HELPER_DEVICES["energy_sources"]
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_solar_already_in_meter_via_what_the_solar_is_built_from(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A meter that adds what the solar's statistic is made of holds the solar."""
+    _meter(hass, INVERTER)
+    _helper(hass, "utility_meter", PV_TODAY, {"source": INVERTER, "cycle": "daily"})
+    _template_sensor(hass, GROSS_TEMPLATE, f"{MAIN_PLUS}states('{INVERTER}') }}}}")
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE, solar=PV_TODAY)
+    assert response["result"]["blocked"] == "solar_already_in_meter"
+    assert response["result"]["blocked_entity"] == GROSS_TEMPLATE
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_DERIVED_SOLAR])
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_shared_input_number_does_not_hold_the_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Only sensors count: a factor both templates use is no solar."""
+    _meter(hass, INVERTER)
+    hass.states.async_set("input_number.factor", "1")
+    _template_sensor(
+        hass,
+        PV_TODAY,
+        f"{{{{ states('{INVERTER}') | float"
+        " * states('input_number.factor') | float }}",
+    )
+    _template_sensor(
+        hass,
+        GROSS_TEMPLATE,
+        f"{MAIN_PLUS}states('input_number.factor') | float }}}}",
+    )
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE, solar=PV_TODAY)
+    assert response["result"]["blocked"] != "solar_already_in_meter"
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])

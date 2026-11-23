@@ -13,9 +13,10 @@ statistic and a helper set up in YAML (no config entry) hold nothing.
 
 `subtracted` are the inputs a template takes away (`a - b`). `signed_known` is
 False when it is unclear how an input counts: a group that does not add, a
-template that iterates states or uses `expand(`, one that does not compile or
-fails to render, a helper that holds itself, or helpers nested deeper than
-`MAX_DEPTH`.
+template that iterates states, uses `expand(` or another function that lists
+entities, or names an entity only as a quoted literal, one that does not
+compile or fails to render, a helper that holds itself, or helpers nested
+deeper than `MAX_DEPTH`.
 """
 
 from __future__ import annotations
@@ -34,22 +35,30 @@ _LOGGER = logging.getLogger(__name__)
 
 MAX_DEPTH: Final = 5
 
-# Where an entity ID stands in a template's text: as a function's argument or
-# `states.<entity>`, or in the filter form (`'sensor.x' | states`).
+# Where an entity ID stands in a template's text: as a function's argument,
+# `states.<entity>` or `states['<entity>']`, or in the filter form
+# (`'sensor.x' | states`).
 _ENTITY = re.compile(
-    r"(?:states\(|state_attr\(|is_state\(|has_value\(|states\.)['\"]?"
+    r"(?:(?:states|state_attr|is_state|has_value)\(\s*|states\[\s*|states\.)['\"]?"
     r"([a-z_]+\.[a-z0-9_]+)"
 )
 _ENTITY_FILTER = re.compile(
     r"['\"]([a-z_]+\.[a-z0-9_]+)['\"]\s*\|\s*"
     r"(?:states|state_attr|is_state|has_value)\b"
 )
-# Text that needs a render: `expand(`, or iterating (all) states, such as
-# `states | …`, `states.sensor | …` or `for … in states` (not the filter
-# `'sensor.x' | states`).
+# Any quoted entity ID; one that only stands here makes the signs unknown.
+_LITERAL_ENTITY = re.compile(r"['\"]([a-z_]+\.[a-z0-9_]+)['\"]")
+# Text that needs a render: `expand(` and the functions that list entities,
+# or iterating (all) states, such as `states | …`, `states.sensor | …` or
+# `for … in states` (not the filter `'sensor.x' | states`).
 _NEEDS_RENDER = re.compile(
-    r"expand\(|(?<!\|)(?<!\|\s)\bstates(?:\.[a-z_]+)?\s*\||\bin\s+states\b"
+    r"expand\(|\b(?:integration|device|area|label|floor)_entities\("
+    r"|(?<!\|)(?<!\|\s)\bstates(?:\.[a-z_]+)?\s*\||\bin\s+states\b"
 )
+# A Jinja comment, and any string literal in the code.
+_COMMENT = re.compile(r"\{#.*?#\}", re.DOTALL)
+_STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", re.DOTALL)
+_ENTITY_ID = re.compile(r"[a-z_]+\.[a-z0-9_]+")
 # `{% set name = ... %}`.
 _SET = re.compile(r"\{%-?\s*set\s+(\w+)\s*=(.*?)-?%\}", re.DOTALL)
 
@@ -84,14 +93,58 @@ def _known(hass: HomeAssistant, registry: er.EntityRegistry, entity_id: str) -> 
     )
 
 
+def _code(text: str) -> str:
+    """Return the code of a template: its `{{ }}` and `{% %}` blocks.
+
+    Comments and the text around the blocks are left out, one block per
+    line. Each string literal is blanked to `''` unless it is an entity ID, so
+    a hyphen in `'un-known'` is no minus and `'sensor.x'` still names its
+    entity.
+    """
+    text = _COMMENT.sub(" ", text)
+    blocks: list[str] = []
+    position = 0
+    while (start := _block_start(text, position)) is not None:
+        end, quote = start + 2, ""
+        while end < len(text):
+            char = text[end]
+            if quote:
+                if char == "\\":
+                    end += 1
+                elif char == quote:
+                    quote = ""
+            elif char in "'\"":
+                quote = char
+            elif text[end : end + 2] in ("}}", "%}"):
+                end += 2
+                break
+            end += 1
+        blocks.append(
+            _STRING.sub(
+                lambda m: m[0] if _ENTITY_ID.fullmatch(m[0][1:-1]) else "''",
+                text[start:end],
+            )
+        )
+        position = end
+    return "\n".join(blocks)
+
+
+def _block_start(text: str, position: int) -> int | None:
+    """Return where the next `{{` or `{%` starts, or None."""
+    found = [
+        i for i in (text.find("{{", position), text.find("{%", position)) if i >= 0
+    ]
+    return min(found, default=None)
+
+
 def _minus_operands(text: str) -> Iterable[str]:
-    """Yield the text of what each minus applies to.
+    """Yield the text of what each minus in the code `text` applies to.
 
     An operand runs to the next `+`, `-` or `,` at its own bracket level, or
-    to the end of the expression (`}}`, `%}`, a closing bracket). A minus of
-    Jinja's whitespace control (`{{-`, `-}}`, `{%-`, `-%}`) is none. This
-    takes in more than the operand at times (`- a if x else b`), which only
-    marks more inputs as subtracted.
+    to the end of the expression (`}}`, `%}`, `{{`, `{%`, `#}`, a closing
+    bracket). A minus of Jinja's whitespace control (`{{-`, `-}}`, `{%-`,
+    `-%}`) is none. This takes in more than the operand at times
+    (`- a if x else b`), which only marks more inputs as subtracted.
     """
     for match in re.finditer("-", text):
         start = match.start()
@@ -110,7 +163,9 @@ def _minus_operands(text: str) -> Iterable[str]:
                 depth -= 1
                 if depth < 0:
                     break
-            elif depth == 0 and (char in "+-," or text[end : end + 2] in ("}}", "%}")):
+            elif depth == 0 and (
+                char in "+-," or text[end : end + 2] in ("}}", "%}", "{{", "{%", "#}")
+            ):
                 break
             end += 1
         yield text[start + 1 : end]
@@ -119,17 +174,26 @@ def _minus_operands(text: str) -> Iterable[str]:
 def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
     """Return the inputs of a template, read from its text.
 
-    Entity IDs are read with `_ENTITY` and kept if they are entities. Only
-    text with `expand(` or that iterates states is rendered, for the
-    entities it reads; their signs are unknown then.
+    Entity IDs are read with `_ENTITY` and `_ENTITY_FILTER` and kept if they
+    are entities. Any other quoted entity ID is an input too, but how it
+    counts is unknown (`['sensor.a'] | map('states')`). Text with `expand(`,
+    a function that lists entities, or that iterates states is rendered: the
+    render adds the entities it reads (iterated states add none) and the
+    signs are unknown then.
     """
     registry = er.async_get(hass)
-    entities = {
-        entity
-        for entity in [*_ENTITY.findall(text), *_ENTITY_FILTER.findall(text)]
-        if valid_entity_id(entity) and _known(hass, registry, entity)
-    }
-    signed_known = True
+
+    def known(found: Iterable[str]) -> set[str]:
+        return {
+            entity
+            for entity in found
+            if valid_entity_id(entity) and _known(hass, registry, entity)
+        }
+
+    entities = known([*_ENTITY.findall(text), *_ENTITY_FILTER.findall(text)])
+    literals = known(_LITERAL_ENTITY.findall(text))
+    signed_known = literals <= entities
+    entities |= literals
     template = Template(text, hass)
     try:
         template.ensure_valid()
@@ -143,12 +207,13 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
             _LOGGER.debug("Reading the inputs of a template failed", exc_info=True)
         else:
             entities |= set(info.entities)
+    code = _code(text)
     variables = {
         name: {entity for entity in entities if _mentions(value, entity)}
-        for name, value in _SET.findall(text)
+        for name, value in _SET.findall(code)
     }
     subtracted: set[str] = set()
-    for operand in _minus_operands(text):
+    for operand in _minus_operands(code):
         subtracted |= {entity for entity in entities if _mentions(operand, entity)}
         for name, held in variables.items():
             if re.search(rf"(?<![\w.'\"]){re.escape(name)}(?!\w)", operand):
