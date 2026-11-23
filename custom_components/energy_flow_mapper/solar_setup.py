@@ -70,7 +70,12 @@ from homeassistant.util.unit_conversion import (
     PowerConverter,
 )
 
-from .candidates import ENERGY_UNITS, POWER_UNITS, async_is_rate_sensor
+from .candidates import (
+    ENERGY_UNITS,
+    POWER_UNITS,
+    RATE_UNITS,
+    async_is_rate_sensor,
+)
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .device_rules import (
@@ -115,6 +120,8 @@ UNIT: Final = "unit_of_measurement"
 ENERGY_METHODS: Final = (Method.EM, Method.PLUG, Method.NET)
 # Local days of statistics a solar counter needs to be read as lifetime.
 MIN_DAYS: Final = 2
+# How long the solar term holds the solar's last power while it has none.
+SOLAR_HOLD_SECONDS: Final = 600
 
 # Kinds of the records of created helpers (`CreatedHelpers.async_add`).
 KIND_SOLAR_POWER: Final = "solar_power"
@@ -332,8 +339,30 @@ def gross_power_template(circuit: str, solar: str, *, invert: bool = False) -> s
 
 
 def solar_power_template(solar_power: str) -> str:
-    """Return the solar's power in W, 0 while it has no number (offline)."""
-    return _template([_Term("solar", solar_power, zero=True)], energy=False)
+    """Return the solar's power in W for the solar term's integral.
+
+    While the solar has no number (a radio dropout, an inverter offline at
+    night) the template holds its own last value for SOLAR_HOLD_SECONDS,
+    then gives 0: an integral of an unavailable source turns unavailable
+    itself, and of 0 a short dropout at noon would lose energy. `now()`
+    renders it every minute, so the hold ends even if the solar stays
+    offline. Without its own value (just started) or without the solar
+    entity it is 0; a number in an unknown unit gives `none`.
+    """
+    sets, check, value = _w(_Term("solar", solar_power))
+    entity = f"states.{solar_power}"
+    return (
+        f"{_table('w', WATTS)}{sets}"
+        "{% if solar | is_number %}"
+        f"{{% if {check} %}}{{{{ ({value}) | round({POWER_DECIMALS}) }}}}"
+        "{% else %}{{ none }}{% endif %}"
+        "{% elif this is defined and this.state | is_number"
+        f" and {entity} is not none"
+        f" and (now() - {entity}.last_changed).total_seconds()"
+        f" < {SOLAR_HOLD_SECONDS} %}}"
+        "{{ this.state | float }}"
+        "{% else %}{{ 0 }}{% endif %}"
+    )
 
 
 # --- Reading inputs ----------------------------------------------------------
@@ -451,6 +480,27 @@ def _state_class(hass: HomeAssistant, entity_id: str) -> str | None:
     entry = er.async_get(hass).async_get(entity_id)
     found = (entry.capabilities or {}).get(ATTR_STATE_CLASS) if entry else None
     return str(found) if found is not None else None
+
+
+def _rate_sensor(hass: HomeAssistant, power: str) -> bool:
+    """Return True for a power sensor a draft may set.
+
+    Its state decides (`async_is_rate_sensor`). A state without device class
+    and unit (an inverter offline at night) leaves it to the registry: device
+    class power and a unit of the electricity rate units.
+    """
+    state = hass.states.get(power)
+    if state is not None and (
+        ATTR_DEVICE_CLASS in state.attributes or UNIT in state.attributes
+    ):
+        return async_is_rate_sensor(hass, power, DeviceKind.ELECTRICITY)
+    entry = er.async_get(hass).async_get(power)
+    return (
+        entry is not None
+        and (entry.device_class or entry.original_device_class)
+        == SensorDeviceClass.POWER
+        and entry.unit_of_measurement in RATE_UNITS[DeviceKind.ELECTRICITY]
+    )
 
 
 def _ours(hass: HomeAssistant, helpers: CreatedHelpers, entity_id: str) -> bool:
@@ -679,7 +729,7 @@ class _Powers:
         if (
             power in self.refused
             or power in self.used
-            or not async_is_rate_sensor(self.hass, power, DeviceKind.ELECTRICITY)
+            or not _rate_sensor(self.hass, power)
             or _ours(self.hass, self.helpers, power)
         ):
             raise _not_offered(power)

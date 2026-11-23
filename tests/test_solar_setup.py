@@ -30,6 +30,7 @@ from custom_components.energy_flow_mapper.solar_setup import (
     KWH,
     WATTS,
     Choices,
+    _table,
     gross_energy_template,
     gross_power_template,
     solar_power_template,
@@ -1579,12 +1580,13 @@ async def test_solar_term_integral_of_zero_mapped_power(
     assert energy.options["state"] == gross_energy_template(
         Method.NET, MAIN, integral_entity
     )
-    # Offline at night: the solar term reads 0, never unknown.
+    # Offline: the solar term holds its last value a while, never unknown
+    # (then 0: `test_solar_term_holds_ten_minutes_then_zero`).
     hass.states.async_set(SOLAR_POWER, "unavailable", {})
     await hass.async_block_till_done()
     state = hass.states.get(template_entity)
     assert state is not None
-    assert float(state.state) == 0
+    assert float(state.state) == 300
     records = loaded_entry.runtime_data.helpers.records()
     assert records[template.entry_id] == {"kind": "solar_power", "power": SOLAR_POWER}
     assert records[integral.entry_id] == {
@@ -2581,3 +2583,197 @@ async def test_stale_draft_is_a_conflict(
         changes=[],
     )
     assert response["error"]["translation_key"] == "conflict"
+
+
+# --- Fix round 2 -------------------------------------------------------------
+
+
+async def _solar_term_helpers(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory, watts: str
+) -> str:
+    """Set up our solar power template and its integral (`sensor.gross`).
+
+    Returns the template's entity. The integral starts counting at the first
+    change of its source, as after a real setup.
+    """
+    _set(hass, "sensor.p", "1" if watts != "1" else "2", "W")
+    template = await _set_up(
+        hass, _template_helper(hass, "sp", solar_power_template("sensor.p"))
+    )
+    integral = MockConfigEntry(
+        domain="integration",
+        title="gross",
+        options={"name": "gross", "source": template, **INTEGRAL_OPTIONS},
+    )
+    integral.add_to_hass(hass)
+    assert await _set_up(hass, integral) == "sensor.gross"
+    freezer.tick(timedelta(minutes=1))
+    _set(hass, "sensor.p", watts, "W")
+    await hass.async_block_till_done()
+    return template
+
+
+async def test_solar_term_holds_a_short_dropout(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """600 W with a 10-minute radio dropout: within 2 % of the true energy."""
+    await _solar_term_helpers(hass, freezer, "600")
+    await _minutes(hass, freezer, 1)
+    start = _number(hass, "sensor.gross")
+    await _minutes(hass, freezer, 10)
+    _set(hass, "sensor.p", "unavailable", None)
+    await hass.async_block_till_done()
+    await _minutes(hass, freezer, 9)
+    _set(hass, "sensor.p", "600", "W")
+    await hass.async_block_till_done()
+    await _minutes(hass, freezer, 11)
+    # 30 minutes at 600 W.
+    assert _number(hass, "sensor.gross") - start == pytest.approx(0.3, rel=0.02)
+
+
+async def test_solar_term_holds_ten_minutes_then_zero(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """A 30-minute dropout: held for 10 minutes, then 0 until it reports."""
+    template = await _solar_term_helpers(hass, freezer, "600")
+    await _minutes(hass, freezer, 1)
+    _set(hass, "sensor.p", "unavailable", None)
+    await hass.async_block_till_done()
+    start = _number(hass, "sensor.gross")
+    held = []
+    for _ in range(30):
+        await _minutes(hass, freezer, 1)
+        held.append(_number(hass, template))
+    assert held[:9] == [600.0] * 9
+    assert held[11:] == [0.0] * 19
+    # About 10 minutes at 600 W, nothing after.
+    assert _number(hass, "sensor.gross") - start == pytest.approx(0.1, abs=0.011)
+    assert solar_setup.SOLAR_HOLD_SECONDS == 600
+
+
+async def test_solar_term_dropout_after_sunset_adds_nothing(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The last value before the dropout was 0: nothing is added."""
+    template = await _solar_term_helpers(hass, freezer, "0")
+    await _minutes(hass, freezer, 6)
+    start = _number(hass, "sensor.gross")
+    _set(hass, "sensor.p", "unavailable", None)
+    await hass.async_block_till_done()
+    await _minutes(hass, freezer, 20)
+    assert _number(hass, template) == 0
+    assert _number(hass, "sensor.gross") == start
+
+
+async def test_solar_term_offline_at_start_is_zero(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Unavailable right after a start (no value of its own yet), or gone: 0."""
+    _set(hass, "sensor.p", "unavailable", None)
+    template = await _set_up(
+        hass, _template_helper(hass, "sp", solar_power_template("sensor.p"))
+    )
+    assert _number(hass, template) == 0
+    hass.states.async_remove("sensor.p")
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(minutes=1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _number(hass, template) == 0
+
+
+async def test_old_solar_term_without_hold_is_not_reused(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    evidence: Evidence,
+) -> None:
+    """A solar term of the template before the hold gets a new pair."""
+    prefs = deepcopy(WITH_SOLAR_POWER)
+    await energy_access.async_write(hass, prefs)
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    template = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
+    )
+    old = (
+        _table("w", WATTS) + "{% set solar = states('sensor.solar_power') %}"
+        "{% set solar_unit = state_attr('sensor.solar_power', "
+        "'unit_of_measurement') %}"
+        "{% if (solar_unit in w or not solar | is_number) %}"
+        "{{ ((solar | float * w[solar_unit] if solar | is_number else 0))"
+        " | round(1) }}{% else %}{{ none }}{% endif %}"
+    )
+    hass.config_entries.async_update_entry(
+        template, options={**template.options, "state": old}
+    )
+    await hass.async_block_till_done()
+    result = await result_of(hass_ws_client, hass, stat="sensor.garage_energy")
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+@pytest.mark.parametrize(
+    ("device_class", "unit", "accepted"),
+    [
+        ("power", "W", True),
+        ("power", "kW", True),
+        (None, "W", False),
+        ("power", "Wh", False),
+    ],
+)
+async def test_draft_power_offline_at_night_uses_the_registry(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    device_class: str | None,
+    unit: str,
+    accepted: bool,
+) -> None:
+    """An inverter offline at night has no attributes: the registry decides."""
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "test",
+        "dtu-power",
+        suggested_object_id="dtu_power",
+        original_device_class=device_class,
+        unit_of_measurement=unit,
+    )
+    hass.states.async_set("sensor.dtu_power", "unavailable", {})
+    response = await preview(
+        hass_ws_client,
+        hass,
+        **await draft(hass_ws_client, hass, set_solar_rate("sensor.dtu_power")),
+    )
+    if accepted:
+        assert response["success"], response
+        assert response["result"]["power"]["solar"] == "sensor.dtu_power"
+    else:
+        assert response["error"]["translation_key"] == "not_offered"
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_draft_power_with_wrong_attributes_is_refused(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """Attributes that are there decide, even if the registry would fit."""
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        "test",
+        "dtu-power",
+        suggested_object_id="dtu_power",
+        original_device_class="power",
+        unit_of_measurement="W",
+    )
+    hass.states.async_set(
+        "sensor.dtu_power",
+        "5",
+        {"device_class": "energy", "unit_of_measurement": "kWh"},
+    )
+    response = await preview(
+        hass_ws_client,
+        hass,
+        **await draft(hass_ws_client, hass, set_solar_rate("sensor.dtu_power")),
+    )
+    assert response["error"]["translation_key"] == "not_offered"
