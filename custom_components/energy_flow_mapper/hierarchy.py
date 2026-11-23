@@ -886,7 +886,9 @@ def _diff_source_rates(
     first one. A source that keeps none (its only meter was replaced) is
     matched with the next unmatched old source of its type, and a source
     without a match is new: then it is named by its first meter, and a power
-    sensor of its own is a change too.
+    sensor of its own is a change too. A source that keeps no meter and has
+    no power sensor gives no entry: it never had one (a removed source's
+    sensor goes with its removal).
     """
     matched: dict[int, tuple[Mapping[str, Any], tuple[str, str]]] = {}
     for index, source in enumerate(new):
@@ -907,6 +909,8 @@ def _diff_source_rates(
             role, stat = pairs[0]
             before = next((b for b in rest if b.get("type") == source.get("type")), {})
             rest = [b for b in rest if b is not before]
+            if not _source_power(source):
+                continue
         if _source_power(before) != _source_power(source):
             entries.append({"type": "source_rate", "stat": stat, "role": role})
     return entries

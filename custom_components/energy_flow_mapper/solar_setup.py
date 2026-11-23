@@ -24,7 +24,7 @@ does when the check for daily inputs could not run.
 The gross meter is `total_increasing`, and Home Assistant skips the negative
 states of such a meter. A circuit that returned more than it drew so far, or
 a solar from a fresh integral, would start it below 0: the template then adds
-a constant, read from the inputs at setup time, so it starts at 1 kWh or
+a constant, read from the inputs at setup time, so it starts at 100 kWh or
 more. A constant does not change what the meter counts.
 """
 
@@ -59,8 +59,12 @@ ENERGY_DECIMALS: Final = 3
 POWER_DECIMALS: Final = 1
 SOLAR_STAT: Final = "stat_energy_from"
 # The lowest starting value (kWh) of a gross meter; a lower one gets an offset.
-# Not 0: an input that lags (an integral samples the power) can dip it a bit.
-START_MIN: Final = 1.0
+# Far from 0: Home Assistant reads a dip of more than 10 % as a meter reset,
+# and an input that lags (an integral samples the power) can dip it a bit.
+START_MIN: Final = 100.0
+# The offset is a whole number of these (kWh), so a preview and the setup a
+# moment later give the same one.
+OFFSET_STEP: Final = 100
 
 
 class MeterKind(StrEnum):
@@ -240,6 +244,7 @@ class Plan:
             "blocked": self.blocked,
             "blocked_entity": self.blocked_entity,
             "unusable_power": self.unusable_power,
+            "offset": self.offset,
         }
 
 
@@ -268,20 +273,29 @@ def _set_offset(
     """Set the offset that starts the gross energy at START_MIN or more.
 
     Reads the inputs as the template will. An input replaced by a new
-    integral starts at 0. An input without a number blocks: the starting
-    value would be unknown.
+    integral starts at 0. Only the terms that can pull the gross below 0
+    need a value: a net meter, and the returned energy that is subtracted.
+    Without one the start is unknown, and the setup waits. An added term
+    that counts only up (the solar, a drawn meter) counts as 0 without a
+    value, which only makes the offset larger: a solar counter may be
+    offline at night.
     """
     gross = 0.0
     for entity, _ in inputs:
         if entity in plan.integrals:
             continue
+        subtracted = entity == plan.returned
+        can_go_negative = subtracted or (
+            entity == plan.meter and plan.kind is MeterKind.NET
+        )
         if (value := _value(hass, entity)) is None:
-            plan.block(Blocked.INPUT_NOT_READY, entity)
-            return
-        sign = -1 if entity == plan.returned else 1
-        gross += sign * value * plan.factors[entity]
+            if can_go_negative:
+                plan.block(Blocked.INPUT_NOT_READY, entity)
+                return
+            value = 0.0
+        gross += (-1 if subtracted else 1) * value * plan.factors[entity]
     if gross < START_MIN:
-        plan.offset = math.ceil(START_MIN - gross)
+        plan.offset = math.ceil((START_MIN - gross) / OFFSET_STEP) * OFFSET_STEP
 
 
 def _solar_inputs(hass: HomeAssistant, solar: str, solar_power: str | None) -> set[str]:

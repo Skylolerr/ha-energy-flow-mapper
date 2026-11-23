@@ -1230,6 +1230,41 @@ def test_diff_source_rate_with_replaced_meter() -> None:
         "source_added",
         "source_removed",
     ]
+    # Solar A (with a power sensor) removed, solar B (without) added: B never
+    # had one, so nothing changed for B. With one, B's sensor is new.
+    solar_a = {
+        "type": "solar",
+        "stat_energy_from": "sensor.a",
+        "stat_rate": "sensor.pa",
+    }
+    old_solar = prefs(energy_sources=[solar_a])
+    swapped = apply_changes(
+        old_solar,
+        [
+            {"type": "unassign_source", "stat": "sensor.a", "role": "production"},
+            {"type": "assign_source", "role": "production", "stat": "sensor.b"},
+        ],
+    )
+    assert [e["type"] for e in diff(old_solar, swapped)] == [
+        "source_added",
+        "source_removed",
+    ]
+    with_power = apply_changes(
+        swapped,
+        [
+            {
+                "type": "set_source_rate",
+                "stat": "sensor.b",
+                "role": "production",
+                "stat_rate": "sensor.pb",
+            }
+        ],
+    )
+    assert diff(old_solar, with_power)[-1] == {
+        "type": "source_rate",
+        "stat": "sensor.b",
+        "role": "production",
+    }
     # A source without any meter cannot be named; it is left out.
     unknown = prefs(energy_sources=[{"type": "unknown", "stat_rate": "sensor.z"}])
     assert diff(prefs(), unknown) == []

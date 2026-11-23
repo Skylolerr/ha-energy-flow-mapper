@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Collection, Sequence
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 from itertools import pairwise
 from typing import Any, Final
 
@@ -33,9 +33,11 @@ QUERY_TIMEOUT: Final = 10
 # a large part of a day (a night boiler, an EV), so the share is not near 0.
 FALL_SHARE: Final = 0.5
 # A reset is also a jump: larger than this many times the meter's usual
-# (median) change in an hour. A net meter that passes 0 at its usual pace
-# comes close to 0 too, but without a jump.
-JUMP_FACTOR: Final = 3
+# change in an hour (USUAL_SHARE of the other hours change by as much or
+# less). A net meter that passes 0 at its usual pace, even with a steep
+# solar export, comes close to 0 too, but without a jump.
+JUMP_FACTOR: Final = 2
+USUAL_SHARE: Final = 0.9
 # Days with a reset needed: one reset alone is a replaced meter.
 MIN_RESET_DAYS: Final = 2
 UTILITY_METER_DOMAIN: Final = "utility_meter"
@@ -49,24 +51,23 @@ def resets_daily(states: Sequence[tuple[datetime, float]]) -> bool:
 
     `states` are (start, state) pairs in time order, with local times. A
     reset is a jump towards 0: the state is less than half as far from 0 as
-    the hour before, and it changed by more than `JUMP_FACTOR` times the
-    usual change in an hour. It counts once per day, at any time of day. A
-    per-day net meter falls back to 0 from either side; a lifetime net meter
-    that passes 0 at its usual pace does not jump.
+    the hour before (a fall), and it changed by more than `JUMP_FACTOR` times
+    the usual change of the hours that are no fall (the `USUAL_SHARE`
+    percentile, so a few long charging hours do not count as usual). It
+    counts once per day, at any time of day. A per-day net meter falls back
+    to 0 from either side; a lifetime net meter that passes 0 at its usual
+    pace does not jump.
     """
-    changes = sorted(
-        abs(value - before) for (_, before), (_, value) in pairwise(states)
-    )
-    if not changes:
-        return False
-    usual = changes[len(changes) // 2]
-    reset_days: set[date] = set()
+    falls: list[tuple[datetime, float]] = []
+    changes: list[float] = []
     for (_, before), (when, value) in pairwise(states):
-        if (
-            abs(value) < FALL_SHARE * abs(before)
-            and abs(value - before) > JUMP_FACTOR * usual
-        ):
-            reset_days.add(when.date())
+        if abs(value) < FALL_SHARE * abs(before):
+            falls.append((when, abs(value - before)))
+        else:
+            changes.append(abs(value - before))
+    changes.sort()
+    usual = changes[int(len(changes) * USUAL_SHARE)] if changes else 0.0
+    reset_days = {when.date() for when, jump in falls if jump > JUMP_FACTOR * usual}
     return len(reset_days) >= MIN_RESET_DAYS
 
 

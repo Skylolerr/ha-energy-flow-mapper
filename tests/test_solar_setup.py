@@ -106,6 +106,9 @@ def solar_power(hass: HomeAssistant, sensors: None) -> None:
         name="Solar power",
         state="300",
     )
+    main = hass.states.get("sensor.main_energy")
+    assert main is not None
+    hass.states.async_set("sensor.main_energy", "1000", main.attributes)
 
 
 @pytest.fixture
@@ -270,6 +273,7 @@ async def test_preview_suggests_draws_with_returned_sensor(
         "blocked": None,
         "blocked_entity": None,
         "unusable_power": None,
+        "offset": 0,
     }
 
 
@@ -600,25 +604,57 @@ async def test_power_without_unit_gives_no_gross_power(
 
 
 @pytest.mark.usefixtures("loaded_entry", "daily")
-async def test_preview_waits_for_an_unavailable_input(
+async def test_preview_waits_for_an_unavailable_net_meter(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """An unavailable input keeps the unit its registry entry knows.
+    """A net meter can be below 0: without its value the start is unknown.
 
-    Its value is missing, though: the starting value of the gross meter
-    cannot be set, so the setup waits until every input reports one.
+    An unavailable input keeps the unit its registry entry knows, so the
+    reason is the missing value, not the unit.
     """
-    hass.states.async_set(SOLAR, "unavailable", {})
+    hass.states.async_set("sensor.main_energy", "unavailable", {})
     response = await preview(hass_ws_client, hass)
     assert response["result"]["blocked"] == "input_not_ready"
-    assert response["result"]["blocked_entity"] == SOLAR
-    hass.states.async_remove(SOLAR)
+    assert response["result"]["blocked_entity"] == "sensor.main_energy"
+    hass.states.async_remove("sensor.main_energy")
     response = await preview(hass_ws_client, hass)
     assert response["result"]["blocked"] == "input_not_ready"
     response = await create(hass_ws_client, hass)
     assert response["error"]["translation_key"] == "input_not_ready"
-    assert response["error"]["translation_placeholders"] == {"entity_id": SOLAR}
+    assert response["error"]["translation_placeholders"] == {
+        "entity_id": "sensor.main_energy"
+    }
     assert hass.config_entries.async_entries("template") == []
+
+
+@pytest.mark.usefixtures("loaded_entry", "daily")
+async def test_unavailable_added_inputs_count_as_zero(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar counter offline at night, or a drawn meter, only adds.
+
+    Counted as 0 the offset can only get larger, never start below 0. The
+    returned energy is subtracted: without it the start is unknown.
+    """
+    hass.states.async_set(SOLAR, "unavailable", {})
+    response = await preview(hass_ws_client, hass)
+    assert response["result"]["blocked"] is None
+    assert response["result"]["offset"] == 0
+    hass.states.async_set("sensor.main_energy", "-50", {"unit_of_measurement": "kWh"})
+    response = await preview(hass_ws_client, hass)
+    assert response["result"]["blocked"] is None
+    assert response["result"]["offset"] == 200
+
+    _returned(hass)
+    hass.states.async_set("sensor.main_energy", "unavailable", {})
+    response = await preview(hass_ws_client, hass, kind="draws")
+    assert response["result"]["blocked"] is None
+    # 0 - 2 + 0: lifted to the floor.
+    assert response["result"]["offset"] == 200
+    hass.states.async_set(RETURNED, "unknown", {})
+    response = await preview(hass_ws_client, hass, kind="draws")
+    assert response["result"]["blocked"] == "input_not_ready"
+    assert response["result"]["blocked_entity"] == RETURNED
 
 
 @pytest.mark.usefixtures("loaded_entry", "daily")
@@ -816,7 +852,7 @@ async def test_create_draws_with_returned_in_wh(
             "state_class": "total_increasing",
         },
     )
-    hass.states.async_set("sensor.main_energy", "10", {"unit_of_measurement": "kWh"})
+    hass.states.async_set("sensor.main_energy", "500", {"unit_of_measurement": "kWh"})
     hass.states.async_set(SOLAR, "3", {"unit_of_measurement": "kWh"})
     hass.states.async_set("sensor.main_power", "-0.2", {"unit_of_measurement": "kW"})
     before = hass.config_entries.async_entries("integration")
@@ -828,7 +864,7 @@ async def test_create_draws_with_returned_in_wh(
     result = response["result"]
     energy = hass.states.get(result["entity_id"])
     assert energy is not None
-    assert float(energy.state) == pytest.approx(11.0)
+    assert float(energy.state) == pytest.approx(501.0)
     power = hass.states.get(result["stat_rate"])
     assert power is not None
     assert float(power.state) == pytest.approx(100.0)
@@ -1029,7 +1065,9 @@ async def test_create_gross_meter_starts_above_zero(
     """Returned more than drawn, the solar from a fresh integral (at 0).
 
     50 - 300 + 0 would start at -250 kWh; Home Assistant skips negative
-    states of a meter. The template adds a constant so it starts at 1 kWh.
+    states of a meter. The template adds a constant in whole 100 kWh so it
+    starts at 100 kWh or more: a dip of more than 10 % of a small value
+    would count as a meter reset.
     """
     _returned(hass)
     daily.add(SOLAR)
@@ -1050,19 +1088,19 @@ async def test_create_gross_meter_starts_above_zero(
         integral_entity,
         RETURNED,
         factors={RETURNED: 0.001},
-        offset=251,
+        offset=400,
     )
     hass.states.async_set(integral_entity, "0")
-    assert render(hass, state) == 1.0
+    assert render(hass, state) == 150.0
 
 
 @pytest.mark.usefixtures("loaded_entry", "daily")
 async def test_create_gross_meter_without_offset(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
-    """A gross meter that starts at 1 kWh or more gets no offset."""
+    """A gross meter that starts at 100 kWh or more gets no offset."""
     hass.states.async_set("sensor.main_energy", "-0.5", {"unit_of_measurement": "kWh"})
-    hass.states.async_set(SOLAR, "1.5", {"unit_of_measurement": "kWh"})
+    hass.states.async_set(SOLAR, "100.5", {"unit_of_measurement": "kWh"})
     response = await create(hass_ws_client, hass)
     assert response["success"], response
     state = _template_entries(hass)["Main gross"].options["state"]

@@ -84,7 +84,7 @@ def test_single_reset_not_daily() -> None:
 
 def test_several_drops_on_one_day_count_once() -> None:
     """Drops count per day: two drops on the same day are not daily."""
-    values = [10.0, 0.1, 5.0, 0.2, 6.0, *[7.0] * 10]
+    values = [10.0, 0.1, 5.0, 0.2, 6.0, *[7.0] * 30]
     states = [(START + timedelta(hours=hour), v) for hour, v in enumerate(values)]
     assert not resets_daily(states)
 
@@ -135,6 +135,43 @@ def test_lifetime_net_meter_drifting_through_zero_not_daily() -> None:
         states.append((when, round(value, 3)))
     assert min(v for _, v in states) < 0 < max(v for _, v in states)
     assert not resets_daily(states)
+
+
+@pytest.mark.parametrize("start", [1.0, 1.5, 2.0, 2.5, 3.0])
+def test_lifetime_net_meter_with_steep_export_not_daily(start: float) -> None:
+    """A balcony solar exports up to 0.7 kWh an hour; the loads draw 0.15.
+
+    Near 0, a steep export hour lands close to 0 (0.9 -> 0.2) every day. It
+    is a usual change of this meter, not a jump.
+    """
+    export = {10: -0.3, 11: -0.6, 12: -0.7, 13: -0.7, 14: -0.6, 15: -0.3}
+    value, states = start, []
+    for hour in range(72):
+        when = START + timedelta(hours=hour)
+        value += export.get(when.hour, 0.15)
+        states.append((when, round(value, 3)))
+    assert not resets_daily(states)
+
+
+def test_daily_solar_and_ev_meters_reset_daily() -> None:
+    """A daily solar (daylight only) and daily EV meters (long or short charge)."""
+
+    def solar(when: datetime) -> float:
+        return sum(
+            max(0.0, 1.5 - 0.4 * abs(hour - 12.5)) for hour in range(when.hour + 1)
+        )
+
+    def ev(when: datetime) -> float:
+        return 0.4 * (when.hour + 1) + (11.0 if when.hour >= 20 else 0.0)
+
+    def short_charge(when: datetime) -> float:
+        # 7 kWh an hour from 21:00 to 23:00: the charging hours are the
+        # largest changes after the reset.
+        return 7.0 * min(max(when.hour - 20, 0), 2)
+
+    assert resets_daily(hourly(solar))
+    assert resets_daily(hourly(ev))
+    assert resets_daily(hourly(short_charge))
 
 
 def test_daily_net_meter_resets_daily() -> None:
