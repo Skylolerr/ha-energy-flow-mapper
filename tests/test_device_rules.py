@@ -686,17 +686,27 @@ async def test_pair_dtu_ac_not_dc(hass: HomeAssistant) -> None:
         assert paired_power(hass, ac, {ac_power}) is None
 
 
-async def test_pair_prefers_own_device(hass: HomeAssistant) -> None:
-    """Without a rule the meter's own device comes before its family."""
+async def test_pair_only_own_device(hass: HomeAssistant) -> None:
+    """A parent's or child's power (the circuit above or below) never pairs."""
     parent = _device(hass, "parent", platform="test")
     device = _device(hass, "device", platform="test", via=parent)
-    child = _device(hass, "child", platform="test", via=device)
     meter = _entity(hass, "sensor.meter", device, "meter", platform="test")
-    # Own device has none: the single power of the parent.
-    up = _power(hass, "sensor.up_power", parent, "up_power", platform="test")
-    assert paired_power(hass, meter, ()) == up
-    # Own device has one, a child another: the own one.
-    _power(hass, "sensor.down_power", child, "down_power", platform="test")
+    # Own device has none, the parent exactly one.
+    _power(hass, "sensor.up_power", parent, "up_power", platform="test")
+    assert paired_power(hass, meter, ()) is None
+    # Own device has none, a via child exactly one.
+    other = _device(hass, "other", platform="test")
+    meter_2 = _entity(hass, "sensor.meter_2", other, "meter_2", platform="test")
+    below = _device(hass, "below", platform="test", via=other)
+    _power(hass, "sensor.below_power", below, "below_power", platform="test")
+    assert paired_power(hass, meter_2, ()) is None
+    # Own device has none, a child device exactly one.
+    third = _device(hass, "third", platform="test")
+    meter_3 = _entity(hass, "sensor.meter_3", third, "meter_3", platform="test")
+    kid = _child(hass, "kid", third)
+    _power(hass, "sensor.kid_power", kid, "kid_power", platform="test")
+    assert paired_power(hass, meter_3, ()) is None
+    # Own device has one, the parent another: the own one.
     own = _power(hass, "sensor.own_power", device, "own_power", platform="test")
     assert paired_power(hass, meter, ()) == own
 
@@ -731,6 +741,9 @@ async def test_pair_none_when_two_unused(hass: HomeAssistant) -> None:
     _power(hass, "sensor.third", device, "third", platform="test", disabled=True)
     assert paired_power(hass, meter, {first}) == second
     assert paired_power(hass, "sensor.unknown", ()) is None
+    # An entity without device has no power to pair.
+    loose = _entity(hass, "sensor.loose", None, "loose", platform="test")
+    assert paired_power(hass, loose, ()) is None
     # Other MQTT devices (no DTU or Zigbee2MQTT unique ID) have no rule either.
     mqtt = _device(hass, "mqtt", platform="mqtt")
     energy = _entity(hass, "sensor.mqtt_energy", mqtt, "mqtt_energy", platform="mqtt")

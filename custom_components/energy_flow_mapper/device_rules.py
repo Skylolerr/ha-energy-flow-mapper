@@ -374,6 +374,8 @@ def preselect_returned(
     candidate on its own device. A parent's or child's returned sensor (a
     hub's, the grid export) is never preselected, and a used own sensor never
     hands over to it; `returned_candidates` still lists them for the picker.
+    `used` must not contain the meter's own existing stat_rate or returned
+    sensor; callers pass those separately.
     """
     channel, found = _returned(hass, energy_entity_id, ())
     if channel is None:
@@ -433,27 +435,28 @@ def classify_meter(
 def paired_power(hass: HomeAssistant, energy: str, used: Collection[str]) -> str | None:
     """Return the power sensor of an energy sensor's channel, or None.
 
-    A known integration pairs by its channel key. Otherwise, once the meter's
-    own device has a power sensor (used or disabled too), only the own device
-    counts; the family only when it has none. Exactly one unused, enabled
-    sensor must remain: used and disabled sensors (a disabled one has no
-    state) are never suggested.
+    Only the meter's own device counts: a parent's or child's power measures
+    the circuit above or below. A known integration pairs by its channel key;
+    otherwise the own device must hold exactly one unused, enabled power
+    sensor. Used and disabled sensors (a disabled one has no state) are never
+    suggested. `used` must not contain the meter's own existing stat_rate or
+    returned sensor; callers pass those separately.
     """
-    members = family(hass, energy)
-    own = next((entry for entry in members if entry.entity_id == energy), None)
-    if own is None:
+    registry = er.async_get(hass)
+    own = registry.async_get(energy)
+    if own is None or own.device_id is None:
         return None
     powers = [
         entry
-        for entry in members
+        for entry in er.async_entries_for_device(
+            registry, own.device_id, include_disabled_entities=True
+        )
         if entry.entity_id != energy
         and entry.domain == "sensor"
         and _device_class(hass, entry) == SensorDeviceClass.POWER
     ]
     if (channel := _channel(own)) is not None:
         powers = [entry for entry in powers if _channel(entry) == channel]
-    else:
-        powers = [e for e in powers if e.device_id == own.device_id] or powers
     free = [
         entry for entry in powers if entry.entity_id not in used and not entry.disabled
     ]
