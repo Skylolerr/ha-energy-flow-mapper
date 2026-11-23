@@ -15,6 +15,7 @@ from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.template import Template
 from homeassistant.util import dt as dt_util
 
 from custom_components.energy_flow_mapper import candidates as candidates_module
@@ -3639,3 +3640,130 @@ async def test_daily_check_unknown_on_failure(
     )
     assert response["success"], response
     assert response["result"] == {"evidence": {}, "unknown": True}
+
+
+def _helper(
+    hass: HomeAssistant, domain: str, entity_id: str, options: dict[str, Any]
+) -> None:
+    """Add a helper config entry with its sensor entity and an energy state."""
+    entry = MockConfigEntry(domain=domain, options=options)
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        domain,
+        entry.entry_id,
+        suggested_object_id=entity_id.removeprefix("sensor."),
+        config_entry=entry,
+    )
+    hass.states.async_set(
+        entity_id,
+        "5",
+        {
+            "device_class": "energy",
+            "state_class": "total",
+            "unit_of_measurement": "kWh",
+        },
+    )
+
+
+CIRCUIT_SUM = "sensor.circuit_sum"
+SUM_OPTIONS = {
+    "group_type": "sensor",
+    "type": "sum",
+    "entities": ["sensor.garage_energy", "sensor.attic_energy"],
+}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_returns_inputs_and_contained_in(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """`get` names what each meter counts and which meter holds a free sensor."""
+    _helper(hass, "group", CIRCUIT_SUM, SUM_OPTIONS)
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    # The sum is still free; the draft may add it, so its inputs are known.
+    assert result["inputs"] == {
+        CIRCUIT_SUM: ["sensor.attic_energy", "sensor.garage_energy"]
+    }
+    candidates = {c["stat"]: c for c in result["candidates"]}
+    assert candidates["sensor.attic_energy"]["contained_in"] is None
+    assert candidates[CIRCUIT_SUM]["contained_in"] is None
+    assert result["issues"] == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_counted_twice_is_a_warning_that_never_blocks_saving(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A sum added next to a device it holds is a warning; it still saves."""
+    _helper(hass, "group", CIRCUIT_SUM, SUM_OPTIONS)
+    base_hash = await current_hash(hass_ws_client, hass)
+    changes = [{"type": "add", "stat": CIRCUIT_SUM, "parent": None}]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/validate",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    result = response["result"]
+    assert result["valid"] is True
+    assert result["issues"] == [
+        {
+            "code": "counted_twice",
+            "severity": "warning",
+            "stat": "sensor.garage_energy",
+            "details": {"meter": CIRCUIT_SUM},
+            "kind": "electricity",
+            "existing": False,
+        }
+    ]
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/save",
+        base_hash=base_hash,
+        changes=changes,
+    )
+    assert response["success"], response
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    result = response["result"]
+    assert [(i["code"], i["stat"]) for i in result["issues"]] == [
+        ("counted_twice", "sensor.garage_energy")
+    ]
+    attic = next(c for c in result["candidates"] if c["stat"] == "sensor.attic_energy")
+    assert attic["contained_in"] == CIRCUIT_SUM
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_get_survives_a_template_that_fails(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A template that cannot be read counts as unknown; `get` still answers."""
+
+    def fail(*_: Any, **__: Any) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(Template, "async_render_to_info", fail)
+    _helper(
+        hass,
+        "template",
+        "sensor.expanding",
+        {"template_type": "sensor", "state": "{{ expand('sensor.garage_energy') }}"},
+    )
+    await energy_access.async_write(
+        hass,
+        {
+            "device_consumption": [
+                *ENERGY_PREFS["device_consumption"],
+                {"stat_consumption": "sensor.expanding"},
+            ]
+        },
+    )
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert response["success"], response
+    assert response["result"]["inputs"] == {}
+    assert response["result"]["issues"] == []

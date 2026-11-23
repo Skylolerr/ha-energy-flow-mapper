@@ -116,6 +116,7 @@ export const de: Translations = {
   issue_not_energy_unit: "Die Einheit {unit} ist keine Energie-Einheit",
   issue_children_exceed_parent: "Seine Untergeräte verbrauchen mehr als dieses Gerät",
   issue_devices_exceed_home: "Die Geräte verbrauchen mehr als das Zuhause",
+  issue_counted_twice: "Steckt auch im Zähler eines anderen Geräts, ist aber nicht darunter eingeordnet",
   ha_reports: "Meldungen von Home Assistant",
   coverage_toggle: "Abdeckung",
   types_toggle: "Helfer markieren",

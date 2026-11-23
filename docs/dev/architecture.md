@@ -13,7 +13,8 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `energy_access.py` | **The only module that touches HA's `energy` internals** (`async_get_manager`, `manager.data`, `manager.async_update`) and the feature checks for them |
 | `hierarchy.py` | Pure tree logic: build, validate, move, untracked consumption, plausibility, error comparison. No HA imports needed to test it |
 | `groups.py` | Pure logic of the device groups |
-| `candidates.py` | Describe statistics (name, unit, device, power sensor, helper type) and find free sensors |
+| `candidates.py` | Describe statistics (name, unit, device, power sensor, helper type) and find free sensors; `contained_in` names the meter of the settings that already holds a free sensor |
+| `meter_inputs.py` | What a meter holds: the inputs of template, group, integral and utility-meter helpers (from their config entries; YAML helpers are not seen), followed five levels deep, with the subtracted ones and whether the signs are known; feeds `counted_twice`, `contained_in` and the setup's "solar already in the meter" |
 | `energy_stats.py` | Energy per statistic in a period, from the recorder |
 | `daily_reset.py` | Recognise meters that reset periodically for `get`, the hints and the setup (the rule of `stats_probe.py`, utility meters with a cycle) |
 | `stats_probe.py` | What the statistics show: periodic counters (same-direction drop rule, explained by the meter's own power when known; utility meter cycle; changing `last_reset`), power sign, hourly sparkline; reads 5-minute statistics first, hourly where they do not cover the window, in kWh and W; the guarded recorder queries; `daily_check` |
@@ -109,7 +110,7 @@ touches `panel/`.
 
 | File | Job |
 |---|---|
-| `draft.ts` | Pure draft logic, **mirrors `hierarchy.py`** (untracked, coverage, display names, ambiguous devices, remove/lift, `set_rate` / `set_source_rate`), plus `replaceChanges` |
+| `draft.ts` | Pure draft logic, **mirrors `hierarchy.py`** (untracked, coverage, display names, ambiguous devices, counted twice, remove/lift, `set_rate` / `set_source_rate`), plus `replaceChanges` |
 | `groups.ts` | Mirrors `groups.py` |
 | `layout.ts` | Automatic diagram layout |
 | `export.ts` | Diagram as SVG/PNG, anonymised export |

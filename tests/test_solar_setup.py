@@ -436,6 +436,43 @@ async def test_setup_blocked_on_gross_template(
 
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
 @pytest.mark.usefixtures("loaded_entry", "daily")
+@pytest.mark.parametrize(
+    ("state", "inner"),
+    [
+        # Attribute style.
+        (
+            f"{{{{ states.sensor.main_energy.state | float + states.{SOLAR}.state }}}}",
+            [],
+        ),
+        # Nested: the template adds a sum that holds the solar.
+        (
+            "{{ states('sensor.main_energy') | float + states('sensor.inner') }}",
+            [SOLAR],
+        ),
+        # Nested: the sum holds an integral of the solar's power.
+        (
+            "{{ states('sensor.main_energy') | float + states('sensor.inner') }}",
+            [SOLAR_INTEGRAL],
+        ),
+    ],
+)
+async def test_solar_already_in_meter_via_inputs(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    state: str,
+    inner: list[str],
+) -> None:
+    """What a meter holds is followed through helpers and every template form."""
+    _integral(hass, SOLAR_INTEGRAL, SOLAR_POWER)
+    _group_sum(hass, "sensor.inner", ["sensor.kitchen_energy", *inner])
+    _template_sensor(hass, GROSS_TEMPLATE, state)
+    response = await preview(hass_ws_client, hass, stat=GROSS_TEMPLATE)
+    assert response["result"]["blocked"] == "solar_already_in_meter"
+    assert response["result"]["blocked_entity"] == GROSS_TEMPLATE
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
+@pytest.mark.usefixtures("loaded_entry", "daily")
 async def test_setup_not_blocked_by_unrelated_template_or_integral(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:

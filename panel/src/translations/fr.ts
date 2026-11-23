@@ -116,6 +116,7 @@ export const fr: Translations = {
   issue_not_energy_unit: "L’unité {unit} n’est pas une unité d’énergie",
   issue_children_exceed_parent: "Ses appareils enfant consomment plus que lui",
   issue_devices_exceed_home: "Les appareils consomment plus que la maison",
+  issue_counted_twice: "Aussi compté dans le compteur d’un autre appareil, sans être placé en dessous",
   ha_reports: "Signalé par Home Assistant",
   coverage_toggle: "Couverture",
   types_toggle: "Marquer les entrées",

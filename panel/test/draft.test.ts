@@ -7,6 +7,7 @@ import {
   replaceChanges,
   buildTree,
   changeKind,
+  countedTwice,
   coverage,
   flowInLitresPerMinute,
   NEW_GRID,
@@ -1004,5 +1005,50 @@ describe("tabKind", () => {
     expect(tabKind("electricity")).toBe("electricity");
     expect(tabKind("water")).toBe("water");
     expect(tabKind("gas")).toBe("electricity");
+  });
+});
+
+describe("countedTwice", () => {
+  // The same examples as tests/test_hierarchy.py.
+  const tree = (extra: Device[] = []) =>
+    buildTree(
+      [...deep(), ...extra].map((d) => ({
+        ...d,
+        stat_consumption: `sensor.${d.stat_consumption}`,
+        ...(d.included_in_stat ? { included_in_stat: `sensor.${d.included_in_stat}` } : {}),
+      })),
+    );
+  const counted = (nodes: TreeNode[], inputs: Record<string, string[]>) => {
+    const issues = countedTwice(nodes, inputs);
+    expect(issues.every((i) => i.code === "counted_twice" && i.severity === "warning")).toBe(true);
+    return issues.map((i) => [i.stat, i.details.meter]);
+  };
+
+  it("counted_twice top level", () => {
+    const roots = tree([device("sum")]);
+    const inputs = { "sensor.sum": ["sensor.garage", "sensor.office"] };
+    expect(counted(roots, inputs)).toEqual([
+      ["sensor.office", "sensor.sum"],
+      ["sensor.garage", "sensor.sum"],
+    ]);
+    expect(countedTwice(roots, inputs, "water")[0].kind).toBe("water");
+  });
+
+  it("counted_twice not below owner", () => {
+    const roots = tree();
+    expect(counted(roots, { "sensor.main": ["sensor.office", "sensor.grinder"] })).toEqual([]);
+    // A meter holding itself is no second device.
+    expect(counted(roots, { "sensor.garage": ["sensor.garage"] })).toEqual([]);
+    // Office is next to the kitchen, not below it.
+    expect(counted(roots, { "sensor.kitchen": ["sensor.office", "sensor.grinder"] })).toEqual([
+      ["sensor.office", "sensor.kitchen"],
+    ]);
+  });
+
+  it("counted_twice ignores subtracted", () => {
+    // A subtracted meter is not in the inputs: gross = meter - returned + solar.
+    const roots = buildTree([device("sensor.gross"), device("sensor.meter"), device("sensor.returned")]);
+    const inputs = { "sensor.gross": ["sensor.meter", "sensor.solar"] };
+    expect(counted(roots, inputs)).toEqual([["sensor.meter", "sensor.gross"]]);
   });
 });

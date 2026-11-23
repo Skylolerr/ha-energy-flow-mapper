@@ -76,11 +76,13 @@ from .hierarchy import (
     ChangeError,
     ChangeType,
     DeviceKind,
+    Issue,
     Prefs,
     Severity,
     ambiguous_devices,
     build_tree,
     card_ha_issues,
+    counted_twice,
     diff,
     ha_issues,
     has_errors,
@@ -106,6 +108,7 @@ from .hints import (
     meter_stats,
 )
 from .integral import async_create_integral
+from .meter_inputs import Cache, counted_inputs
 from .models import EnergyFlowMapperData
 from .solar_setup import MeterKind, Names, async_create, async_plan
 from .stats_probe import async_probe
@@ -314,7 +317,22 @@ def _runtime(hass: HomeAssistant) -> EnergyFlowMapperData:
 
 
 def _issues(hass: HomeAssistant, prefs: Prefs) -> list[Any]:
+    """Return the issues that decide whether saving is allowed."""
     return validate(prefs, async_stat_units(hass, prefs), UNITS)
+
+
+def _checked_issues(hass: HomeAssistant, prefs: Prefs, cache: Cache) -> list[Issue]:
+    """Return `_issues` plus the devices counted twice, for a check.
+
+    `counted_twice` is a warning only; saving never computes it, so it can
+    never block a save.
+    """
+    issues: list[Issue] = _issues(hass, prefs)
+    for kind, key in DEVICE_KEYS.items():
+        devices = prefs.get(key, [])
+        inputs = counted_inputs(hass, [device[STAT] for device in devices], cache)
+        issues.extend(counted_twice(build_tree(devices), inputs, kind))
+    return issues
 
 
 async def _async_current(
@@ -389,16 +407,22 @@ async def websocket_get(
     without an energy meter and `flow_candidates` flow sensors without a water
     meter. `stats` and the meter candidates carry `daily_reset`: the meter
     falls back to 0 every day (read for the meters of devices and sources and
-    the members of their sum helpers only; false for the others). `hints` are
-    the hints of devices and sources (see `hints`).
+    the members of their sum helpers only; false for the others). The meter
+    candidates carry `contained_in`, the meter of the settings that holds
+    them already. `inputs` maps a meter (of devices, sources and electricity
+    and water candidates) to what it counts with a plus sign, for the
+    panel's `countedTwice`. `hints` are the hints of devices and sources (see
+    `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
     groups = clean_groups(runtime.groups.groups(), prefs)
     external = await async_external_statistics(hass)
     stats = async_stats_info(hass, prefs, external)
+    # What each helper holds is read once for the whole answer.
+    cache: Cache = {}
     candidates, water, gas = (
-        async_candidates(hass, prefs, kind)
+        async_candidates(hass, prefs, kind, cache)
         + async_external_candidates(hass, prefs, external, kind)
         for kind in (DeviceKind.ELECTRICITY, DeviceKind.WATER, DeviceKind.GAS)
     )
@@ -419,7 +443,7 @@ async def websocket_get(
         async_counted_returned(hass, prefs),
     )
     mark_daily_reset(meters, daily)
-    issues = _issues(hass, prefs)
+    issues = _checked_issues(hass, prefs, cache)
     validation = await energy_access.async_validation(hass)
     connection.send_result(
         msg["id"],
@@ -447,6 +471,11 @@ async def websocket_get(
             "ignored_suggestions": runtime.suggestions.ignored(),
             "dismissed_hints": runtime.suggestions.dismissed(),
             "hints": await async_hints(hass, prefs, stats, daily, counted),
+            "inputs": counted_inputs(
+                hass,
+                sorted(meter_stats(prefs) | {c["stat"] for c in [*candidates, *water]}),
+                cache,
+            ),
         },
     )
 
@@ -471,8 +500,9 @@ async def websocket_validate(
     runtime = _runtime(hass)
     prefs, groups = await _async_current(hass, runtime, msg[ATTR_BASE_HASH])
     new, new_groups = _apply(prefs, groups, msg[ATTR_CHANGES])
-    before = _issues(hass, prefs)
-    issues = _issues(hass, new)
+    cache: Cache = {}
+    before = _checked_issues(hass, prefs, cache)
+    issues = _checked_issues(hass, new, cache)
     rejected = energy_access.schema_error(
         {key: new[key] for key in _changed_keys(prefs, new)}
     )
@@ -1209,8 +1239,9 @@ async def websocket_import_check(
     # A file is not checked like a draft: its lists may be malformed, so
     # Home Assistant's schemas come first and the hierarchy only after them.
     rejected = energy_access.schema_error(update)
-    before = _issues(hass, prefs)
-    issues = _issues(hass, new) if rejected is None else []
+    cache: Cache = {}
+    before = _checked_issues(hass, prefs, cache)
+    issues = _checked_issues(hass, new, cache) if rejected is None else []
     groups_changed = False
     new_groups = groups
     if rejected is None:

@@ -32,7 +32,6 @@ from __future__ import annotations
 
 import logging
 import math
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -44,14 +43,14 @@ from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 
-from .candidates import INTEGRATION_DOMAIN
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .daily_reset import async_daily_check
 from .hierarchy import KEY_DEVICES, KEY_SOURCES, NAME, RATE, STAT, Prefs, used_stats
-from .hints import returned_sensor, sum_members
+from .hints import returned_sensor
 from .integral import async_create_integral, energy_unit, entity_unit
-from .template_meter import TEMPLATE_DOMAIN, TemplateKind, async_create_template
+from .meter_inputs import meter_inputs
+from .template_meter import TemplateKind, async_create_template
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -298,56 +297,18 @@ def _set_offset(
         plan.offset = math.ceil((START_MIN - gross) / OFFSET_STEP) * OFFSET_STEP
 
 
-def _solar_inputs(hass: HomeAssistant, solar: str, solar_power: str | None) -> set[str]:
-    """Return what can stand for the solar in a meter.
+def _holds_solar(
+    hass: HomeAssistant, stat: str, solar: str, solar_power: str | None
+) -> bool:
+    """Return True if the meter `stat` already counts the solar.
 
-    Its energy statistic, its power sensor and the integral helpers of that
-    power sensor (the sum dialog can swap the solar for one).
+    It does when the solar's energy statistic or its power sensor is one of
+    the meter's inputs, from any level (`meter_inputs`): a sum with the solar,
+    a template that reads it in any form, an integral of the solar's power in
+    a sum or template. Subtracted or not, it is in the meter already.
     """
-    inputs = {solar}
-    if solar_power is None:
-        return inputs
-    inputs.add(solar_power)
-    registry = er.async_get(hass)
-    for entry in hass.config_entries.async_entries(INTEGRATION_DOMAIN):
-        if entry.options.get("source") == solar_power:
-            inputs.update(
-                entity.entity_id
-                for entity in er.async_entries_for_config_entry(
-                    registry, entry.entry_id
-                )
-            )
-    return inputs
-
-
-def _template_state(hass: HomeAssistant, stat: str) -> str | None:
-    """Return the state template if `stat` is a template sensor helper."""
-    entry = er.async_get(hass).async_get(stat) if valid_entity_id(stat) else None
-    config_entry = (
-        hass.config_entries.async_get_entry(entry.config_entry_id)
-        if entry is not None and entry.config_entry_id
-        else None
-    )
-    if config_entry is None or config_entry.domain != TEMPLATE_DOMAIN:
-        return None
-    return str(config_entry.options.get("state") or "")
-
-
-def _holds_solar(hass: HomeAssistant, stat: str, inputs: set[str]) -> bool:
-    """Return True if the meter `stat` already counts one of the solar `inputs`.
-
-    A sum helper holds it as a member. A template helper holds it when its
-    state template names the entity ID; that is a plain text match with
-    boundaries, so `sensor.solar_energy` does not match
-    `sensor.solar_energy_yesterday`.
-    """
-    if not inputs.isdisjoint(sum_members(hass, stat) or []):
-        return True
-    if (state := _template_state(hass, stat)) is None:
-        return False
-    return any(
-        re.search(rf"(?<![\w.]){re.escape(entity)}(?![\w])", state) for entity in inputs
-    )
+    entities = meter_inputs(hass, stat)["entities"]
+    return solar in entities or (solar_power is not None and solar_power in entities)
 
 
 def _find(
@@ -421,7 +382,7 @@ async def async_plan(
         solar_power=source.get(RATE),
     )
     # A sum or gross template that already holds the solar would count it twice.
-    if _holds_solar(hass, stat, _solar_inputs(hass, solar, plan.solar_power)):
+    if _holds_solar(hass, stat, solar, plan.solar_power):
         plan.block(Blocked.SOLAR_ALREADY_IN_METER, stat)
     inputs = _inputs(plan)
     daily = await async_daily_check(hass, [entity for entity, _ in inputs])

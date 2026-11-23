@@ -112,6 +112,8 @@ export interface Candidate extends StatInfo {
   power: string | null;
   /** An external statistic (no entity), e.g. from an energy supplier portal. */
   external?: boolean;
+  /** The meter of the settings that holds this one as an input (innermost), if any. */
+  contained_in?: string | null;
 }
 
 export type IssueCode =
@@ -125,7 +127,8 @@ export type IssueCode =
   | "not_energy_unit"
   | "not_water_unit"
   | "children_exceed_parent"
-  | "devices_exceed_home";
+  | "devices_exceed_home"
+  | "counted_twice";
 
 export interface Issue {
   code: IssueCode;
@@ -228,6 +231,8 @@ export interface Snapshot {
   /** Hints at blocks, and the ones an admin dismissed. */
   hints?: Hint[];
   dismissed_hints?: DismissedHint[];
+  /** Per meter (devices, sources, free meters), what it counts with a plus sign. */
+  inputs?: Record<string, string[]>;
 }
 
 /** Device changes name their list; without `kind` they change electricity. */

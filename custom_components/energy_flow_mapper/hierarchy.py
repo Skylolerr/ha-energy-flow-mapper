@@ -133,6 +133,7 @@ class IssueCode(StrEnum):
     NOT_WATER_UNIT = "not_water_unit"
     CHILDREN_EXCEED_PARENT = "children_exceed_parent"
     DEVICES_EXCEED_HOME = "devices_exceed_home"
+    COUNTED_TWICE = "counted_twice"
 
 
 class ChangeType(StrEnum):
@@ -1025,6 +1026,47 @@ def plausibility(
                     Severity.WARNING,
                     stat,
                     {"parent": own, "children": own + excess, "excess": excess},
+                    kind,
+                )
+            )
+    return issues
+
+
+def counted_twice(
+    nodes: Sequence[Node],
+    inputs: Mapping[str, Collection[str]],
+    kind: DeviceKind = DeviceKind.ELECTRICITY,
+) -> list[Issue]:
+    """Warn about a device whose meter another device's meter counts as well.
+
+    `inputs` maps a meter to the statistics it counts with a plus sign (what
+    `meter_inputs.counted_inputs` returns; subtracted ones and meters whose
+    signs are unknown are not in it). A device that such a meter of the same
+    list counts, but that is not below that device, is counted twice: once on
+    its own, once in the other meter. One warning per device, naming the
+    first such meter. A warning never blocks saving.
+    """
+    devices = list(walk(nodes))
+    below = {node.stat: {n.stat for n in walk(node.children)} for node in devices}
+    issues: list[Issue] = []
+    for node in devices:
+        meter = next(
+            (
+                other.stat
+                for other in devices
+                if other.stat != node.stat
+                and node.stat in inputs.get(other.stat, ())
+                and node.stat not in below[other.stat]
+            ),
+            None,
+        )
+        if meter is not None:
+            issues.append(
+                Issue(
+                    IssueCode.COUNTED_TWICE,
+                    Severity.WARNING,
+                    node.stat,
+                    {"meter": meter},
                     kind,
                 )
             )

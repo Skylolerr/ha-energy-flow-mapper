@@ -7,6 +7,7 @@ import type {
   Device,
   DeviceKind,
   HomeAssistant,
+  Issue,
   PowerConfig,
   Source,
   StatInfo,
@@ -594,6 +595,42 @@ export function untrackedMissing(nodes: TreeNode[], values: Map<string, number |
     }
   }
   return result;
+}
+
+/**
+ * Warn about a device whose meter another device's meter counts as well, like
+ * hierarchy.py's `counted_twice`. `inputs` maps a meter to the statistics it
+ * counts with a plus sign (`inputs` of `get`: subtracted ones and meters whose
+ * signs are unknown are not in it). A device that such a meter of the same
+ * list counts, but that is not below that device, is counted twice. One
+ * warning per device, naming the first such meter; it never blocks saving.
+ */
+export function countedTwice(
+  nodes: TreeNode[],
+  inputs: Record<string, readonly string[] | undefined>,
+  kind: DeviceKind = "electricity",
+): Issue[] {
+  const devices = walk(nodes);
+  const below = new Map(devices.map((node) => [node.stat, new Set(walk(node.children).map((n) => n.stat))]));
+  const issues: Issue[] = [];
+  for (const node of devices) {
+    const meter = devices.find(
+      (other) =>
+        other.stat !== node.stat &&
+        (inputs[other.stat] ?? []).includes(node.stat) &&
+        !below.get(other.stat)!.has(node.stat),
+    );
+    if (meter !== undefined) {
+      issues.push({
+        code: "counted_twice",
+        severity: "warning",
+        stat: node.stat,
+        details: { meter: meter.stat },
+        kind,
+      });
+    }
+  }
+  return issues;
 }
 
 /** What the home uses minus all top-level devices; one without a value counts as untracked. */

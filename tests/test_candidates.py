@@ -192,6 +192,86 @@ async def test_candidates(hass: HomeAssistant) -> None:
     assert printer["power"] == "sensor.printer_power"
 
 
+def _helper(
+    hass: HomeAssistant, domain: str, entity_id: str, options: dict[str, Any]
+) -> None:
+    """Add a helper config entry with its sensor entity."""
+    entry = MockConfigEntry(domain=domain, options=options)
+    entry.add_to_hass(hass)
+    er.async_get(hass).async_get_or_create(
+        "sensor",
+        domain,
+        entry.entry_id,
+        suggested_object_id=entity_id.removeprefix("sensor."),
+        config_entry=entry,
+    )
+
+
+@pytest.mark.usefixtures("sensors")
+async def test_candidate_contained_in(hass: HomeAssistant) -> None:
+    """A free meter that a meter of the settings holds names that meter.
+
+    From all levels; of several, the innermost. A source's meter counts too.
+    """
+    _helper(
+        hass,
+        "group",
+        "sensor.circuit_sum",
+        {
+            "group_type": "sensor",
+            "type": "sum",
+            "entities": ["sensor.attic_energy", "sensor.kitchen_energy"],
+        },
+    )
+    hass.states.async_set(
+        "sensor.circuit_sum",
+        "2",
+        {
+            "device_class": "energy",
+            "state_class": "total",
+            "unit_of_measurement": "kWh",
+        },
+    )
+    _helper(
+        hass,
+        "template",
+        "sensor.f11",
+        {
+            "template_type": "sensor",
+            "state": "{{ states('sensor.circuit_sum') | float"
+            " - states('sensor.printer_energy') | float }}",
+        },
+    )
+    prefs = deepcopy(ENERGY_PREFS)
+    _helper(
+        hass,
+        "template",
+        "sensor.f12",
+        {"template_type": "sensor", "state": "{{ states('sensor.printer_energy') }}"},
+    )
+    prefs["device_consumption"] += [
+        {"stat_consumption": "sensor.f11"},
+        {"stat_consumption": "sensor.f12"},
+    ]
+    candidates = {c["stat"]: c for c in async_candidates(hass, prefs)}
+    # The sum is free: the template of the settings holds the attic through it.
+    assert candidates["sensor.attic_energy"]["contained_in"] == "sensor.f11"
+    assert candidates["sensor.circuit_sum"]["contained_in"] == "sensor.f11"
+    # Subtracted, it is still part of the meter; of two that hold it, the first.
+    assert candidates["sensor.printer_energy"]["contained_in"] == "sensor.f11"
+
+    # The sum as a source's meter is the innermost meter holding the attic.
+    prefs["energy_sources"][1]["stat_energy_from"] = "sensor.circuit_sum"
+    candidates = {c["stat"]: c for c in async_candidates(hass, prefs)}
+    assert candidates["sensor.attic_energy"]["contained_in"] == "sensor.circuit_sum"
+    assert candidates["sensor.printer_energy"]["contained_in"] == "sensor.f11"
+
+    del prefs["device_consumption"][-2:]
+    candidates = {c["stat"]: c for c in async_candidates(hass, prefs, cache={})}
+    assert candidates["sensor.attic_energy"]["contained_in"] == "sensor.circuit_sum"
+    assert candidates["sensor.printer_energy"]["contained_in"] is None
+
+
 @pytest.mark.usefixtures("sensors")
 async def test_candidates_exclude_sources_and_devices(hass: HomeAssistant) -> None:
     """With empty prefs, source and device meters become candidates too."""
@@ -350,6 +430,7 @@ async def test_external_statistics(
     assert candidates[0]["unit"] == "kWh"
     assert candidates[0]["external"] is True
     assert candidates[0]["entity_id"] is None
+    assert candidates[0]["contained_in"] is None
 
     # A volume statistic is offered for water (it may also be gas).
     water = async_external_candidates(hass, prefs, external, DeviceKind.WATER)

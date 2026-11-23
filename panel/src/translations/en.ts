@@ -114,6 +114,7 @@ export const en = {
   issue_not_energy_unit: "Unit {unit} is not an energy unit",
   issue_children_exceed_parent: "Its child devices use more than this device",
   issue_devices_exceed_home: "The devices use more than the home",
+  issue_counted_twice: "Also counted in the meter of another device, but not placed below it",
   ha_reports: "Home Assistant reports",
   coverage_toggle: "Coverage",
   types_toggle: "Mark helpers",

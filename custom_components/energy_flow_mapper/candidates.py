@@ -30,7 +30,17 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import floor_registry as fr
 from homeassistant.loader import IntegrationNotLoaded, async_get_loaded_integration
 
-from .hierarchy import DEVICE_KEYS, STAT, DeviceKind, Prefs, child_pairs, used_stats
+from .hierarchy import (
+    DEVICE_KEYS,
+    KEY_SOURCES,
+    STAT,
+    DeviceKind,
+    Prefs,
+    child_pairs,
+    source_roles,
+    used_stats,
+)
+from .meter_inputs import Cache, meter_inputs
 
 ENERGY_UNITS = frozenset(unit.value for unit in UnitOfEnergy)
 POWER_UNITS = frozenset(unit.value for unit in UnitOfPower)
@@ -345,20 +355,57 @@ def rate_sensor(
     )
 
 
+def settings_meters(prefs: Prefs) -> list[str]:
+    """Return the meters of the settings: devices (both lists), then sources."""
+    devices = [
+        device[STAT] for key in DEVICE_KEYS.values() for device in prefs.get(key, [])
+    ]
+    sources = [stat for _, stat in source_roles(prefs.get(KEY_SOURCES, []))]
+    return list(dict.fromkeys([*devices, *sources]))
+
+
+@callback
+def async_contained_in(
+    hass: HomeAssistant, prefs: Prefs, cache: Cache | None = None
+) -> dict[str, str]:
+    """Map every input of a meter of the settings to the meter that holds it.
+
+    Inputs from all levels (see `meter_inputs`), subtracted ones too. When
+    several meters hold it, the innermost: a sum in the settings rather than
+    the template of the settings that holds the sum; else the first one.
+    """
+    cache = {} if cache is None else cache
+    held = {
+        meter: meter_inputs(hass, meter, cache)["entities"]
+        for meter in settings_meters(prefs)
+    }
+    holder: dict[str, str] = {}
+    for meter, entities in held.items():
+        for entity in entities:
+            current = holder.get(entity)
+            if current is None or meter in held[current]:
+                holder[entity] = meter
+    return holder
+
+
 @callback
 def async_candidates(
     hass: HomeAssistant,
     prefs: Prefs,
     kind: DeviceKind = DeviceKind.ELECTRICITY,
+    cache: Cache | None = None,
 ) -> list[dict[str, Any]]:
     """Return energy (water, gas) meters that are not used in the dashboard yet.
 
     Each candidate suggests a power (or flow) sensor of the same device as
-    `stat_rate`, in its field `power`. Disabled entities have no state and are
-    therefore never listed.
+    `stat_rate`, in its field `power`, and names the meter of the settings
+    that holds it already in `contained_in` (None if none does). Disabled
+    entities have no state and are therefore never listed. `cache` is the
+    `meter_inputs` cache of the request.
     """
     meter_class, rate_class = METER_CLASSES[kind]
     used = used_stats(prefs)
+    holder = async_contained_in(hass, prefs, cache)
     candidates = []
     for state in hass.states.async_all("sensor"):
         if (
@@ -369,6 +416,7 @@ def async_candidates(
             continue
         info = async_stat_info(hass, state.entity_id)
         info["power"] = rate_sensor(hass, info["device_id"], rate_class)
+        info["contained_in"] = holder.get(state.entity_id)
         candidates.append(info)
     return _sorted(candidates)
 
@@ -424,7 +472,8 @@ def async_external_candidates(
     used = used_stats(prefs)
     return _sorted(
         [
-            async_stat_info(hass, stat, external) | {"power": None, "external": True}
+            async_stat_info(hass, stat, external)
+            | {"power": None, "external": True, "contained_in": None}
             for stat, meta in external.items()
             if stat not in used
             and meta.get("statistics_unit_of_measurement") in UNITS[kind]

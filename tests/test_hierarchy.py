@@ -24,6 +24,7 @@ from custom_components.energy_flow_mapper.hierarchy import (
     build_tree,
     card_ha_issues,
     child_pairs,
+    counted_twice,
     diff,
     ha_issues,
     has_errors,
@@ -2231,3 +2232,47 @@ def test_set_source_rate_unknown_source() -> None:
                 ],
             )
         assert err.value.code == "unknown_source"
+
+
+def counted(nodes: list[Node], inputs: dict[str, list[str]]) -> list[tuple[str, str]]:
+    """Return (device, meter) of each counted_twice warning; check it is one."""
+    issues = counted_twice(nodes, inputs)
+    assert all(
+        i.code is IssueCode.COUNTED_TWICE and i.severity is Severity.WARNING
+        for i in issues
+    )
+    assert not has_errors(issues)
+    return [(i.stat, i.details["meter"]) for i in issues]
+
+
+def test_counted_twice_top_level() -> None:
+    """A device in another device's meter, but not below it, is counted twice."""
+    roots = build_tree([*deep_devices(), device("sensor.sum")])
+    inputs = {"sensor.sum": ["sensor.garage", "sensor.office"]}
+    assert counted(roots, inputs) == [
+        ("sensor.office", "sensor.sum"),
+        ("sensor.garage", "sensor.sum"),
+    ]
+    (issue, _) = counted_twice(roots, inputs, kind=DeviceKind.WATER)
+    assert issue.kind is DeviceKind.WATER
+
+
+def test_counted_twice_not_below_owner() -> None:
+    """Below the meter that holds it, a device is counted once."""
+    roots = build_tree(deep_devices())
+    assert counted(roots, {"sensor.main": ["sensor.office", "sensor.grinder"]}) == []
+    # A meter holding itself is no second device.
+    assert counted(roots, {"sensor.garage": ["sensor.garage"]}) == []
+    # Office is next to the kitchen, not below it.
+    assert counted(roots, {"sensor.kitchen": ["sensor.office", "sensor.grinder"]}) == [
+        ("sensor.office", "sensor.kitchen")
+    ]
+
+
+def test_counted_twice_ignores_subtracted() -> None:
+    """A subtracted meter is not in the inputs: gross = meter - returned + solar."""
+    roots = build_tree(
+        [device("sensor.gross"), device("sensor.meter"), device("sensor.returned")]
+    )
+    inputs = {"sensor.gross": ["sensor.meter", "sensor.solar"]}
+    assert counted(roots, inputs) == [("sensor.meter", "sensor.gross")]
