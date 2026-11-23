@@ -4928,6 +4928,23 @@ describe("hints and solar setup", () => {
     });
   });
 
+  it("grid and battery hints open the power dialog without a preselected sensor", async () => {
+    // A grid meter's device often has "power consumed", which never goes negative,
+    // so the variant and sensor are left to the admin; other hints preselect.
+    const snap = solarSnapshot();
+    snap.hints = powerHints();
+    const el = await mount(hintMock(snap));
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="import"]')!.click();
+    await settle(el);
+    dialogButton(el, "Set power sensor")!.click();
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "power", target: { kind: "source", role: "import" }, first: "" });
+    expect(dialogEl(el).querySelector<HTMLSelectElement>("select")!.value).toBe("");
+    expect(el._hintPreselect({ code: "power_available", stat: "sensor.b", kind: "electricity", data: { entity_id: "sensor.b_power", role: "charge" } })).toBeUndefined();
+    expect(el._hintPreselect({ code: "power_available", stat: "sensor.pv", kind: "electricity", data: { entity_id: "sensor.pv_power", role: "production" } })).toBe("sensor.pv_power");
+    expect(el._hintPreselect({ code: "power_available", stat: "sensor.tv", kind: "electricity", data: {} })).toBeUndefined();
+  });
+
   it("dismissed hint is hidden", async () => {
     const snap = solarSnapshot();
     snap.hints = powerHints();

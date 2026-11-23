@@ -4159,17 +4159,29 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${this._t("hint_open_helper")}
         </button>`;
       case "power_available": {
-        const entity = typeof hint.data?.entity_id === "string" ? hint.data.entity_id : undefined;
         const role = this._hintRole(hint);
         const target: PowerTarget =
           role === null ? { kind: "device", stat: hint.stat } : { kind: "source", stat: hint.stat, role: role as SourceRole };
-        return html`<button class="primary" @click=${() => this._openPowerDialog(target, entity)}>
+        return html`<button class="primary" @click=${() => this._openPowerDialog(target, this._hintPreselect(hint))}>
           ${this._t(hint.kind === "electricity" ? "hint_set_power" : "hint_set_flow")}
         </button>`;
       }
       default:
         return nothing;
     }
+  }
+
+  /**
+   * The sensor a power hint picks in the dialog. Grid and battery pick none: the
+   * device's first power sensor is often "power consumed", which never goes
+   * negative, so the admin chooses the sensor and its variant.
+   */
+  _hintPreselect(hint: Hint): string | undefined {
+    const role = this._hintRole(hint);
+    if (role !== null && POWER_CONFIG_ROLES.has(role)) {
+      return undefined;
+    }
+    return typeof hint.data?.entity_id === "string" ? hint.data.entity_id : undefined;
   }
 
   /** The hints of a block (a source: of its role), each with its button and Dismiss. */
