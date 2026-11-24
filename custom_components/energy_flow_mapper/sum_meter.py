@@ -28,6 +28,7 @@ from .meter_inputs import (
     MeterInputs,
     direct_inputs,
     meter_inputs,
+    turned_inputs,
 )
 from .solar_setup import (
     KIND_GROSS_ENERGY,
@@ -180,7 +181,11 @@ class SolarHolds:
         made_of: set[str] = set()
         for stat in own:
             inputs = meter_inputs(hass, stat, self._cache)
-            computed = inputs["signed_known"] and bool(inputs["subtracted"])
+            # Computed by subtracting; a minus in a bracket makes the signs
+            # unknown, but it subtracts all the same.
+            computed = (inputs["signed_known"] and bool(inputs["subtracted"])) or bool(
+                turned_inputs(hass, stat, self._cache)
+            )
             made_of |= {
                 entity
                 for entity in _counted(inputs)

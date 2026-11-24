@@ -89,6 +89,8 @@ class _Direct:
     entities: frozenset[str] = frozenset()
     subtracted: frozenset[str] = frozenset()
     signed_known: bool = True
+    # Inputs under two minuses (`a - (b - c)`: `c`), so their sign is unclear.
+    turned: frozenset[str] = frozenset()
 
 
 _NOTHING: Final = _Direct()
@@ -230,32 +232,52 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
         else:
             entities |= set(info.entities)
     code = _code(_whole_ids(text))
+    sets = _SET.findall(code)
     variables = {
         name: {entity for entity in entities if _mentions(value, entity)}
-        for name, value in _SET.findall(code)
+        for name, value in sets
+    }
+    # What a variable's own value subtracts (`{% set n = b - c %}`: `c`).
+    variable_minus = {
+        name: {
+            entity
+            for _, _, operand in _minus_operands(value)
+            for entity in entities
+            if _mentions(operand, entity)
+        }
+        for name, value in sets
     }
 
-    def named(operand: str) -> set[str]:
-        """Return the entities `operand` names, itself or by a variable."""
-        found = {entity for entity in entities if _mentions(operand, entity)}
-        for name, held in variables.items():
-            if re.search(rf"(?<![\w.'\"]){re.escape(name)}(?!\w)", operand):
-                found |= held
-        return found
+    def used(operand: str) -> list[str]:
+        """Return the variables `operand` names."""
+        return [
+            name
+            for name in variables
+            if re.search(rf"(?<![\w.'\"]){re.escape(name)}(?!\w)", operand)
+        ]
 
     minuses = list(_minus_operands(code))
     subtracted: set[str] = set()
-    # What a minus inside the operand of another minus applies to:
-    # `a - (b - c)` adds `c`.
+    # What a minus inside the operand of another minus applies to, directly
+    # or through a variable: `a - (b - c)` and `{% set n = b - c %}{{ a - n }}`
+    # add `c`.
     turned: set[str] = set()
     for start, end, operand in minuses:
-        names = named(operand)
+        names = {entity for entity in entities if _mentions(operand, entity)}
+        for name in used(operand):
+            names |= variables[name]
+            turned |= variable_minus[name]
         subtracted |= names
         if any(o_start < start and end <= o_end for o_start, o_end, _ in minuses):
             turned |= names
     if turned or _NEGATE.search(code):
         signed_known = False
-    return _Direct(frozenset(entities), frozenset(subtracted - turned), signed_known)
+    return _Direct(
+        frozenset(entities),
+        frozenset(subtracted - turned),
+        signed_known,
+        frozenset(turned),
+    )
 
 
 def _mentions(text: str, entity: str) -> bool:
@@ -352,6 +374,18 @@ def direct_inputs(
 ) -> set[str]:
     """Return what the helper behind `entity` reads itself (one level)."""
     return set(_cached(hass, entity, {} if cache is None else cache).entities)
+
+
+@callback
+def turned_inputs(
+    hass: HomeAssistant, entity: str, cache: Cache | None = None
+) -> set[str]:
+    """Return the inputs the helper behind `entity` puts under two minuses.
+
+    One level, as `direct_inputs`: `a - (b - c)` gives `c`. Such a meter is
+    computed by subtracting, though its signs are unknown.
+    """
+    return set(_cached(hass, entity, {} if cache is None else cache).turned)
 
 
 @callback

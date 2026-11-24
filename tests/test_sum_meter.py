@@ -1000,24 +1000,58 @@ SOLAR_FROM_METERS = {
 
 @pytest.mark.parametrize("energy_prefs", [SOLAR_FROM_METERS])
 @pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "state",
+    [
+        (
+            "{{ states('sensor.main_energy') | float"
+            " - states('sensor.grid_import') | float"
+            " + states('sensor.grid_export') | float }}"
+        ),
+        # The same with a bracket: its signs are unknown, still computed.
+        (
+            "{{ states('sensor.main_energy') | float"
+            " - (states('sensor.grid_import') | float"
+            " - states('sensor.grid_export') | float) }}"
+        ),
+    ],
+)
 async def test_ws_sum_solar_built_from_other_meters_leaves_them_alone(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, state: str
 ) -> None:
     """A solar computed from the house and the grid does not make them solar."""
+    _template(hass, "sensor.solar_calc", state)
     _template(
         hass,
-        "sensor.solar_calc",
+        "sensor.rest",
         "{{ states('sensor.main_energy') | float"
-        " - states('sensor.grid_import') | float"
-        " + states('sensor.grid_export') | float }}",
+        " - states('sensor.kitchen_energy') | float }}",
     )
-    for member in ("sensor.grid_import", "sensor.grid_export"):
+    for member in ("sensor.grid_import", "sensor.grid_export", "sensor.main_energy"):
         response = await _sum(hass, hass_ws_client, ["sensor.kitchen_energy", member])
         assert response["success"], response
+    response = await _sum(hass, hass_ws_client, ["sensor.garage_energy", "sensor.rest"])
+    assert response["success"], response
     holds = (await send(hass_ws_client, hass, type=f"{DOMAIN}/get"))["result"][
         "solar_holds"
     ]
     assert holds == {"sensor.solar_calc": "solar"}
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_sum_solar_through_a_variable_with_a_minus_is_a_holder(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """`{% set n = b - solar %}{{ a - n }}` adds the solar: a holder."""
+    _template(
+        hass,
+        "sensor.unclear",
+        "{% set n = states('sensor.kitchen_energy') | float"
+        " - states('sensor.solar_energy') | float %}"
+        "{{ states('sensor.garage_energy') | float - n }}",
+    )
+    members = ["sensor.main_energy", "sensor.unclear"]
+    _refused(await _sum(hass, hass_ws_client, members), "sensor.unclear")
 
 
 SOLAR_COPY_OF_A_DEVICE = {

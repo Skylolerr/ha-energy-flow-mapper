@@ -467,6 +467,14 @@ async def test_inputs_subtracted_marked(
             ),
             {B},
         ),
+        # The same through a variable that holds a minus.
+        (
+            (
+                "{% set n = states('sensor.b') | float - states('sensor.a') | float %}"
+                "{{ states('sensor.c') | float - n }}"
+            ),
+            {B},
+        ),
     ],
 )
 async def test_inputs_unclear_sign_forms_are_unknown(
@@ -482,6 +490,21 @@ async def test_inputs_unclear_sign_forms_are_unknown(
     assert inputs["signed_known"] is False
     assert A not in inputs["subtracted"]
     assert inputs["subtracted"] == subtracted
+
+
+async def test_inputs_variable_with_a_minus_used_with_a_plus_is_known(
+    hass: HomeAssistant,
+) -> None:
+    """A variable that subtracts, used without a minus, keeps known signs."""
+    _template(
+        hass,
+        "sensor.t",
+        "{% set n = states('sensor.b') | float - states('sensor.a') | float %}"
+        "{{ states('sensor.c') | float + n }}",
+    )
+    inputs = meter_inputs(hass, "sensor.t")
+    assert inputs["signed_known"] is True
+    assert inputs["subtracted"] == {A}
 
 
 @pytest.mark.parametrize(
