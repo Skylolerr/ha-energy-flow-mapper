@@ -89,13 +89,21 @@ with a live reading, statistics evidence, helpers, offset, why it is blocked) wi
 creating anything; `create_solar_setup` plans again with the same choices and refuses
 anything the preview would not offer (`not_offered`) or an offset that is no longer enough
 (`values_changed`).
-`create_sum_meter` refuses a saved solar source, or a meter whose inputs hold one
-(`sum_with_solar`). A gross meter the setup made (record `gross_energy`, listed in `get` as
-`gross_meters`) and a member in `gross_ok` (the user marked it as a gross meter already)
-may hold one; a solar's own meter or power never passes. The panel's sum dialog sends
-the other sums to *Solar feeds in here …* and
-checks its members with `daily_check` on demand (a periodic member blocks the sum). When
-the request fails or is cancelled, every sum it made is removed again (shielded).
+`create_sum_meter` judges its members with `sum_meter.SolarHolds` on the saved settings.
+The solar is every solar source's statistic and power, what they are made of (energy and
+power sensors, e.g. the inverters of a solar sum) and the setup's solar terms. A member
+that is the solar or made only of it is always refused (`sum_with_solar`), also as a rate
+member. A member that holds the solar (with unknown signs, any input counts) is refused
+unless it is in `gross_ok` (the user marked it as a gross meter already). A gross meter the
+setup made (record `gross_energy`) that still reads something besides the solar is no
+holder, and neither is a meter that reaches the solar only through one. `get` returns the
+same judgement as `solar_holds`, so the panel offers the mark only where it can pass.
+The panel's sum dialog sends the other sums to *Solar feeds in here …* and checks its
+members with `daily_check` on demand, once per member and dialog (a periodic member
+blocks the sum). The backend does not check members for periodic meters by design: the
+check reads the recorder and gives a preselection with evidence, which is the panel's to
+show. When the request fails or is cancelled, every sum it made is removed again
+(shielded; one that cannot be removed is logged and the others still go).
 
 ### Hints
 

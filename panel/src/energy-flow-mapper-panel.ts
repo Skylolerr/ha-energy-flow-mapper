@@ -172,7 +172,8 @@ type Dialog =
    * `replace` is false once the user unticks *Replace <device>*; `named` once
    * the user typed a name, which then stays when the members change.
    * `grossOk` are members that hold the solar which the user marked as gross
-   * meters already (consumption with their own solar).
+   * meters already (consumption with their own solar). `error` is why the
+   * last *Create* failed; the dialog stays open with it.
    */
   | {
       kind: "sum";
@@ -183,6 +184,7 @@ type Dialog =
       replace?: boolean;
       named?: boolean;
       grossOk?: string[];
+      error?: string;
     }
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" }
@@ -258,13 +260,19 @@ const GROUP_ERRORS: ReadonlySet<string> = new Set(["unknown_group", "group_paren
 const METER_STATE_CLASSES = ["total", "total_increasing"];
 
 /**
- * The on-demand check of a sum's members for periodic meters: `key` names
- * the members it is for; "unknown" when the check could not run.
+ * The on-demand check of an open sum dialog's members for periodic meters,
+ * per member (its evidence does not depend on the others): what was found,
+ * what could not be checked (`failed`) and what is being checked (`pending`).
  */
 interface SumCheck {
-  key: string;
-  status: "checking" | "done" | "unknown";
   evidence: Record<string, StatsEvidence>;
+  failed: string[];
+  pending: string[];
+}
+
+/** A check of nothing yet. */
+function emptySumCheck(): SumCheck {
+  return { evidence: {}, failed: [], pending: [] };
 }
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
@@ -501,7 +509,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _toolsOpen: boolean;
   declare _helpOpen: boolean;
   /** The check of the open sum dialog's members for periodic meters. */
-  declare _sumCheck: SumCheck | null;
+  declare _sumCheck: SumCheck;
 
   private _loading = false;
   /** Whether the kept draft was looked at; until then nothing is stored. */
@@ -510,8 +518,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _energyRequest = 0;
   /** Counts sum dialogs opened and dialogs closed; a late answer for an earlier one is dropped. */
   private _sumSession = 0;
-  /** Counts member checks asked for; a late answer for other members is dropped. */
-  private _sumCheckRequest = 0;
+  /** Counts sum dialogs checked; an answer for an earlier dialog is dropped. */
+  private _sumCheckSession = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   /** The diagram follows the viewport size until the user zooms or pans. */
@@ -557,7 +565,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._selectMode = false;
     this._toolsOpen = false;
     this._helpOpen = false;
-    this._sumCheck = null;
+    this._sumCheck = emptySumCheck();
   }
 
   /** Ctrl+Z (Cmd+Z) takes back the last change of the draft, outside text fields. */
@@ -605,9 +613,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     // The members of an open sum are checked for periodic meters, again when they change.
     if (this._dialog?.kind === "sum") {
       const { all } = this._sumMembers(this._dialog);
-      const key = JSON.stringify([this._tab, all]);
-      if (this._sumCheck?.key !== key && all.length > 0 && this._sumSolar(all, this._dialog.grossOk) === null) {
-        void this._checkSum(all, key);
+      const { evidence, failed, pending } = this._sumCheck;
+      const missing = all.filter((stat) => !(stat in evidence) && !failed.includes(stat) && !pending.includes(stat));
+      if (missing.length > 0 && this._sumSolar(all, this._dialog.grossOk) === null) {
+        void this._checkSum(missing);
       }
     }
     // Selected blocks the draft no longer has (undo, removed) leave the selection.
@@ -1996,8 +2005,7 @@ export class EnergyFlowMapperPanel extends LitElement {
    */
   _openSum(from: { group: string } | { origin: string }): void {
     this._sumSession++;
-    this._sumCheckRequest++;
-    this._sumCheck = null;
+    this._resetSumCheck();
     this._setSum(
       "group" in from
         ? { kind: "sum", group: from.group, origin: null, added: [], picking: false }
@@ -2010,7 +2018,9 @@ export class EnergyFlowMapperPanel extends LitElement {
    * follows the members: the user-set name of the device the sum replaces,
    * else «<group or device> Energy» (water: «… Water»).
    */
-  private _setSum(dialog: SumDialog): void {
+  private _setSum(changed: SumDialog): void {
+    const dialog = { ...changed };
+    delete dialog.error;
     this._dialog = dialog;
     if (dialog.named) {
       return;
@@ -2126,76 +2136,93 @@ export class EnergyFlowMapperPanel extends LitElement {
     return devices.length === 1 && all.some((stat) => sources.has(stat)) ? devices[0] : null;
   }
 
-  /** The solar sources of the draft, and the one whose meter or power sensor `stat` is. */
-  private _solarOf(stat: string): Source | undefined {
-    return this.draftSources.find(
-      (s) =>
-        s.type === "solar" &&
-        typeof s.stat_energy_from === "string" &&
-        (s.stat_energy_from === stat || (typeof s.stat_rate === "string" && s.stat_rate === stat)),
-    );
-  }
-
-  /** Whether `stat` is a solar source's meter. */
+  /** Whether `stat` is the meter of a solar source of the draft. */
   private _isSolarMeter(stat: string): boolean {
     return this.draftSources.some((s) => s.type === "solar" && s.stat_energy_from === stat);
   }
 
   /**
-   * The members whose meter already holds a solar's meter or power sensor
-   * (from `inputs`), except the gross meters the setup made: those count
-   * consumption with their own solar and sum like any meter.
+   * The members that are the meter of a saved solar source the draft no
+   * longer has: the backend still sees the solar there, so save first.
    */
-  private _sumHolders(all: string[]): string[] {
-    const inputs = this._snapshot?.inputs ?? {};
-    const ours = new Set(this._snapshot?.gross_meters ?? []);
-    return all.filter(
-      (stat) =>
-        !this._isSolarMeter(stat) && !ours.has(stat) && (inputs[stat] ?? []).some((input) => this._solarOf(input)),
+  private _sumSaveFirst(all: string[]): string[] {
+    const saved = (this._snapshot?.prefs.energy_sources ?? [])
+      .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string")
+      .map((s) => s.stat_energy_from as string);
+    return all.filter((stat) => saved.includes(stat) && !this._isSolarMeter(stat));
+  }
+
+  /**
+   * Whether the member `stat` is a solar or part of one: a solar source's
+   * meter in the draft, or what the backend judged so (`solar_holds`: made
+   * only of the solar, an inverter of it, a solar term of the setup).
+   */
+  private _isSolarMember(stat: string): boolean {
+    return (
+      this._isSolarMeter(stat) ||
+      (this._snapshot?.solar_holds?.[stat] === "solar" && !this._sumSaveFirst([stat]).length)
     );
   }
 
   /**
+   * The members that hold a solar besides what they count themselves, as the
+   * backend judged them (`solar_holds`, also with unknown signs). The setup's
+   * own gross meters are not among them: they sum like any meter.
+   */
+  private _sumHolders(all: string[]): string[] {
+    return all.filter((stat) => this._snapshot?.solar_holds?.[stat] === "holder");
+  }
+
+  /**
    * What makes a sum a gross meter of a circuit with a solar, which only the
-   * guided setup builds: members that are a solar source's meter (`solars`,
+   * guided setup builds: members that are a solar or part of one (`solars`,
    * never allowed), members that hold a solar and are not marked as gross
-   * meters (`holders`, see `_sumHolders`; `grossOk` are the marked ones),
-   * and the other members that are devices. Null when the sum has no solar.
+   * meters (`holders`; `grossOk` are the marked ones), and the other members
+   * that are devices. `solar` is the solar source for the setup, if it is
+   * clear. Null when the sum has no solar.
    */
   private _sumSolar(
     all: string[],
     grossOk: string[] = [],
-  ): { solars: string[]; holders: string[]; devices: string[]; solar: string } | null {
-    const inputs = this._snapshot?.inputs ?? {};
-    const solars = all.filter((stat) => this._isSolarMeter(stat));
+  ): { solars: string[]; holders: string[]; devices: string[]; solar?: string } | null {
+    const solars = all.filter((stat) => this._isSolarMember(stat));
     const holders = this._sumHolders(all).filter((stat) => !grossOk.includes(stat));
     if (solars.length === 0 && holders.length === 0) {
       return null;
     }
     const devices = all.filter(
       (stat) =>
-        !this._isSolarMeter(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
+        !solars.includes(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
     );
-    const solar =
-      solars[0] ?? (inputs[holders[0]] ?? []).map((input) => this._solarOf(input)?.stat_energy_from).find(Boolean);
-    return { solars, holders, devices, solar: solar ?? "" };
+    const sources = this.draftSources
+      .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string")
+      .map((s) => s.stat_energy_from as string);
+    const solar = solars.find((stat) => sources.includes(stat)) ?? (sources.length === 1 ? sources[0] : undefined);
+    return { solars, holders, devices, ...(solar ? { solar } : {}) };
+  }
+
+  /** A new sum dialog: nothing checked yet, and late answers are dropped. */
+  private _resetSumCheck(): void {
+    this._sumCheckSession++;
+    this._sumCheck = emptySumCheck();
   }
 
   /**
-   * Check the members of a sum for periodic meters (saved or only in the
-   * draft), with the draft's power sensors of the devices to explain their
-   * falls. A failed request counts as unknown; an answer for other members
-   * than now is dropped.
+   * Check `stats` (members of the open sum, saved or only in the draft) for
+   * periodic meters, with the draft's power sensors of the devices to explain
+   * their falls. A failed request leaves them unchecked (`failed`); a member
+   * the answer leaves out has no evidence. An answer for an earlier dialog
+   * is dropped.
    */
-  async _checkSum(all: string[], key: string): Promise<void> {
+  async _checkSum(stats: string[]): Promise<void> {
     if (!this.hass) {
       return;
     }
-    const request = ++this._sumCheckRequest;
-    this._sumCheck = { key, status: "checking", evidence: {} };
+    const session = this._sumCheckSession;
+    this._sumCheck = { ...this._sumCheck, pending: [...this._sumCheck.pending, ...stats] };
     const power: Record<string, string> = {};
     if (this._tab === "electricity") {
-      for (const stat of all) {
+      for (const stat of stats) {
         const rate = this.draft.find((d) => d.stat_consumption === stat)?.stat_rate;
         if (typeof rate === "string" && rate !== "") {
           power[stat] = rate;
@@ -2206,38 +2233,58 @@ export class EnergyFlowMapperPanel extends LitElement {
     try {
       result = await this.hass.callWS<DailyCheckResult>({
         type: `${DOMAIN}/daily_check`,
-        stats: all,
+        stats,
         ...(Object.keys(power).length ? { power } : {}),
       });
     } catch {
       result = null;
     }
-    if (request !== this._sumCheckRequest) {
+    if (session !== this._sumCheckSession) {
       return;
     }
-    this._sumCheck =
-      result && !result.unknown
-        ? { key, status: "done", evidence: result.evidence ?? {} }
-        : { key, status: "unknown", evidence: {} };
+    const check = this._sumCheck;
+    const pending = check.pending.filter((stat) => !stats.includes(stat));
+    if (result === null || result === undefined || result.unknown) {
+      this._sumCheck = { ...check, pending, failed: [...check.failed, ...stats] };
+      return;
+    }
+    const none: StatsEvidence = {
+      periodic: null,
+      certain: false,
+      reason: null,
+      drops: [],
+      went_negative: false,
+      series: [],
+    };
+    const found = Object.fromEntries(stats.map((stat) => [stat, result.evidence?.[stat] ?? none]));
+    this._sumCheck = { ...check, pending, evidence: { ...check.evidence, ...found } };
   }
 
   /**
    * The members that start again at 0 now and then, each with its evidence:
-   * from the check of the members, or (while it could not run) from the
-   * check of the last load.
+   * from the check of the members, or, where it found nothing or could not
+   * run, from the check of the last load (`daily_reset`).
    */
   private _sumPeriodic(all: string[]): { stat: string; evidence: string }[] {
     const check = this._sumCheck;
     const found: { stat: string; evidence: string }[] = [];
     for (const stat of all) {
-      const evidence = check?.status === "done" ? check.evidence[stat] : undefined;
+      const evidence = check.evidence[stat];
+      const known = evidence !== undefined && evidence.periodic !== null;
       if (evidence?.periodic === true) {
         found.push({ stat, evidence: evidenceText(this.hass, evidence, this._info(stat)?.unit ?? null) });
-      } else if (check?.status === "unknown" && this._info(stat)?.daily_reset === true) {
+      } else if (!known && (evidence !== undefined || check.failed.includes(stat)) && this._info(stat)?.daily_reset) {
         found.push({ stat, evidence: this._t("evidence_statistics") });
       }
     }
     return found;
+  }
+
+  /** The members the check found nothing about («nicht geprüft»), unless the last load knew. */
+  private _sumUnchecked(all: string[]): string[] {
+    return all.filter(
+      (stat) => this._sumCheck.evidence[stat]?.periodic === null && this._info(stat)?.daily_reset !== true,
+    );
   }
 
   /** «Kitchen Power» for the meter «Kitchen Energy» (water: «… Flow»). */
@@ -2307,6 +2354,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const tab = this._tab;
     const deviceKind = this._deviceKind();
     const kind = this._kind();
+    const session = this._sumSession;
     this._busy = true;
     try {
       const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
@@ -2342,8 +2390,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       this._showToast(this._t("sum_created", { name }));
     } catch (err) {
-      this._dialog = null;
-      await this._handleError(err);
+      // Nothing was created: the dialog stays with the reason, the input kept.
+      const open = this._dialog;
+      if (open?.kind === "sum" && this._sumSession === session) {
+        this._dialog = { ...open, error: this._errorText(err) };
+      } else {
+        await this._handleError(err);
+      }
     } finally {
       this._busy = false;
     }
@@ -4439,8 +4492,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _close(): void {
     this._sumSession++;
     // A sum opened again checks its members again.
-    this._sumCheckRequest++;
-    this._sumCheck = null;
+    this._resetSumCheck();
     this._dialog = null;
   }
 
@@ -4475,14 +4527,18 @@ export class EnergyFlowMapperPanel extends LitElement {
     const blocked = [...reasons.values()].some((reason) => reason !== null);
     const grossOk = dialog.grossOk ?? [];
     const holders = this._sumHolders(all);
+    const saveFirst = this._sumSaveFirst(all);
     const solar = this._sumSolar(all, grossOk);
     const mixed = !blocked && solar === null && this._sumStateClasses(all).size > 1;
     const name = this._renameValue.trim();
     const { rates, missing, blockedBySource } = this._sumRates(all);
     const replaceable = solar === null ? this._sumReplaceable(all) : null;
-    const check = solar === null && this._sumCheck?.key === JSON.stringify([this._tab, all]) ? this._sumCheck : null;
-    const checking = solar === null && all.length > 0 && (check === null || check.status === "checking");
-    const periodic = solar === null ? this._sumPeriodic(all) : [];
+    const check = this._sumCheck;
+    const checked = solar === null;
+    const checking = checked && all.some((stat) => !(stat in check.evidence) && !check.failed.includes(stat));
+    const failed = checked && all.some((stat) => check.failed.includes(stat));
+    const periodic = checked ? this._sumPeriodic(all) : [];
+    const unchecked = checked ? this._sumUnchecked(all) : [];
     const water = tabKind(this._tab) === "water";
     const update = (added: string[], picking: boolean) => this._setSum({ ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
@@ -4497,7 +4553,15 @@ export class EnergyFlowMapperPanel extends LitElement {
             ? this._t("sum_checking")
             : null;
     const disabled =
-      !name || all.length === 0 || blocked || mixed || solar !== null || checking || periodic.length > 0 || this._busy;
+      !name ||
+      all.length === 0 ||
+      blocked ||
+      mixed ||
+      solar !== null ||
+      saveFirst.length > 0 ||
+      checking ||
+      periodic.length > 0 ||
+      this._busy;
     return html`<h2>${this._t("sum_create")}</h2>
       <label
         >${this._t("name_label")}
@@ -4525,6 +4589,9 @@ export class EnergyFlowMapperPanel extends LitElement {
             <div class="candidate-text">
               <span class="node-name">${label}</span>
               ${reason ? html`<span class="sub warning">${reason}</span>` : nothing}
+              ${unchecked.includes(stat)
+                ? html`<span class="sub warning sum-member-unchecked">${this._t("sum_member_unchecked")}</span>`
+                : nothing}
               ${holders.includes(stat)
                 ? html`<label class="check sum-gross-ok">
                     <input
@@ -4556,8 +4623,13 @@ export class EnergyFlowMapperPanel extends LitElement {
         })}
       </ul>
       ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
+      ${saveFirst.length
+        ? html`<p class="warning sum-solar-save-first">
+            ${this._t("sum_solar_save_first", { names: saveFirst.map((stat) => this._name(stat)).join(", ") })}
+          </p>`
+        : nothing}
       ${solar !== null ? this._renderSumSolar(solar) : nothing}
-      ${mixed ? html`<p class="warning sum-mixed">${this._t("error_sum_state_classes_differ")}</p>` : nothing}
+      ${mixed ? this._renderSumMixed(all) : nothing}
       ${periodic.length
         ? html`<div class="warning sum-periodic">
             <p>${this._t("sum_periodic")}</p>
@@ -4567,11 +4639,19 @@ export class EnergyFlowMapperPanel extends LitElement {
                   html`<li>${this._t("sum_periodic_member", { name: this._name(stat), evidence })}</li>`,
               )}
             </ul>
+            <p>${this._t("sum_periodic_way")}</p>
+            ${this._tab === "electricity" && this._hasSolar() ? html`<p>${this._t("sum_periodic_solar")}</p>` : nothing}
           </div>`
         : nothing}
-      ${check?.status === "unknown"
+      ${failed
         ? html`<p class="hint warning sum-unchecked">${this._t("sum_check_unknown")}</p>
-            <button class="sum-recheck" @click=${() => (this._sumCheck = null)}>${this._t("sum_check_retry")}</button>`
+            <button
+              class="sum-recheck"
+              ?disabled=${this._busy}
+              @click=${() => (this._sumCheck = { ...this._sumCheck, failed: [] })}
+            >
+              ${this._t("sum_check_retry")}
+            </button>`
         : nothing}
       ${dialog.picking
         ? options.length
@@ -4619,6 +4699,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                     </p>`
                   : nothing}`
         : nothing}
+      ${dialog.error ? html`<p class="warning sum-error">${dialog.error}</p>` : nothing}
       ${why ? html`<p class="hint sum-why">${why}</p>` : nothing}
       <div class="dialog-actions">
         <button @click=${() => this._close()}>${this._t("cancel")}</button>
@@ -4629,23 +4710,50 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * Why a sum with a solar is not built, and the way on: the setup for the
-   * only device of the sum; with a meter that holds the solar, which one;
-   * otherwise build the devices' sum first.
+   * Why a sum with a solar is not built, and the way on: which members are a
+   * solar or part of one, which hold one (they can be marked as gross meters),
+   * and a setup button for each device of the sum that is no solar holder;
+   * with several, the gross meter stays a device of its own.
    */
   private _renderSumSolar(solar: NonNullable<ReturnType<EnergyFlowMapperPanel["_sumSolar"]>>): TemplateResult {
-    const { holders, devices } = solar;
-    const device = holders.length === 0 && devices.length === 1 ? devices[0] : null;
-    return html`<p class="warning sum-solar">${this._t("sum_solar_use_setup")}</p>
+    const { solars, holders, devices } = solar;
+    const names = (stats: string[]) => stats.map((stat) => this._name(stat)).join(", ");
+    return html`${solars.length
+        ? html`<p class="warning sum-solar-is">${this._t("sum_solar_is", { names: names(solars) })}</p>`
+        : nothing}
+      <p class="warning sum-solar">${this._t("sum_solar_use_setup")}</p>
       ${holders.length
-        ? html`<p class="hint sum-solar-holders">
-            ${this._t("sum_solar_holders", { names: holders.map((stat) => this._name(stat)).join(", ") })}
-          </p>`
-        : device !== null
-          ? html`<button class="sum-solar-setup" @click=${() => this._openSolarSetup(device, solar.solar)}>
-              ${this._t("sum_solar_open_setup", { name: this._name(device, this.draft) })}
-            </button>`
-          : html`<p class="hint sum-solar-one-device">${this._t("sum_solar_one_device")}</p>`}`;
+        ? html`<p class="hint sum-solar-holders">${this._t("sum_solar_holders", { names: names(holders) })}</p>`
+        : nothing}
+      ${solars.length === 0
+        ? nothing
+        : devices.length === 0
+          ? html`<p class="hint sum-solar-no-device">${this._t("sum_solar_no_device")}</p>`
+          : html`${devices.length > 1
+                ? html`<p class="hint sum-solar-one-device">${this._t("sum_solar_one_device")}</p>`
+                : nothing}
+              ${devices.map(
+                (device) =>
+                  html`<button class="sum-solar-setup" @click=${() => this._openSolarSetup(device, solar.solar)}>
+                    ${this._t("sum_solar_open_setup", { name: this._name(device, this.draft) })}
+                  </button>`,
+              )}`}`;
+  }
+
+  /**
+   * Why members with different state classes cannot be summed: each one's
+   * class, and with a meter that counts total (a gross or net meter) what to
+   * do instead.
+   */
+  private _renderSumMixed(all: string[]): TemplateResult {
+    const classOf = (stat: string) => String(this.hass?.states[stat]?.attributes.state_class);
+    const list = all.map((stat) => `${this._name(stat)}: ${classOf(stat)}`).join(", ");
+    return html`<p class="warning sum-mixed">
+        ${this._t("error_sum_state_classes_differ")} ${this._t("sum_state_class_list", { list })}
+      </p>
+      ${all.some((stat) => classOf(stat) === "total")
+        ? html`<p class="hint sum-mixed-total">${this._t("sum_mixed_total")}</p>`
+        : nothing}`;
   }
 
   /**

@@ -115,11 +115,11 @@ from .models import EnergyFlowMapperData
 from .solar_setup import Choices, Role, async_create, async_plan
 from .stats_probe import async_probe
 from .sum_meter import (
+    SolarHolds,
     async_create_sums,
     check_no_solar,
     check_rate_members,
     check_sum_members,
-    gross_meter_stats,
 )
 from .transfer import InvalidImportError, build_export, parse_import
 
@@ -418,9 +418,9 @@ async def websocket_get(
     candidates carry `contained_in`, the meter of the settings that holds
     them already. `inputs` maps a meter (of devices, sources and electricity
     and water candidates) to what it counts with a plus sign, for the
-    panel's `countedTwice`. `gross_meters` are the gross energy meters the
-    solar setup made (a sum may hold them). `hints` are the hints of devices
-    and sources (see `hints`).
+    panel's `countedTwice`. `solar_holds` names the meters among them that
+    are the solar ("solar") or hold it ("holder"), as `create_sum_meter`
+    judges them. `hints` are the hints of devices and sources (see `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -454,6 +454,8 @@ async def websocket_get(
     mark_daily_reset(meters, daily)
     issues = _checked_issues(hass, prefs, cache)
     validation = await energy_access.async_validation(hass)
+    # The meters the draft may use: of devices and sources, and free ones.
+    in_answer = sorted(meter_stats(prefs) | {c["stat"] for c in [*candidates, *water]})
     connection.send_result(
         msg["id"],
         {
@@ -482,11 +484,9 @@ async def websocket_get(
             "hints": await async_hints(
                 hass, prefs, stats, daily, Readings(counted, watched)
             ),
-            "gross_meters": sorted(gross_meter_stats(hass, runtime.helpers)),
-            "inputs": counted_inputs(
-                hass,
-                sorted(meter_stats(prefs) | {c["stat"] for c in [*candidates, *water]}),
-                cache,
+            "inputs": counted_inputs(hass, in_answer, cache),
+            "solar_holds": SolarHolds(hass, prefs, runtime.helpers, cache).holds(
+                in_answer
             ),
         },
     )
@@ -766,16 +766,10 @@ async def websocket_create_sum_meter(
     check_rate_members(hass, msg.get("rate_entity_ids", []))
     prefs = await energy_access.async_get_prefs(hass)
     check_no_solar(
-        hass,
+        SolarHolds(hass, prefs, runtime.helpers),
         msg["entity_ids"],
-        {
-            stat
-            for source in prefs.get(KEY_SOURCES, [])
-            if source.get("type") == "solar"
-            for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
-            if stat
-        },
-        gross_meter_stats(hass, runtime.helpers) | set(msg["gross_ok"]),
+        msg.get("rate_entity_ids", []),
+        msg["gross_ok"],
     )
     suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
     entity_id, stat_rate = await async_create_sums(

@@ -8,20 +8,29 @@ unit from its members and converts members of one device class to one unit.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection
+import logging
+from collections.abc import Collection, Mapping
+from typing import Any, Final, Literal
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import ATTR_DEVICE_CLASS, CONF_ENTITIES, CONF_NAME, CONF_TYPE
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import entity_registry as er
 
 from ._flow import async_run_helper_flow
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
-from .hierarchy import DeviceKind
-from .meter_inputs import Cache, counted_inputs
-from .solar_setup import KIND_GROSS_ENERGY
+from .hierarchy import KEY_SOURCES, DeviceKind
+from .meter_inputs import MAX_DEPTH, Cache, direct_inputs, meter_inputs
+from .solar_setup import (
+    KIND_GROSS_ENERGY,
+    KIND_SOLAR_ENERGY,
+    KIND_SOLAR_POWER,
+    energy_or_power,
+)
+
+_LOGGER = logging.getLogger(__name__)
 
 GROUP_DOMAIN = "group"
 CONF_HIDE_MEMBERS = "hide_members"
@@ -79,45 +88,155 @@ def check_sum_members(
         )
 
 
-@callback
-def gross_meter_stats(hass: HomeAssistant, helpers: CreatedHelpers) -> set[str]:
-    """Return the gross energy meters the solar setup made (from their records)."""
+SOLAR: Final = "solar"
+HOLDER: Final = "holder"
+type SolarHold = Literal["solar", "holder"]
+
+
+def _recorded(
+    hass: HomeAssistant, helpers: CreatedHelpers, kinds: Collection[str]
+) -> set[str]:
+    """Return the entities of our helpers whose record kind is in `kinds`."""
     registry = er.async_get(hass)
     return {
         entry.entity_id
         for entry_id, record in helpers.records().items()
-        if record.get("kind") == KIND_GROSS_ENERGY
+        if record.get("kind") in kinds
         for entry in er.async_entries_for_config_entry(registry, entry_id)
     }
 
 
+class SolarHolds:
+    """Which meters are a solar, or hold one, for a sum (saved settings).
+
+    The solar is every saved solar source's statistic and power sensor, what
+    they are made of (energy and power sensors only, e.g. the inverters of a
+    solar that is a sum), and the solar terms of the setup. A meter is the
+    solar (`SOLAR`) when it is one of those or made only of them, at any
+    level: no mark lets it into a sum. It holds the solar (`HOLDER`) when one
+    of its inputs is the solar, without the subtracted ones where the signs
+    are known; with unknown signs (`expand(`, a max group) every input
+    counts. A gross meter of the setup that still reads something besides
+    the solar is neither, and a solar reached only through one makes no
+    holder.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        prefs: Mapping[str, Any],
+        helpers: CreatedHelpers,
+        cache: Cache | None = None,
+    ) -> None:
+        """Read the solar of the saved settings and of our recorded helpers."""
+        self._hass = hass
+        self._cache: Cache = {} if cache is None else cache
+        own = {
+            stat
+            for source in prefs.get(KEY_SOURCES, [])
+            if source.get("type") == "solar"
+            for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
+            if isinstance(stat, str) and stat
+        }
+        made_of = {
+            entity
+            for stat in own
+            for entity in meter_inputs(hass, stat, self._cache)["entities"]
+            if energy_or_power(hass, entity)
+        }
+        terms = _recorded(hass, helpers, (KIND_SOLAR_ENERGY, KIND_SOLAR_POWER))
+        self.solar = own | made_of | terms
+        self._gross = {
+            entity
+            for entity in _recorded(hass, helpers, (KIND_GROSS_ENERGY,))
+            if not self.is_solar(entity)
+        }
+
+    def is_solar(self, entity: str, depth: int = 0) -> bool:
+        """Return True if `entity` is the solar or made only of it."""
+        if entity in self.solar:
+            return True
+        if depth >= MAX_DEPTH:
+            return False
+        inputs = direct_inputs(self._hass, entity, self._cache)
+        return bool(inputs) and all(self.is_solar(x, depth + 1) for x in inputs)
+
+    def hold(self, entity: str) -> SolarHold | None:
+        """Return how the meter `entity` relates to the solar; None: not at all."""
+        if not self.solar:
+            return None
+        if self.is_solar(entity):
+            return SOLAR
+        if entity in self._gross:
+            return None
+        inputs = meter_inputs(self._hass, entity, self._cache)
+        reach = inputs["entities"]
+        if inputs["signed_known"]:
+            reach = reach - inputs["subtracted"]
+        for gross in reach & self._gross:
+            reach = reach - meter_inputs(self._hass, gross, self._cache)["entities"]
+        if reach & self.solar or (
+            not inputs["signed_known"] and self._reaches_solar(entity)
+        ):
+            return HOLDER
+        return None
+
+    def _reaches_solar(self, entity: str) -> bool:
+        """Return True if the solar is among the inputs of `entity`, at any depth.
+
+        For meters whose inputs `meter_inputs` could not read in full (too
+        deep): every level, with a guard against cycles, not into our gross
+        meters.
+        """
+        seen = {entity}
+        todo = [entity]
+        while todo:
+            for found in direct_inputs(self._hass, todo.pop(), self._cache):
+                if found in self.solar:
+                    return True
+                if found not in seen and found not in self._gross:
+                    seen.add(found)
+                    todo.append(found)
+        return False
+
+    def holds(self, entities: Collection[str]) -> dict[str, SolarHold]:
+        """Return the meters of `entities` that are the solar or hold it."""
+        return {
+            entity: hold
+            for entity in entities
+            if (hold := self.hold(entity)) is not None
+        }
+
+
+def _with_solar(entity: str) -> ServiceValidationError:
+    return ServiceValidationError(
+        translation_domain=DOMAIN,
+        translation_key="sum_with_solar",
+        translation_placeholders={"entity": entity},
+    )
+
+
 def check_no_solar(
-    hass: HomeAssistant,
+    holds: SolarHolds,
     entity_ids: list[str],
-    solar: Collection[str],
-    gross: Collection[str] = (),
+    rate_entity_ids: list[str],
+    gross_ok: Collection[str] = (),
 ) -> None:
-    """Raise if a member is a solar meter or holds one (`solar`: its stats and powers).
+    """Raise if a member is the solar, or holds it and is not in `gross_ok`.
 
     A group sum adds its members without knowing how a circuit meter counts,
     so a gross meter of a circuit with a solar is left to the guided setup.
-    `gross` are members known to be gross meters already (consumption with
-    their own solar: ours, or marked so by the user); they may hold a solar.
-    A solar's own stat or power never passes.
+    `gross_ok` are members the user says are gross meters already
+    (consumption with their own solar). The solar itself never passes, and
+    neither does its power as a rate member.
     """
-    cache: Cache = {}
     for entity_id in entity_ids:
-        if entity_id in solar or (
-            entity_id not in gross
-            and set(
-                counted_inputs(hass, [entity_id], cache).get(entity_id, [])
-            ).intersection(solar)
-        ):
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="sum_with_solar",
-                translation_placeholders={"entity": entity_id},
-            )
+        hold = holds.hold(entity_id)
+        if hold == SOLAR or (hold == HOLDER and entity_id not in gross_ok):
+            raise _with_solar(entity_id)
+    for entity_id in rate_entity_ids:
+        if holds.solar and holds.is_solar(entity_id):
+            raise _with_solar(entity_id)
 
 
 async def async_create_sum(
@@ -160,10 +279,17 @@ async def async_create_sum(
 async def _async_undo(
     hass: HomeAssistant, helpers: CreatedHelpers, entry_ids: list[str]
 ) -> None:
-    """Remove the sums of a failed request again and forget them."""
+    """Remove the sums of a failed request again and forget them.
+
+    Each one on its own: one that cannot be removed is logged and kept (with
+    its record), the others are still removed.
+    """
     for entry_id in entry_ids:
-        await hass.config_entries.async_remove(entry_id)
-        await helpers.async_discard(entry_id)
+        try:
+            await hass.config_entries.async_remove(entry_id)
+            await helpers.async_discard(entry_id)
+        except Exception:
+            _LOGGER.exception("Sum helper %s could not be removed", entry_id)
 
 
 async def async_create_sums(  # noqa: PLR0913

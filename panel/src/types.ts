@@ -233,8 +233,11 @@ export interface Snapshot {
   dismissed_hints?: DismissedHint[];
   /** Per meter (devices, sources, free meters), what it counts with a plus sign. */
   inputs?: Record<string, string[]>;
-  /** The gross energy meters the solar setup made; a sum may hold them. */
-  gross_meters?: string[];
+  /**
+   * The meters (as `inputs`) that are a solar or part of one ("solar"), or
+   * hold one ("holder"), judged on the saved settings as `create_sum_meter` does.
+   */
+  solar_holds?: Record<string, "solar" | "holder">;
 }
 
 /** Device changes name their list; without `kind` they change electricity. */

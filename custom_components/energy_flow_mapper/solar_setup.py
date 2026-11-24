@@ -439,10 +439,10 @@ def _holds_solar(
     made_of: set[str] = set()
     for entity in own:
         made_of |= meter_inputs(hass, entity, cache)["entities"]
-    return any(_energy_or_power(hass, entity) for entity in held & made_of)
+    return any(energy_or_power(hass, entity) for entity in held & made_of)
 
 
-def _energy_or_power(hass: HomeAssistant, entity_id: str) -> bool:
+def energy_or_power(hass: HomeAssistant, entity_id: str) -> bool:
     """Return True for a sensor in an energy or power unit or of that class."""
     if not entity_id.startswith("sensor."):
         return False
