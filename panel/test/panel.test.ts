@@ -5663,6 +5663,90 @@ describe("hints and solar setup", () => {
     expect(el._toast).toContain("Gross meter “Server & co gross” created");
   });
 
+  it("a late setup result leaves a dialog opened since alone", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    await openSetup(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    // Rename another device while the helpers are still being created.
+    node(el, "sensor.tv").querySelector<HTMLButtonElement>('button[aria-label^="Actions"]')!.click();
+    await settle(el);
+    buttonWith(el, "Rename").click();
+    await settle(el);
+    const input = root(el).querySelector<HTMLInputElement>('dialog input[type="text"]')!;
+    input.value = "Telly";
+    input.dispatchEvent(new Event("input"));
+    await settle(el);
+    resolve({ entity_id: "sensor.server_gross", stat_rate: "sensor.server_gross_power" });
+    await settle(el);
+    expect(el._changes).toContainEqual({ type: "remove", stat: "sensor.server" });
+    expect(el._dialog).toMatchObject({ kind: "rename", stat: "sensor.tv" });
+    expect(root(el).querySelector<HTMLInputElement>('dialog input[type="text"]')!.value).toBe("Telly");
+    buttonWith(el, "OK").click();
+    await settle(el);
+    expect(el._changes).toContainEqual({ type: "rename", stat: "sensor.tv", name: "Telly" });
+  });
+
+  it.each(["gas", "water"])("a late setup result is applied to electricity while the %s tab shows", async (tab) => {
+    const snap = solarSnapshot();
+    snap.groups = {
+      electricity: [{ id: "g1", name: "Rack", parent: null, group: null, members: ["sensor.server"] }],
+    };
+    const mock = hintMock(snap);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    // The server is in a folded group: its setup opens as from its ⋮.
+    el._openSolarSetup("sensor.server");
+    await settle(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>(`.tabs button[data-tab="${tab}"]`)!.click();
+    await settle(el);
+    resolve({ entity_id: "sensor.server_gross", stat_rate: "sensor.server_gross_power" });
+    await settle(el);
+    expect(el._changes).toContainEqual({ type: "remove", stat: "sensor.server" });
+    expect(el._changes).toContainEqual({ type: "set_group", stat: "sensor.server_gross", group: "g1" });
+    expect(el.draftOf("electricity").map((d) => d.stat_consumption)).toContain("sensor.server_gross");
+    expect(el.groupsOf("electricity")[0].members).toContain("sensor.server_gross");
+    expect(el._toast).toContain("it takes the place of Server & co");
+    // The new meter is selected on its own tab, not on the one shown.
+    expect(el._selected).toBeNull();
+  });
+
+  it("a late sum or meter result leaves a dialog opened since alone", async () => {
+    const mock = hintMock();
+    let resolveSum: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_sum_meter"] = () => new Promise((r) => (resolveSum = r));
+    let resolveMeter: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_integral"] = () => new Promise((r) => (resolveMeter = r));
+    const el = await mount(mock);
+    el._openSum({ origin: "sensor.tv" });
+    await settle(el);
+    const sum = el._createSum(el._dialog as Parameters<typeof el._createSum>[0]);
+    el._dialog = { kind: "integral", stat: "sensor.printer_power" };
+    const meter = el._createMeter("sensor.printer_power");
+    el._dialog = { kind: "rename", stat: "sensor.tv" };
+    await settle(el);
+    resolveSum({ entity_id: "sensor.tv_sum", stat_rate: null });
+    resolveMeter({ entity_id: "sensor.printer_energy", stat_rate: "sensor.printer_power" });
+    await sum;
+    await meter;
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "rename", stat: "sensor.tv" });
+    expect(el._changes.some((c) => c.type === "add" && c.stat === "sensor.tv_sum")).toBe(true);
+    expect(el._changes.some((c) => c.type === "add" && c.stat === "sensor.printer_energy")).toBe(true);
+  });
+
   it("setup that fails keeps the dialog open", async () => {
     const mock = hintMock();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();

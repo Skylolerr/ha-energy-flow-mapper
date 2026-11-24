@@ -2054,6 +2054,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     const name = this._meterName(stat);
+    const tab = this._tab;
+    // Only this meter's dialog closes, not one opened while it was created.
+    const closeOwn = () => {
+      if (this._dialog?.kind === "integral" && this._dialog.stat === stat) {
+        this._dialog = null;
+      }
+    };
     this._busy = true;
     try {
       const result = await this.hass.callWS<{ entity_id: string; stat_rate: string; kind?: DeviceKind }>({
@@ -2061,7 +2068,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         power_entity_id: stat,
         name,
       });
-      this._dialog = null;
+      closeOwn();
       await this._load();
       this._change({
         type: "add",
@@ -2070,10 +2077,12 @@ export class EnergyFlowMapperPanel extends LitElement {
         stat_rate: result.stat_rate,
         ...(result.kind === "water" ? { kind: "water" as const } : {}),
       });
-      this._selected = result.entity_id;
+      if (this._tab === tab) {
+        this._selected = result.entity_id;
+      }
       this._showToast(this._t("meter_created", { name }));
     } catch (err) {
-      this._dialog = null;
+      closeOwn();
       await this._handleError(err);
     } finally {
       this._busy = false;
@@ -2582,7 +2591,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         ...(rates.length ? { rate_entity_ids: rates, rate_name: this._sumRateName(name) } : {}),
         ...(grossOk.length ? { gross_ok: grossOk } : {}),
       });
-      this._dialog = null;
+      // Only this sum's dialog closes, not one opened while it was created.
+      if (this._dialog?.kind === "sum" && this._sumSession === session) {
+        this._dialog = null;
+      }
       await this._load();
       const stat = result.entity_id;
       const groupMoves = nested.map((id) => ({ type: "move_group" as const, id, parent: stat, ...kind }));
@@ -2698,21 +2710,35 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /**
    * The setup created its helpers: put the gross meter in the device's place
-   * in the draft (`_replace`, one undo step), with the gross power as its
-   * power sensor. The user saves as usual.
+   * in the draft (`_replaceSteps`, one undo step), with the gross power as its
+   * power sensor. The user saves as usual. The answer may come after the
+   * dialog was closed (Cancel or Escape while "Creating …"): it then closes
+   * no dialog opened since, only a setup of the same device, and the place
+   * is taken in the electricity list the setup was opened on, whichever tab
+   * shows now.
    */
-  private async _onSolarCreated(detail: SolarCreatedDetail): Promise<void> {
+  private async _onSolarCreated(dialog: SolarDialog, detail: SolarCreatedDetail): Promise<void> {
     const { stat, entity_id, stat_rate, name, old } = detail;
+    // The setup is only offered on the electricity tab; the tab cannot
+    // change while its dialog is open.
+    const deviceKind: DeviceKind = "electricity";
     this._busy = true;
     try {
-      this._dialog = null;
+      const open = this._dialog;
+      if (open === dialog || (open?.kind === "solar" && open.stat === stat)) {
+        this._dialog = null;
+      }
       await this._load();
-      const before = this._changes.length;
-      this._replace(stat, entity_id, stat_rate);
+      const groupOf = this.groupsOf(deviceKind).find((g) => g.members.includes(stat))?.id ?? null;
+      const changes = this._replaceSteps(stat, entity_id, stat_rate, groupOf, [], deviceKind);
+      if (changes.length) {
+        this._changeAll(changes);
+        if (this._tab === deviceKind) {
+          this._selected = entity_id;
+        }
+      }
       // The device may have left the draft meanwhile: then the meter is only created.
-      this._showToast(
-        this._t(this._changes.length > before ? "solar_setup_done" : "solar_setup_created_only", { name, old }),
-      );
+      this._showToast(this._t(changes.length ? "solar_setup_done" : "solar_setup_created_only", { name, old }));
     } catch (err) {
       await this._handleError(err);
     } finally {
@@ -5097,7 +5123,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         .localize=${this._localize}
         .context=${context}
         @close=${() => this._close()}
-        @created=${(e: CustomEvent<SolarCreatedDetail>) => void this._onSolarCreated(e.detail)}
+        @created=${(e: CustomEvent<SolarCreatedDetail>) => void this._onSolarCreated(dialog, e.detail)}
         @failed=${(e: CustomEvent<{ error: unknown }>) => void this._onSolarFailed(e.detail.error)}
         @set-solar-power=${(e: CustomEvent<{ solar: string; state: SolarSetupState }>) =>
           this._powerFromSetup(dialog, { kind: "source", stat: e.detail.solar, role: "production" }, e.detail.state)}
