@@ -492,4 +492,6 @@ export const en = {
   evidence_unchecked: "not checked – the statistics could not be read",
   solar_setup_daily_question: "{name}: does it start again at 0 every day?",
   solar_term_energy_name: "{name} energy",
+  solar_setup_power_not_kept: "The current power of {device} is not kept, because it is net. A live power cannot be added later; if you want one, set this up only once the circuit has fed in.",
+  solar_setup_unusable_power: "{entity}, the power sensor of {name}, is disabled or has no power unit that can be read.",
 };

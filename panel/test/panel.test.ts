@@ -5818,10 +5818,31 @@ describe("hints and solar setup", () => {
     });
     expect(methodRadio(el, "net").checked).toBe(true);
     expect(textInputs(el).find((i) => i.dataset.role === "energy")!.value).toBe("Kept gross");
-    // Cancel in the power dialog just closes it.
-    dialogButton(el, "Set power sensor of the solar")!.click();
+    // Cancel and Escape in the power dialog also go back, with nothing changed.
+    const before = el._changes.length;
+    for (const leave of ["cancel", "escape"]) {
+      dialogButton(el, "Set power sensor of the solar")!.click();
+      await settle(el);
+      expect(el._dialog).toMatchObject({ kind: "power" });
+      if (leave === "cancel") {
+        dialogButton(el, "Cancel")!.click();
+      } else {
+        const event = new Event("cancel", { cancelable: true });
+        dialogEl(el).dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+      }
+      await settle(el);
+      expect(el._dialog, leave).toMatchObject({ kind: "solar", stat: "sensor.server" });
+      expect(methodRadio(el, "net").checked, leave).toBe(true);
+      expect(textInputs(el).find((i) => i.dataset.role === "energy")!.value, leave).toBe("Kept gross");
+      expect(el._changes).toHaveLength(before);
+    }
+    // A power dialog opened elsewhere still just closes.
+    el._dialog = null;
     await settle(el);
-    dialogButton(el, "Cancel")!.click();
+    el._openPowerDialog({ kind: "device", stat: "sensor.tv" });
+    await settle(el);
+    dialogEl(el).dispatchEvent(new Event("cancel", { cancelable: true }));
     await settle(el);
     expect(el._dialog).toBeNull();
   });

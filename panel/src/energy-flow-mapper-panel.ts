@@ -4502,7 +4502,13 @@ export class EnergyFlowMapperPanel extends LitElement {
           this._dialog = null;
         }
       }}
-      @cancel=${() => {
+      @cancel=${(event: Event) => {
+        // A power dialog the setup opened goes back to the setup.
+        if (this._dialog?.kind === "power" && this._dialog.back) {
+          event.preventDefault();
+          this._dialog = this._dialog.back;
+          return;
+        }
         this._dialog = null;
       }}
     >
@@ -4873,7 +4879,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           )}`
         : this._renderPowerPicker(target.stat, dialog.first, label, (first) => update({ first }))}
       <div class="dialog-actions">
-        <button @click=${() => this._close()}>${this._t("cancel")}</button>
+        <button @click=${() => (dialog.back ? (this._dialog = dialog.back) : this._close())}>
+          ${this._t("cancel")}
+        </button>
         <button
           class="primary"
           ?disabled=${change === null}

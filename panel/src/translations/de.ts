@@ -494,4 +494,6 @@ export const de: Translations = {
   evidence_unchecked: "nicht geprüft – die Statistik konnte nicht gelesen werden",
   solar_setup_daily_question: "{name}: Fängt er täglich wieder bei 0 an?",
   solar_term_energy_name: "{name} Energie",
+  solar_setup_power_not_kept: "Die bisherige Leistung von {device} wird nicht übernommen, weil sie netto ist. Eine Live-Leistung lässt sich später nicht nachrüsten; willst du eine, richte das erst ein, wenn der Kreis einmal eingespeist hat.",
+  solar_setup_unusable_power: "{entity}, der Leistungssensor von {name}, ist deaktiviert oder hat keine lesbare Leistungseinheit.",
 };

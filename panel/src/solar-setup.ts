@@ -537,7 +537,8 @@ export class EfmSolarSetup extends LitElement {
         }
         this._notice = this.localize("solar_setup_conflict");
       } else if (key === "not_offered" && this._refusedPower(error) === null) {
-        if (error.translation_placeholders?.entity_id === stat && this._choices.method) {
+        if (error.translation_placeholders?.entity_id === stat) {
+          // The method, chosen or suggested, went.
           this._dropMethod();
         } else {
           this._dropPick(error);
@@ -615,6 +616,11 @@ export class EfmSolarSetup extends LitElement {
             ${this._refused.power === "solar"
               ? t("solar_setup_set_solar_power")
               : t("solar_setup_set_circuit_power", { name })}
+          </button>`
+        : nothing}
+      ${this._refused?.why === "not_power"
+        ? html`<button class="solar-refused-check" @click=${() => void this._loadPreview()}>
+            ${t("solar_setup_check_again")}
           </button>`
         : nothing}
       ${preview !== null ? this._renderPreview(preview) : nothing}
@@ -856,7 +862,10 @@ export class EfmSolarSetup extends LitElement {
           : nothing}
       </p>
       ${preview.power_reason
-        ? html`<p class="hint solar-power-reason">${this._t(`reason_${preview.power_reason}`)}</p>`
+        ? html`<p class="hint solar-power-reason">${this._t(`reason_${preview.power_reason}`)}</p>
+            <p class="hint solar-power-not-kept">
+              ${t("solar_setup_power_not_kept", { device: this.context.deviceName })}
+            </p>`
         : nothing}
       ${grossPower
         ? html`<p class="solar-live">
@@ -915,17 +924,30 @@ export class EfmSolarSetup extends LitElement {
         return action(t("solar_setup_set_solar_power"), () => this._setSolarPower());
       case "daily_without_power":
       case "no_safe_method": {
-        // "From power" needs both: name the missing ones, each with its dialog.
+        // "From power" needs both: name the missing or unusable ones, each
+        // with its way on.
         const name = this.context.deviceName;
         const solar = this._display(this._solar ?? "");
-        return html`${preview.power.circuit === null
+        const circuit = preview.power.circuit;
+        const unusable =
+          circuit !== null &&
+          preview.methods.some((m) => m.method === "power" && m.reason === "unusable_power");
+        return html`${circuit === null
           ? html`<p class="hint solar-missing-power">${t("solar_setup_missing_power", { name })}</p>`
+          : nothing}
+        ${unusable
+          ? html`<p class="hint solar-unusable-power">
+              ${t("solar_setup_unusable_power", { entity: this.context.sensorName(circuit), name })}
+            </p>`
           : nothing}
         ${preview.power.solar === null
           ? html`<p class="hint solar-missing-power">${t("solar_setup_missing_power", { name: solar })}</p>`
           : nothing}
-        ${preview.power.circuit === null
+        ${circuit === null || unusable
           ? action(t("solar_setup_set_circuit_power", { name }), () => this._setCircuitPower())
+          : nothing}
+        ${unusable
+          ? action(t("solar_setup_open_settings"), () => this._emit("open-settings", { entity_id: circuit }))
           : nothing}
         ${preview.power.solar === null ? action(t("solar_setup_set_solar_power"), () => this._setSolarPower()) : nothing}`;
       }

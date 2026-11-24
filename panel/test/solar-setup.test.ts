@@ -1059,6 +1059,88 @@ describe("solar setup context and lifecycle", () => {
     expect(Object.values(LANGUAGES.de).join(" ")).not.toContain("ausgeschaltet");
   });
 
+  it("without a signed power it says the old power is not kept and cannot be added later", async () => {
+    const mock = mockHass("de");
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      power_reason: "gross_power_needs_signed",
+      helpers: [{ role: "energy", name_default: "x" }],
+    });
+    const { el } = await mount(mock);
+    expect(content(el)).toContain(
+      "Die bisherige Leistung von Server & co wird nicht übernommen, weil sie netto ist. Eine Live-Leistung lässt sich später nicht nachrüsten; willst du eine, richte das erst ein, wenn der Kreis einmal eingespeist hat.",
+    );
+    for (const language of ["en", "fr", "it"]) {
+      expect(localize(mockHass(language).hass, "solar_setup_power_not_kept", { device: "X" })).toContain("X");
+    }
+  });
+
+  it("a daily meter with an unusable circuit power names that power and its way on", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      method: null,
+      suggested: null,
+      methods: preview().methods.map((m) =>
+        m.method === "power" ? { ...m, offered: false, verified: false, reason: "unusable_power" } : m,
+      ),
+      power: { circuit: "sensor.server_power", solar: "sensor.solar_power", signed: false, circuit_from: "saved", solar_from: "saved" },
+      blocked: "daily_without_power",
+      blocked_entity: "sensor.server",
+    });
+    const { el, events } = await mount(mock);
+    expect(content(el)).toContain("Server power, the power sensor of Server & co, is disabled or has no power unit that can be read.");
+    const actions = [...el.querySelectorAll<HTMLButtonElement>(".solar-blocked-action")];
+    expect(actions.map((b) => b.textContent!.trim())).toEqual(["Set power sensor of Server & co", "Open its settings"]);
+    actions[0].click();
+    actions[1].click();
+    expect(events["set-circuit-power"]).toHaveLength(1);
+    expect(events["open-settings"]).toEqual([{ entity_id: "sensor.server_power" }]);
+  });
+
+  it("create finds the suggested method gone: the way note, not the old one", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    mock.responses["energy_flow_mapper/create_solar_setup"] = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.server" },
+    };
+    const { el, events } = await mount(mock);
+    setUp(el).click();
+    await settle(el);
+    expect(events.failed).toEqual([]);
+    expect(previews(mock)).toHaveLength(2);
+    expect(content(el)).toContain("The chosen way is no longer possible – choose another one above.");
+    expect(content(el)).not.toContain("is not offered here");
+  });
+
+  it("a power refused as no power sensor can be checked again", async () => {
+    const mock = mockHass();
+    let refused = true;
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = () =>
+      refused
+        ? {
+            translation_key: "not_offered",
+            translation_placeholders: { entity_id: "sensor.solar_power", power: "solar", why: "not_power" },
+          }
+        : preview();
+    const { el } = await mount(mock);
+    expect(button(el, "Try again")).toBeUndefined();
+    // Offline at night it may have no unit yet: checking again can help.
+    refused = false;
+    button(el, "Check again")!.click();
+    await settle(el);
+    expect(previews(mock)).toHaveLength(2);
+    expect(setUp(el).disabled).toBe(false);
+    // Used elsewhere cannot change by itself: no «Check again».
+    refused = true;
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.solar_power", power: "solar", why: "used" },
+    };
+    void el._loadPreview();
+    await settle(el);
+    expect(button(el, "Check again")).toBeUndefined();
+  });
+
   it("a failed create keeps the dialog and says so", async () => {
     const mock = mockHass();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();

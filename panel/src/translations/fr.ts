@@ -494,4 +494,6 @@ export const fr: Translations = {
   evidence_unchecked: "non vérifié – les statistiques n’ont pas pu être lues",
   solar_setup_daily_question: "{name} : repart-il de 0 chaque jour ?",
   solar_term_energy_name: "{name} énergie",
+  solar_setup_power_not_kept: "La puissance actuelle de {device} n’est pas reprise, car elle est nette. Une puissance en direct ne peut pas être ajoutée plus tard ; si tu en veux une, configure ceci seulement quand le circuit aura réinjecté une fois.",
+  solar_setup_unusable_power: "{entity}, le capteur de puissance de {name}, est désactivé ou n’a pas d’unité de puissance lisible.",
 };

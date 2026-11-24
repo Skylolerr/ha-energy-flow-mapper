@@ -1106,7 +1106,9 @@ async def async_plan(
     circuit = powers.read("circuit", device, saved_device)
     solar_power = powers.read("solar", source, saved_source)
     if circuit[0] is not None and circuit[0] == solar_power[0]:
-        raise _not_offered(circuit[0], power="circuit", why=WHY_USED)
+        # The one the draft set is the one to change.
+        role = "solar" if circuit[1] == "saved" else "circuit"
+        raise _not_offered(circuit[0], power=role, why=WHY_USED)
     circuit = powers.pair(circuit, stat, {solar_power[0] or ""})
     solar_power = powers.pair(solar_power, solar, {circuit[0] or ""})
     if (

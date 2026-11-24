@@ -199,3 +199,20 @@ async def test_refused_draft_power_names_the_power_and_why(
         "power": "circuit",
         "why": "used",
     }
+
+
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+async def test_refused_draft_power_blames_the_power_the_draft_set(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The solar's power set in the draft to the circuit's saved one: the solar's."""
+    changes = await draft(hass_ws_client, hass, set_solar_rate("sensor.main_power"))
+    shown = await send(
+        hass_ws_client, hass, **panel_message("solar_setup_preview", MAIN, {}, changes)
+    )
+    assert not shown["success"]
+    assert shown["error"]["translation_placeholders"] == {
+        "entity_id": "sensor.main_power",
+        "power": "solar",
+        "why": "used",
+    }
