@@ -11,6 +11,8 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-24
+
 > **Highlight:** a solar that feeds into a circuit or a sub panel is counted right: *Solar
 > feeds in here…* builds the circuit's gross meter by a method that fits its meter, and the
 > panel watches it afterwards. Plus power sensors, *Replace with …* and hints in the panel.
@@ -128,6 +130,8 @@ and Home Assistant show when they offer the update.
 - Dismissed safety-net hints from a test build of 0.11 are removed once on the update:
   they hid every later event. The same happens to dismissed safety-net hints after going
   back to 0.10.x and up again.
+
+*Tested with Home Assistant 2026.10.4 and 2026.11.2 · minimum 2026.10.0*
 
 ## [0.10.1] - 2026-11-18
 
