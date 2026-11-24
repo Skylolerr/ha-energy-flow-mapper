@@ -1180,9 +1180,13 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /** Whether a hint still fits the draft (the backend computed it for the saved settings). */
-  private _hintApplies(hint: Hint): boolean {
+  _hintApplies(hint: Hint): boolean {
     if (hint.code === "returned_energy") {
       return this._hasSolar();
+    }
+    if (this._signFixedByPower(hint)) {
+      // Its fix is to set the device's power to none; the backend then stops comparing.
+      return Boolean(this.draft.find((d) => d.stat_consumption === hint.stat)?.stat_rate);
     }
     if (hint.code !== "power_available") {
       return true;
@@ -1237,7 +1241,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "gross_unknown": {
         const input = typeof data.input === "string" ? data.input : null;
         return [
-          this._t("hint_gross_unknown", {
+          this._t(data.method === "power" ? "hint_gross_unknown_power" : "hint_gross_unknown", {
             meter: this._name(hint.stat),
             length: this._minutesText(Number(data.minutes)),
             ...this._hourText(data.hour),
@@ -1305,20 +1309,48 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** The sentence of a gross_off hint's cause, with its way forward. */
   private _grossOffCause(hint: Hint): StringKey {
     const data = hint.data ?? {};
-    switch (data.cause) {
-      case "input":
-        // A meter that counts both ways may also fall through export; a solar's counter may not.
-        return data.method === "net" && !this._isSolarMeter(String(data.input))
-          ? "hint_gross_off_input_net"
-          : "hint_gross_off_input";
-      case "solar_term":
-        return "hint_gross_off_solar_term";
-      case "sign":
-        // From power counts its gross power: then the meter is wrong as well.
-        return data.method === "power" ? "hint_gross_off_sign_power" : "hint_gross_off_sign";
-      default:
-        return "hint_gross_off_unclear";
+    if (data.cause === "input") {
+      // A meter that counts both ways may also fall through export; a solar's counter may not.
+      return data.method === "net" && !this._isSolarMeter(String(data.input))
+        ? "hint_gross_off_input_net"
+        : "hint_gross_off_input";
     }
+    if (data.cause === "solar_term") {
+      return "hint_gross_off_solar_term";
+    }
+    // A gross meter built from energy counters that went below 0 is built wrong.
+    if (data.method !== "power" && Number(data.change_kwh) < 0) {
+      return "hint_gross_off_below_zero";
+    }
+    if (data.cause === "sign") {
+      // From power counts its gross power: then the meter is wrong as well.
+      return data.method === "power" ? "hint_gross_off_sign_power" : "hint_gross_off_sign";
+    }
+    return "hint_gross_off_unclear";
+  }
+
+  /**
+   * Whether a gross_off hint says the gross power of a meter made of energy
+   * counters has the wrong sign: then setting the device's power to none is
+   * the fix (the meter is right, and the backend stops comparing).
+   */
+  private _signFixedByPower(hint: Hint): boolean {
+    const data = hint.data ?? {};
+    return (
+      hint.code === "gross_off" && data.cause === "sign" && data.method !== "power" && Number(data.change_kwh) >= 0
+    );
+  }
+
+  /**
+   * The solar power a solar-term hint is about: as the backend names it, else
+   * the power sensor of the solar source in the draft.
+   */
+  _hintPower(hint: Hint): string | null {
+    if (typeof hint.data?.power === "string") {
+      return hint.data.power;
+    }
+    const rate = this.draftSources.find((s) => s.type === "solar" && s.stat_energy_from === hint.stat)?.stat_rate;
+    return typeof rate === "string" ? rate : null;
   }
 
   /** The README section a hint links to, or null. */
@@ -4010,9 +4042,8 @@ export class EnergyFlowMapperPanel extends LitElement {
                   data-role=${row.role}
                   @click=${() => (this._dialog = { kind: "source", role: row.role, label, stat: row.stat })}
                 >
-                  <span class="source-role">${label}</span>
+                  <span class="source-role">${label} ${this._renderHintMark(this._hintsFor(row.stat, row.role))}</span>
                   <span class="source-name">${row.name || this._name(row.stat)}</span>
-                  ${this._renderHintMark(this._hintsFor(row.stat, row.role))}
                 </button>`;
               })}
             </div>`}
@@ -4148,7 +4179,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     >
       ${icon("chevronRight")}
       <span class="free-strip-label">${this._t("free_sensors")}</span>
-      <span class="free-strip-count">${formatNumber(this.hass, this._freeCandidates().length)}</span>
+      <span class="free-strip-count"
+        >${formatNumber(this.hass, this._freeCandidates().filter((c) => this._holderOf()(c) === null).length)}</span
+      >
     </button>`;
   }
 
@@ -4156,8 +4189,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const candidates = this._freeCandidates();
     // A sensor a meter of the draft already counts (an input of a sum or
     // template, a helper of the setup) is folded away: adding it counts twice.
-    const used = this._usedInDraft();
-    const holder = (c: Candidate) => (c.contained_in && used.has(c.contained_in) ? c.contained_in : null);
+    const holder = this._holderOf();
     const free = candidates.filter((c) => holder(c) === null);
     const contained = candidates.filter((c) => holder(c) !== null);
     return html`
@@ -4205,6 +4237,29 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${this._renderPowerSensors()}
       </section>
     `;
+  }
+
+  /**
+   * The meter of the draft that already holds a free sensor (an input of a
+   * sum or template, a helper of the setup), or null. Only the innermost
+   * holder the backend found counts, and only while the draft still uses it.
+   */
+  private _holderOf(): (c: Candidate) => string | null {
+    const used = this._usedInDraft();
+    return (c) => (c.contained_in && used.has(c.contained_in) ? c.contained_in : null);
+  }
+
+  /** Free sensors no meter of the draft holds (other than `except`) first; the order stays otherwise. */
+  private _heldLast(candidates: Candidate[], except: string | null = null): Candidate[] {
+    const holder = this._holderOf();
+    const held = (c: Candidate) => holder(c) !== null && holder(c) !== except;
+    return [...candidates.filter((c) => !held(c)), ...candidates.filter(held)];
+  }
+
+  /** «Part of X» for a free sensor a meter of the draft holds (not `except`), else null. */
+  private _heldText(c: Candidate, except: string | null = null): string | null {
+    const meter = this._holderOf()(c);
+    return meter === null || meter === except ? null : this._t("free_contained_in", { meter: this._name(meter) });
   }
 
   /** A free sensor to drag or add; `sub` replaces its area and device. */
@@ -4434,10 +4489,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "gross_off":
         // A wrong sign of a meter made of energy counters: its power can be set to none.
-        // From power counts its gross power, so that would not fix the meter.
-        return hint.data?.cause === "sign" &&
-          hint.data.method !== "power" &&
-          this.draft.find((d) => d.stat_consumption === hint.stat)?.stat_rate
+        // From power counts its gross power, and a meter below 0 is built wrong: no button.
+        return this._signFixedByPower(hint)
           ? html`<button class="primary" @click=${() => this._openPowerDialog({ kind: "device", stat: hint.stat })}>
               ${this._t("power_sensor")}
             </button>`
@@ -4448,12 +4501,11 @@ export class EnergyFlowMapperPanel extends LitElement {
           ? html`<button class="primary" @click=${() => this._openMoreInfo(input)}>${this._t("hint_show_sensor")}</button>`
           : nothing;
       }
+      case "solar_term_short":
       case "solar_term_high": {
-        const term = hint.data?.entity_id;
-        return typeof term === "string"
-          ? html`<button class="primary" @click=${() => this._openEntitySettings(term)}>
-              ${this._t("hint_open_helper")}
-            </button>`
+        const power = this._hintPower(hint);
+        return power !== null
+          ? html`<button class="primary" @click=${() => this._openMoreInfo(power)}>${this._t("hint_show_sensor")}</button>`
           : nothing;
       }
       default:
@@ -4611,18 +4663,25 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** A list of free sensors to pick from, for source dialogs. */
   private _sensorList(exclude: string[], pick: (stat: string) => void): TemplateResult {
     // Dialogs list all free sensors; the search box only filters its own column.
-    const sensors = this._freeCandidates("").filter((c) => !exclude.includes(c.stat));
+    const sensors = this._heldLast(this._freeCandidates("").filter((c) => !exclude.includes(c.stat)));
     if (sensors.length === 0) {
       return html`<p class="empty">${this._t("no_candidates")}</p>`;
     }
     return html`<ul class="targets">
-      ${sensors.map(
-        (c) => html`<li>
+      ${sensors.map((c) => {
+        // A sensor a meter already holds stays selectable, last and named.
+        const held = this._heldText(c);
+        return html`<li>
           <button class="target" data-target=${c.stat} @click=${() => pick(c.stat)}>
-            ${c.name || c.stat}
+            ${held
+              ? html`<span class="candidate-text">
+                  <span class="node-name">${c.name || c.stat}</span>
+                  <span class="sub">${held}</span>
+                </span>`
+              : c.name || c.stat}
           </button>
-        </li>`,
-      )}
+        </li>`;
+      })}
     </ul>`;
   }
 
@@ -5208,7 +5267,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "replace": {
         const name = this._name(dialog.stat, devices);
-        const candidates = this._freeCandidates("");
+        // A sensor the replaced meter holds is the documented rebuild: no note, not last.
+        const candidates = this._heldLast(this._freeCandidates(""), dialog.stat);
         return html`<h2>${this._t("replace_title", { name })}</h2>
           <p class="hint">${this._t("replace_hint")}</p>
           ${candidates.length === 0
@@ -5228,6 +5288,7 @@ export class EnergyFlowMapperPanel extends LitElement {
                         <span class="node-name">${c.name || c.stat}</span>
                         <span class="sub"
                           >${[
+                            this._heldText(c, dialog.stat),
                             c.area_name,
                             c.device_name,
                             c.power

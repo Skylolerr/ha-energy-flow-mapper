@@ -22,21 +22,22 @@ The safety net watches the gross meters the solar setup created (recorded as
 - `gross_off`: in the last week, an hour whose change differs from the gross
   power's energy by more than max(0.5 kWh, 30 %), either way (`direction`
   fall or jump), or went below -0.5 kWh; without a gross power only such a
-  fall. The two-hour windows around it must agree, so a meter that only
-  counts late (a lag dip made up in the next hour) or catches up after a gap
-  is no step. Hours around a downtime of Home Assistant are skipped: the
-  recorder fills it with the last power and no energy. `input` names the
-  input whose counter fell in that hour, if one did; `cause` the likely
-  cause.
+  fall. The gross power counts only while the device still uses it as its
+  power sensor: set to none, the meter is watched for falls only. The
+  two-hour windows around it must agree, so a meter that only counts late (a
+  lag dip made up in the next hour) or catches up after a gap is no step.
+  Hours around a downtime of Home Assistant are skipped: the recorder fills
+  it with the last power and no energy. `input` names the input whose
+  counter fell in that hour, if one did; `cause` the likely cause.
 - `gross_unknown`: more than 1 h without a value in the last day's 5-minute
   statistics (From power: of the gross power), not counting Home
-  Assistant's downtime. `input` names the input that had no value either. A
-  gross meter on the solar's own counter pauses at night (only the solar's
-  counter had no value): no hint.
+  Assistant's downtime. `input` names the input that had no value either,
+  `method` the setup's method. A gross meter on the solar's own counter
+  pauses at night (only the solar's counter had no value): no hint.
 - `solar_term_short` / `solar_term_high`: the solar term (our integral of the
   solar's power) counted less or more than the solar's own energy statistic
-  over the last full local day, by more than max(0.5 kWh, 15 %): dropouts
-  longer than its hold, or Home Assistant downtime.
+  over the last full local day, by more than max(0.5 kWh, 15 %). `power`
+  names the solar power the term integrates.
 
 A check that fails, a missing recorder or a missing statistic only means no
 hint: hints never break `get`.
@@ -493,6 +494,10 @@ class _Gross:
     inputs: list[str]
     # Our solar terms it reads -> the solar power each one integrates.
     terms: dict[str, str]
+    # The gross power its energy is compared with: ours, while the device
+    # still uses it as its power sensor; None compares like a meter
+    # without a power (falls only).
+    compare: str | None = None
 
     @property
     def gaps_of(self) -> str:
@@ -554,6 +559,7 @@ def _gross_meters(
                     if found.get("kind") == KIND_SOLAR_ENERGY
                     and isinstance(found.get("power"), str)
                 },
+                power if device.get(RATE) == power else None,
             )
         )
     return grosses
@@ -667,14 +673,17 @@ def _cause(gross: _Gross, data: Mapping[str, Any], *, term_short: bool) -> Cause
 
     A fallen input first, then a solar term that counted less than its
     solar in that hour. Otherwise a jump, a gross power below 0, or (EM,
-    Plug, Net) a meter that did not go below 0 is a wrong sign.
+    Plug, Net) a meter that did not go below 0 is a wrong sign. A solar term
+    that counted less only explains a fall, and From power's integral that
+    counted more than its power is no wrong sign.
     """
+    fall = data["direction"] is Direction.FALL
     if "input" in data:
         return Cause.INPUT
-    if term_short:
+    if term_short and fall:
         return Cause.SOLAR_TERM
     if (
-        data["direction"] is Direction.JUMP
+        (not fall and gross.method != Method.POWER)
         or data.get("power_kwh", 0.0) < 0
         or (gross.method != Method.POWER and data["change_kwh"] >= 0)
     ):
@@ -712,7 +721,7 @@ def _gross_off(
     # A mean of W over an hour is that many Wh.
     energy = {
         start: mean / 1000
-        for start, mean in _values(rows, gross.power or "", "mean").items()
+        for start, mean in _values(rows, gross.compare or "", "mean").items()
     }
 
     def window(starts: tuple[float, ...], limit: float) -> Direction | None:
@@ -830,7 +839,11 @@ def _gross_unknown(
     if found is None:
         return None
     begin, unknown, missing = found
-    data: dict[str, Any] = {"hour": _local_iso(begin), "minutes": int(unknown // 60)}
+    data: dict[str, Any] = {
+        "hour": _local_iso(begin),
+        "minutes": int(unknown // 60),
+        "method": gross.method,
+    }
     if missing:
         data["input"] = missing[0]
     return _hint(HintCode.GROSS_UNKNOWN, gross.stat, DeviceKind.ELECTRICITY, data)
@@ -843,8 +856,12 @@ def _last_day() -> tuple[float, float, str]:
     return day.timestamp(), today.timestamp(), day.date().isoformat()
 
 
-def _term_off(term: str, source: str, reading: Reading) -> dict[str, Any] | None:
+def _term_off(
+    term: str, source: str, power: str | None, reading: Reading
+) -> dict[str, Any] | None:
     """Return the hint of a solar term that left its source's day, or None.
+
+    `power` is the solar power the term integrates; the hint names it.
 
     A day is the sum of the hourly `change` (which handles resets) of the
     rows that start in it. No hint when a side has no statistics that day, or
@@ -879,6 +896,7 @@ def _term_off(term: str, source: str, reading: Reading) -> dict[str, Any] | None
             "day": date,
             "term_kwh": round(term_kwh, 3),
             "source_kwh": round(source_kwh, 3),
+            "power": power,
         },
     )
 
@@ -926,7 +944,7 @@ async def async_watch(
         return watched
     stats = {gross.stat for gross in grosses}
     inputs = {entity for gross in grosses for entity in gross.inputs}
-    powers = {gross.power for gross in grosses if gross.power is not None}
+    powers = {gross.compare for gross in grosses if gross.compare is not None}
     gaps = {gross.gaps_of for gross in grosses}
     terms = {term for gross in grosses for term in gross.terms}
     queries = (
@@ -959,6 +977,13 @@ async def async_watch(
                 gross.stat,
                 partial(_gross_unknown, gross, reading, solar),
             )
+    term_powers = {
+        term: power for gross in grosses for term, power in gross.terms.items()
+    }
     for source, term in sources.items():
-        _add(watched.sources, source, partial(_term_off, term, source, reading))
+        _add(
+            watched.sources,
+            source,
+            partial(_term_off, term, source, term_powers.get(term), reading),
+        )
     return watched

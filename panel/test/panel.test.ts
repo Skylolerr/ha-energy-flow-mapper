@@ -7,6 +7,7 @@ import {
   MAX_ZOOM,
   MIN_ZOOM,
   PANEL_TAG,
+  README_ANCHORS,
   TOAST_MS,
   assignRole,
   TOUCH_DRAG_LIFT,
@@ -5868,6 +5869,16 @@ describe("hints and solar setup", () => {
 describe("safety-net hints and list polish", () => {
   type Hint = NonNullable<Snapshot["hints"]>[number];
   const README = "https://github.com/Skylolerr/ha-energy-flow-mapper";
+  /**
+   * The README headings the hints link to, as GitHub turns them into anchors.
+   * Task 12 writes these headings; a change here needs the README changed too.
+   */
+  const README_HEADINGS: Record<string, string> = {
+    gross_off: "If a gross meter falls or jumps",
+    gross_off_input: "If an input was reset or replaced",
+    gross_unknown: "Gaps in a gross meter",
+    solar_term: "Solar term differs",
+  };
 
   function dialogEl(el: EnergyFlowMapperPanel): HTMLDialogElement {
     return root(el).querySelector("dialog")!;
@@ -5934,6 +5945,15 @@ describe("safety-net hints and list polish", () => {
     return hintLine(scope, code).querySelector<HTMLAnchorElement>("a.readme");
   }
 
+  it("links to README anchors that match their headings", async () => {
+    // GitHub: lower case, punctuation dropped, spaces to hyphens.
+    const slug = (heading: string) => heading.toLowerCase().replace(/[^a-z0-9 -]/g, "").replace(/ /g, "-");
+    expect(Object.keys(README_ANCHORS).sort()).toEqual(Object.keys(README_HEADINGS).sort());
+    for (const [key, anchor] of Object.entries(README_ANCHORS)) {
+      expect(anchor).toBe(slug(README_HEADINGS[key]));
+    }
+  });
+
   it("names a reset input, the hour in Home Assistant's time zone and the README fix", async () => {
     const hint = grossOff({ power_kwh: 0.4, input: "sensor.plug_energy", cause: "input" });
     const el = await mount(grossMock([hint], "de"));
@@ -5943,6 +5963,7 @@ describe("safety-net hints and list polish", () => {
       "Server & co ging in der Stunde ab 14:00 am 23.11. um 1,25 kWh zurück; seine Brutto-Leistung ergab 400 Wh.",
     );
     expect(flat(line)).toContain("Wahrscheinlich wurde der Zähler Plug energy zurückgesetzt oder ersetzt");
+    expect(flat(line)).toContain("Entwicklerwerkzeuge → Statistiken");
     expect(flat(line)).not.toContain("in beide Richtungen");
     const link = readme(details(el), "gross_off")!;
     expect(link.href).toBe(`${README}#if-an-input-was-reset-or-replaced`);
@@ -5957,6 +5978,7 @@ describe("safety-net hints and list polish", () => {
       "The meter Net meter was probably reset or replaced: it fell to less than half in that hour",
     );
     expect(el._hintText(net)).toContain("A meter that counts both ways also goes down while the circuit exports");
+    expect(el._hintText(net)).toContain("You can take the step out of the statistics in Developer tools → Statistics");
     const counter = grossOff({ method: "net", input: "sensor.solar", cause: "input" });
     expect(el._hintText(counter)).toContain("The meter Roof solar was probably reset or replaced");
     expect(el._hintText(counter)).not.toContain("counts both ways");
@@ -5984,47 +6006,74 @@ describe("safety-net hints and list polish", () => {
     expect(buttons(line)).toEqual(["Dismiss"]);
   });
 
-  it("leads a wrong sign to the power dialog, where the device's power can be set to none", async () => {
+  it("leads a wrong sign to the power dialog, and the hint leaves with the power", async () => {
     const hint = grossOff({ method: "em", direction: "jump", change_kwh: 3.5, power_kwh: 0.5, cause: "sign" });
     const el = await mount(grossMock([hint]));
     const line = hintLine(await openServer(el), "gross_off");
-    expect(flat(line)).toContain("Server & co counted 3.5 kWh in the hour from");
-    expect(flat(line)).toContain("clearly more than its gross power gave (500 Wh).");
-    expect(flat(line)).toContain("stood still for a while and then caught up");
-    expect(flat(line)).toContain("set the device’s power sensor to none");
-    expect(flat(line)).not.toContain("build the gross meter again");
+    const text = flat(line);
+    expect(text).toContain("Server & co counted 3.5 kWh in the hour from");
+    expect(text).toContain("clearly more than its gross power gave (500 Wh).");
+    expect(text).toContain("the meter stood still for a while and then caught up");
+    expect(text).toContain("leaves the hint by itself after 7 days");
+    expect(text).toContain("set the device’s power sensor to “None”");
+    expect(text).toContain("After saving, the hint goes away.");
+    expect(text).toContain("open the gross power template");
+    expect(text).not.toContain("battery");
+    expect(text).not.toContain("dismiss");
     expect(readme(details(el), "gross_off")!.href).toBe(`${README}#if-a-gross-meter-falls-or-jumps`);
     [...line.querySelectorAll("button")].find((b) => b.textContent!.includes("Power sensor …"))!.click();
     await settle(el);
     expect(el._dialog).toMatchObject({ kind: "power", target: { kind: "device", stat: "sensor.server" } });
+    // With the power set to none in the draft, the hint is gone.
+    el._dialog = null;
+    el._change({ type: "set_rate", stat: "sensor.server", stat_rate: null });
+    await settle(el);
+    expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
   });
 
-  it("does not offer the power dialog where it fixes nothing", async () => {
+  it("calls a counter-built gross meter below 0 a wrong build, with no power button", async () => {
+    const el = await mount(grossMock([]));
+    for (const data of [
+      { method: "em", change_kwh: -2, power_kwh: -2, cause: "sign" },
+      { method: "em", change_kwh: -1, power_kwh: 1 },
+    ]) {
+      const hint = grossOff(data);
+      el._snapshot = { ...el._snapshot!, hints: [hint] };
+      await openServer(el);
+      const text = flat(hintLine(details(el), "gross_off"));
+      expect(text).toContain("A gross consumption meter must not go below 0.");
+      expect(text).toContain("a second inverter");
+      expect(text).toContain("drawn and returned swapped");
+      expect(text).toContain("Build the gross meter again with the right method.");
+      expect(text).not.toContain("probably right");
+      expect(buttons(hintLine(details(el), "gross_off"))).toEqual(["Dismiss"]);
+      // It stays even without a power sensor: the fix is a new build.
+      expect(el._hintApplies({ ...hint, stat: "sensor.tv" })).toBe(true);
+    }
+  });
+
+  it("offers a rebuild or a template edit for a wrong sign of From power", async () => {
     // From power counts its gross power: setting the power to none would not fix the meter.
     const power = grossOff({ method: "power", change_kwh: -0.8, power_kwh: -0.9, cause: "sign" });
     const el = await mount(grossMock([power]));
     const line = hintLine(await openServer(el), "gross_off");
-    expect(flat(line)).toContain("Server & co went down by 800 Wh in the hour from");
-    expect(flat(line)).toContain("its gross power gave -900 Wh.");
-    expect(flat(line)).toContain("build the gross meter again with the circuit’s power turned around");
-    expect(flat(line)).not.toContain("to none");
+    const text = flat(line);
+    expect(text).toContain("Server & co went down by 800 Wh in the hour from");
+    expect(text).toContain("its gross power gave -900 Wh.");
+    expect(text).toContain("If the circuit’s power has the wrong sign");
+    expect(text).toContain("build the gross meter again with the circuit’s power turned around");
+    expect(text).toContain("edit the gross power template");
+    expect(text).toContain("If a battery or something else feeds into the circuit, there is no fix");
+    expect(text).not.toContain("“None”");
     expect(buttons(line)).toEqual(["Dismiss"]);
-    // A device whose power is none already gets no button either.
-    const em = grossOff({ method: "em", direction: "jump", change_kwh: 3.5, power_kwh: 0.5, cause: "sign" });
-    el._snapshot = { ...el._snapshot!, hints: [{ ...em, stat: "sensor.tv" }] };
-    node(el, "sensor.tv").click();
-    await settle(el);
-    expect(buttons(hintLine(details(el), "gross_off"))).toEqual(["Dismiss"]);
   });
 
   it("stays neutral without a known cause", async () => {
     const el = await mount(grossMock([]));
     const text = el._hintText(grossOff({ method: "power", change_kwh: -0.6, power_kwh: 0.3 }));
-    expect(text).toContain("Server & co went down by 600 Wh in the hour from");
-    expect(text).toContain("The statistics do not show why");
-    expect(el._hintText(grossOff({ change_kwh: -0.9 }))).toMatch(/went down by 900 Wh in the hour from .*\. The statistics/);
-    expect(el._hintText(grossOff({ direction: "jump", change_kwh: 0.7 }))).toContain(
-      "Server & co counted 700 Wh in the hour from",
+    expect(text).toMatch(/^Server & co went down by 600 Wh in the hour from .*\. The statistics do not show why\.$/);
+    expect(el._hintText(grossOff({ method: "power", direction: "jump", change_kwh: 0.7 }))).toMatch(
+      /^Server & co counted 700 Wh in the hour from .*\. The statistics do not show why\.$/,
     );
   });
 
@@ -6033,7 +6082,7 @@ describe("safety-net hints and list polish", () => {
       code: "gross_unknown",
       stat: "sensor.server",
       kind: "electricity",
-      data: { hour: "2026-11-23T13:00:00+00:00", minutes: 90, input: "sensor.circuit_power" },
+      data: { hour: "2026-11-23T13:00:00+00:00", minutes: 90, method: "em", input: "sensor.circuit_power" },
     };
     const el = await mount(grossMock([gap]));
     const opened: unknown[] = [];
@@ -6045,9 +6094,13 @@ describe("safety-net hints and list polish", () => {
     expect(readme(details(el), "gross_unknown")!.href).toBe(`${README}#gaps-in-a-gross-meter`);
     [...line.querySelectorAll("button")].find((b) => b.textContent!.includes("Show sensor"))!.click();
     expect(opened).toEqual([{ entityId: "sensor.circuit_power" }]);
-    const long = el._hintText({ ...gap, data: { hour: "2026-11-23T13:00:00+00:00", minutes: 300 } });
+    const long = el._hintText({ ...gap, data: { hour: "2026-11-23T13:00:00+00:00", minutes: 300, method: "em" } });
     expect(long).toContain("had no value for 5 h from");
     expect(long).toContain("check the ones it is made of");
+    // From power keeps a value, but cannot count without its power.
+    const power = el._hintText({ ...gap, data: { ...gap.data, method: "power" } });
+    expect(power).toContain("Server & co could not count for 90 min from");
+    expect(power).not.toContain("had no value for");
   });
 
   it("compares the solar's helper with the solar itself, at the solar source", async () => {
@@ -6055,7 +6108,14 @@ describe("safety-net hints and list polish", () => {
       code: "solar_term_short",
       stat: "sensor.solar",
       kind: "electricity",
-      data: { role: "production", entity_id: "sensor.solar_energy", day: "2026-11-22", term_kwh: 3.2, source_kwh: 5.1 },
+      data: {
+        role: "production",
+        entity_id: "sensor.solar_energy",
+        day: "2026-11-22",
+        term_kwh: 3.2,
+        source_kwh: 5.1,
+        power: "sensor.inverter_power",
+      },
     };
     const high: Hint = { ...short, code: "solar_term_high", data: { ...short.data, term_kwh: 7, source_kwh: 5.1 } };
     const el = await mount(grossMock([short, high]));
@@ -6071,10 +6131,18 @@ describe("safety-net hints and list polish", () => {
     expect(flat(shortLine)).toContain("There is nothing to fix");
     expect(readme(dialogEl(el), "solar_term_short")!.href).toBe(`${README}#solar-term-differs`);
     const highLine = hintLine(dialogEl(el), "solar_term_high");
-    expect(flat(highLine)).toContain("counted 7 kWh of this solar’s energy, clearly more than the solar itself (5.1 kWh).");
+    const text = flat(highLine);
+    expect(text).toContain("counted 7 kWh of this solar’s energy, clearly more than the solar itself (5.1 kWh).");
+    expect(text).toContain("a value stuck overnight");
+    expect(text).toContain("the DC or battery side");
+    expect(text).toContain("across midnight");
     expect(readme(dialogEl(el), "solar_term_high")!.href).toBe(`${README}#solar-term-differs`);
-    [...highLine.querySelectorAll("button")].find((b) => b.textContent!.includes("Open helper settings"))!.click();
-    expect(opened).toEqual([{ entityId: "sensor.solar_energy", view: "settings" }]);
+    // The power the helper integrates, as the backend names it.
+    [...highLine.querySelectorAll("button")].find((b) => b.textContent!.includes("Show sensor"))!.click();
+    expect(opened).toEqual([{ entityId: "sensor.inverter_power" }]);
+    // Without it, the solar's power sensor of the draft.
+    const older = { ...high, data: { ...high.data, power: undefined } };
+    expect(el._hintPower(older)).toBe("sensor.solar_power");
   });
 
   it("warns about a device counted twice and names the meter that holds it", async () => {
@@ -6126,7 +6194,8 @@ describe("safety-net hints and list polish", () => {
     expect(node(el, "sensor.tv").querySelector(".hint-mark")).not.toBeNull();
     expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
     const row = root(el).querySelector<HTMLButtonElement>('.sources .source[data-role="import"]')!;
-    expect(row.querySelector(".hint-mark")).not.toBeNull();
+    // The «i» sits in the role line.
+    expect(row.querySelector(".source-role .hint-mark")).not.toBeNull();
     expect(root(el).querySelector('.sources .source[data-role="export"] .hint-mark')).toBeNull();
     row.click();
     await settle(el);
@@ -6193,7 +6262,7 @@ describe("safety-net hints and list polish", () => {
     }
   });
 
-  it("folds free sensors that a meter already counts, and names the meter", async () => {
+  it("folds free sensors that a meter already holds, and names the meter", async () => {
     const mock = mockHass();
     const snap = snapshot();
     snap.candidates[1] = { ...snap.candidates[1], contained_in: "sensor.server" };
@@ -6206,16 +6275,59 @@ describe("safety-net hints and list polish", () => {
     expect(top).toEqual(["sensor.printer", "portal:import"]);
     const fold = free.querySelector<HTMLDetailsElement>("details.contained")!;
     expect(fold.open).toBe(false);
-    expect(flat(fold.querySelector("summary")!)).toBe("Counted in meters 1");
-    expect(flat(fold)).toContain("already counted in a meter of your energy settings");
+    expect(flat(fold.querySelector("summary")!)).toBe("Contained in meters 1");
+    // Neutral: a subtracted input is no double count.
+    expect(flat(fold)).toContain("already part of a meter in your energy settings");
+    expect(flat(fold)).not.toContain("twice");
     const attic = fold.querySelector<HTMLElement>('li.candidate[data-stat="sensor.attic"]')!;
-    expect(flat(attic.querySelector(".sub")!)).toBe("Counted in Server & co");
+    expect(flat(attic.querySelector(".sub")!)).toBe("Part of Server & co");
     // It can still be added.
     expect(attic.querySelector("button")!.textContent!.trim()).toBe("Add");
+    // The folded strip counts only the sensors that are not folded.
+    el.setFreeCollapsed(true);
+    await settle(el);
+    expect(root(el).querySelector(".free-strip-count")!.textContent!.trim()).toBe("2");
+    el.setFreeCollapsed(false);
+    await settle(el);
     // Once the meter that holds it is gone from the draft, it is free like any other.
     el._change({ type: "remove", stat: "sensor.server" });
     await settle(el);
-    expect(free.querySelector("details.contained")).toBeNull();
-    expect(free.querySelector('ul.candidates > li.candidate[data-stat="sensor.attic"]')).not.toBeNull();
+    const column = root(el).querySelector<HTMLElement>(".column.free")!;
+    expect(column.querySelector("details.contained")).toBeNull();
+    expect(column.querySelector('ul.candidates > li.candidate[data-stat="sensor.attic"]')).not.toBeNull();
+  });
+
+  it("names the holding meter in the assign, source and replace lists, last", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.candidates[0] = { ...snap.candidates[0], contained_in: "sensor.server" };
+    mock.responses["energy_flow_mapper/get"] = snap;
+    const el = await mount(mock);
+    const targets = () =>
+      [...dialogEl(el).querySelectorAll<HTMLButtonElement>("button.target")].map((b) => [
+        b.dataset.target,
+        b.querySelector(".sub")?.textContent?.trim() ?? "",
+      ]);
+    // Assign: the printer is last, with its meter named, and can still be picked.
+    el._dialog = { kind: "assign", role: "production" };
+    await settle(el);
+    expect(targets().map(([stat]) => stat)).toEqual(["sensor.attic", "portal:import", "sensor.printer"]);
+    expect(targets().at(-1)![1]).toBe("Part of Server & co");
+    expect(targets()[0][1]).toBe("");
+    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.printer"]')!.click();
+    await settle(el);
+    expect(el._changes.at(-1)).toMatchObject({ type: "assign_source", role: "production", stat: "sensor.printer" });
+    el._undoChange();
+    await settle(el);
+    // Replace another device: named and last.
+    el._dialog = { kind: "replace", stat: "sensor.tv" };
+    await settle(el);
+    expect(targets().map(([stat]) => stat)).toEqual(["sensor.attic", "portal:import", "sensor.printer"]);
+    expect(targets().at(-1)![1]).toContain("Part of Server & co");
+    // Replace the meter that holds it: the documented rebuild, no note.
+    el._dialog = { kind: "replace", stat: "sensor.server" };
+    await settle(el);
+    expect(targets().map(([stat]) => stat)).toEqual(["sensor.printer", "sensor.attic", "portal:import"]);
+    expect(targets()[0][1]).not.toContain("Part of");
   });
 });

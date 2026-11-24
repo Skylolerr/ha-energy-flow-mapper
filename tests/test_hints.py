@@ -1065,6 +1065,53 @@ async def test_gross_off_from_power(
     assert await _watch_hints(hass, prefs, records) == [
         _gross_off(base + 7200, "fall", "power", change_kwh=-3.0, power_kwh=0.5)
     ]
+    # A jump of an integral against the power it integrates is no wrong sign.
+    data[GROSS] = _hourly("change", [0.5, 0.5, 3.0, 0.5], base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(base + 7200, "jump", "power", change_kwh=3.0, power_kwh=0.5)
+    ]
+
+
+async def test_gross_off_compares_only_the_devices_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A gross power the device no longer uses is not compared with: no sign hint."""
+    calls, data = statistics
+    prefs, records = _setup(hass)
+    # The admin set the device's power to none; the helper is still recorded.
+    del prefs["device_consumption"][0]["stat_rate"]
+    base = _hour_base()
+    hour = base + 3600 * 5
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 10, base)
+    data[GROSS] = _hourly("change", [1, 1, 3, 1, 1, 3, 1, 1, 1, 1], base)
+    data[DRAWN] = _hourly("state", [10, 11, 12, 13, 14, 15, 16, 17, 18, 19], base)
+    data[RETURNED] = _hourly("state", [5.0] * 10, base)
+    assert await _watch_hints(hass, prefs, records) == []
+    hourly = next(call for call in calls if call[4] == "hour")
+    assert GROSS_POWER not in hourly[3]
+    # A reset still shows, without the power's energy.
+    data[GROSS] = _hourly("change", [1, 1, 1, 1, 1, -40, 1, 1, 1, 1], base)
+    data[DRAWN] = _hourly("state", [10, 11, 12, 13, 14, 0, 1, 2, 3, 4], base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(hour, "fall", change_kwh=-40.0, input=DRAWN, cause="input")
+    ]
+
+
+async def test_gross_off_solar_term_cause_only_on_a_fall(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A jump while the solar term counted less is no lost solar energy."""
+    _, data = statistics
+    prefs, records = _setup(hass)
+    base = _hour_base()
+    hour = base + 3600 * 5
+    data[GROSS_POWER] = _hourly("mean", [1000.0] * 10, base)
+    data[GROSS] = _hourly("change", [1, 1, 1, 1, 1, 3, 1, 1, 1, 1], base)
+    data[TERM] = _hourly("change", [2, 2, 2, 2, 2, 1.0, 2, 2, 2, 2], base)
+    data[PV_ENERGY] = _hourly("change", [2.0] * 10, base)
+    assert await _watch_hints(hass, prefs, records) == [
+        _gross_off(hour, "jump", change_kwh=3.0, power_kwh=1.0, cause="sign")
+    ]
 
 
 @pytest.mark.parametrize("method", ["power", "em"])
@@ -1255,12 +1302,19 @@ def _five_minutes(key: str, minutes: list[int], now: float) -> list[dict[str, An
     return [{"start": last - 60 * m, key: 1.0} for m in sorted(minutes, reverse=True)]
 
 
-def _unknown(start: float, minutes: int, **data: Any) -> dict[str, Any]:
+def _unknown(
+    start: float, minutes: int, method: str = "em", **data: Any
+) -> dict[str, Any]:
     return {
         "code": HintCode.GROSS_UNKNOWN,
         "stat": GROSS,
         "kind": "electricity",
-        "data": {"hour": _local_iso(start), "minutes": minutes, **data},
+        "data": {
+            "hour": _local_iso(start),
+            "minutes": minutes,
+            "method": method,
+            **data,
+        },
     }
 
 
@@ -1353,14 +1407,14 @@ async def test_gross_unknown_from_power_watches_its_power(
     data[CIRCUIT_POWER] = _five_minutes("mean", GAP, now)
     data[PV_POWER] = _five_minutes("mean", EVERY, now)
     assert await _watch_hints(hass, prefs, records) == [
-        _unknown(gap_start, 90, input=CIRCUIT_POWER)
+        _unknown(gap_start, 90, "power", input=CIRCUIT_POWER)
     ]
     short = next(call for call in calls if call[4] == "5minute")
     assert short[3] == {GROSS, GROSS_POWER, CIRCUIT_POWER, PV_POWER}
     # Both powers out: the circuit's is named, not the solar's.
     data[PV_POWER] = _five_minutes("mean", GAP, now)
     assert await _watch_hints(hass, prefs, records) == [
-        _unknown(gap_start, 90, input=CIRCUIT_POWER)
+        _unknown(gap_start, 90, "power", input=CIRCUIT_POWER)
     ]
 
 
@@ -1407,6 +1461,7 @@ def _day_rows(total: float, start: float, end: float) -> list[dict[str, Any]]:
 def _term_hint(
     code: HintCode, term: float, source: float, stat: str = PV_ENERGY
 ) -> dict[str, Any]:
+    """Return the hint, which names the term and the solar power it integrates."""
     day_start, _ = _day()
     return {
         "code": code,
@@ -1420,6 +1475,7 @@ def _term_hint(
             .isoformat(),
             "term_kwh": term,
             "source_kwh": source,
+            "power": PV_POWER,
         },
     }
 
