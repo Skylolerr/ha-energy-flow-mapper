@@ -44,6 +44,37 @@ These are computed in `hierarchy.py` / `candidates.py` **and** in `panel/src/dra
 - **Untracked consumption**: parent minus its children; a child without a value counts as 0
   and is listed in the hint ("without …").
 
+## Recorder internals (safety net)
+
+`stats_probe.read_downtimes` reads when Home Assistant was not running from the
+recorder's own tables: `RecorderRuns` (`start`, `end`, `closed_incorrect`) and, for a run
+that was not closed properly, the newest `States.last_updated_ts` in it. HA has no public
+API for this. The tables are imported lazily from
+`homeassistant.components.recorder.db_schema` (and `process_timestamp` from
+`recorder.models`) inside the function, under a guard: any failure, of the import too,
+gives None, and then the safety net leaves out `gross_off` and `gross_unknown` (their
+flat downtime fills would look like falls and gaps) and keeps the solar-term check. So a
+schema change cannot break loading the integration, but it silently switches those two
+hints off.
+
+The other recorder calls are public helpers: `statistics_during_period`,
+`get_instance(hass).keep_days`, `async_add_executor_job`, `session_scope`.
+
+## Helper behaviour the solar setup relies on
+
+The gross meters are ordinary `template` and `integration` helpers. Their numbers depend
+on Home Assistant's behaviour, which `tests/test_compile_gross.py` checks against the real
+statistics compile:
+
+- a `total` sensor's statistics book every change 1:1, also a dip (no reset detection);
+- an integral counts nothing while its source is unknown and stays available, and updates
+  on its `max_sub_interval` timer while the source is constant;
+- a template with `now()` renders every minute; `this.state` and an entity's
+  `last_changed` and `restored` attribute are readable in it;
+- the config and options flows of `template`, `integration` and `group` take the options
+  the setup sends (`template_meter.SENSOR_OPTIONS`, `integral.INTEGRAL_OPTIONS`,
+  `GROSS_INTEGRAL_OPTIONS`, the sum options in `sum_meter.py`).
+
 ## Checking a new HA release
 
 When a new HA release (or beta) is out:
@@ -55,4 +86,10 @@ When a new HA release (or beta) is out:
    new `pytest-homeassistant` by itself.
 3. If HA changed something we mirror, add a version gate and tests for both the old and the
    new behaviour.
-4. Raise the minimum only together with the maintainer (see [releasing.md](releasing.md)).
+4. Recorder and helpers: check the merged `recorder` PRs for changes to `db_schema`
+   (`RecorderRuns`, `States.last_updated_ts`) and `models.process_timestamp`, and the
+   `template`, `integration` and `group` PRs for their options and behaviour above. Run
+   `tests/test_stats_probe_recorder.py` (the downtimes against a real recorder) and
+   `tests/test_compile_gross.py` on the new release; a downtime reading that returns None
+   shows only in the debug log («Reading the downtimes failed»).
+5. Raise the minimum only together with the maintainer (see [releasing.md](releasing.md)).
