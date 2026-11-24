@@ -47,3 +47,15 @@ export function evidenceText(hass: HomeAssistant | undefined, evidence: StatsEvi
     after: value(drop.after),
   });
 }
+
+/**
+ * One sentence of what the statistics of an energy input show: why it counts
+ * as periodic, its latest fall, that it rose without starting again at 0, or
+ * that there are no statistics.
+ */
+export function inputEvidenceText(hass: HomeAssistant | undefined, evidence: StatsEvidence, unit: string | null): string {
+  if (evidence.certain || evidence.periodic || evidence.drops.length) {
+    return evidenceText(hass, evidence, unit);
+  }
+  return localize(hass, evidence.periodic === false ? "evidence_lifetime" : "evidence_no_data");
+}

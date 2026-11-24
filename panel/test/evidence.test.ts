@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { evidenceText, formatDayTime } from "../src/evidence";
+import { evidenceText, formatDayTime, inputEvidenceText } from "../src/evidence";
 import type { HomeAssistant, StatsEvidence } from "../src/types";
 
 function hass(language: string, time_zone?: string): HomeAssistant {
@@ -44,5 +44,31 @@ describe("evidence", () => {
     const { date, time } = formatDayTime(hass("en", "Not/AZone"), "2026-11-22T05:00:00+00:00");
     expect(date).toMatch(/11\/2[12]/);
     expect(time).toMatch(/\d\d:00/);
+  });
+});
+
+describe("input evidence", () => {
+  it("says what the statistics of an input show", () => {
+    const h = hass("en");
+    expect(inputEvidenceText(h, evidence({ periodic: false, reason: null }), "kWh")).toBe(
+      "rose in the last days without starting again at 0",
+    );
+    expect(inputEvidenceText(h, evidence({ periodic: null, reason: "no_data" }), "kWh")).toBe(
+      "no statistics in the last days",
+    );
+    expect(inputEvidenceText(h, evidence({ reason: "utility_meter", certain: true }), "kWh")).toBe(
+      "a utility meter helper that resets in a cycle",
+    );
+    // A fall is named, also when it was too little for a daily counter.
+    expect(
+      inputEvidenceText(
+        hass("de", "Europe/Zurich"),
+        evidence({ periodic: false, reason: null, drops: [{ at: "2026-11-22T05:00:00+00:00", before: 2.1, after: 0 }] }),
+        "kWh",
+      ),
+    ).toBe("fiel am 22.11. um 06:00 von 2,1 kWh auf 0 kWh");
+    expect(inputEvidenceText(hass("de"), evidence({ periodic: false, reason: null }), null)).toBe(
+      "stieg in den letzten Tagen, ohne wieder bei 0 anzufangen",
+    );
   });
 });

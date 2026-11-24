@@ -16,10 +16,18 @@ export interface EntityRegistryDisplayEntry {
   device_id?: string | null;
 }
 
+export interface DeviceRegistryDisplayEntry {
+  name?: string | null;
+  name_by_user?: string | null;
+  model?: string | null;
+}
+
 export interface HomeAssistant {
   states: Record<string, HassEntity>;
   /** The entity registry; missing in old frontends and in tests. */
   entities?: Record<string, EntityRegistryDisplayEntry>;
+  /** The device registry; missing in old frontends and in tests. */
+  devices?: Record<string, DeviceRegistryDisplayEntry>;
   locale: {
     language: string;
     /** Number format of the user profile, e.g. "language" or "quote_decimal". */
@@ -181,29 +189,63 @@ export interface DismissedHint {
   role?: string;
 }
 
+/** The ways "Solar feeds in here" builds a gross meter. */
+export type SolarMethod = "em" | "plug" | "net" | "power";
+
+/** The helpers the setup creates; they are named per role. */
+export type SolarRole = "solar_power" | "solar_energy" | "power" | "energy";
+
+/** Whether a method is offered and verified, and why (a reason key). */
+export interface SolarMethodStatus {
+  method: SolarMethod;
+  offered: boolean;
+  verified: boolean;
+  reason: string | null;
+}
+
+/** A sensor to pick; a disabled one is shown, never enabled by the setup. */
+export interface SolarCandidate {
+  entity: string;
+  disabled: boolean;
+}
+
+/** Where a power sensor of the setup comes from. */
+export type SolarPowerFrom = "draft" | "saved" | "paired";
+
 /** What "Solar feeds in here" would create (`solar_setup_preview`). */
 export interface SolarPreview {
-  suggested_kind: SolarMeterKind;
-  kind: SolarMeterKind;
+  /** The chosen method (the suggested one unless asked for another), or none. */
+  method: SolarMethod | null;
+  suggested: SolarMethod | null;
+  /** The device rule behind the suggestion (`rule_*`), or null. */
+  rule: string | null;
+  methods: SolarMethodStatus[];
+  drawn: string;
   returned: string | null;
-  returned_disabled: boolean;
-  circuit_power: string | null;
-  solar_power: string | null;
-  /** Inputs of the gross energy that reset every day. */
-  daily: string[];
-  /** Each daily input and the power sensor whose integral replaces it. */
-  integrals: { stat: string; power: string }[];
+  invert: boolean;
+  drawn_candidates: SolarCandidate[];
+  returned_candidates: SolarCandidate[];
+  power: {
+    circuit: string | null;
+    solar: string | null;
+    signed: boolean;
+    circuit_from: SolarPowerFrom | null;
+    solar_from: SolarPowerFrom | null;
+  };
+  /** The powers now, as the templates read them (circuit already turned around). */
+  live: { circuit_w: number | null; solar_w: number | null; gross_w: number | null };
+  /** What the statistics show, per input. */
+  evidence: Record<string, StatsEvidence>;
+  /** Where the solar energy of EM, Plug and Net comes from. */
+  solar_term: { kind: "integral" | "counter" | null; reuse: string | null };
+  /** The helpers create makes, in order. */
+  helpers: { role: SolarRole; name_default: string }[];
+  /** kWh added to the gross energy so it starts above 0 (0: none). */
+  offset: number;
   /** Why the setup cannot be done (an error key), or null. */
   blocked: string | null;
   blocked_entity: string | null;
-  /** A power sensor without a unit that can be read: then there is no gross power. */
-  unusable_power?: string | null;
-  /** kWh added to the gross energy so it starts above 0 (0: none). */
-  offset?: number;
 }
-
-/** How a circuit meter counts: both ways (net), or only what it draws. */
-export type SolarMeterKind = "net" | "draws";
 
 export interface Snapshot {
   prefs: Prefs;

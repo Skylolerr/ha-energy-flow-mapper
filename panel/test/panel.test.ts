@@ -5224,15 +5224,37 @@ describe("hints and solar setup", () => {
   }
 
   function preview(extra: Record<string, unknown> = {}): Record<string, unknown> {
+    const lifetime = { periodic: false, certain: false, reason: null, drops: [], went_negative: false, series: [] };
     return {
-      suggested_kind: "draws",
-      kind: "draws",
+      method: "em",
+      suggested: "em",
+      rule: "rule_shelly_em",
+      methods: [
+        { method: "em", offered: true, verified: true, reason: "rule_shelly_em" },
+        { method: "plug", offered: true, verified: false, reason: "unverified_against_rule" },
+        { method: "net", offered: true, verified: false, reason: "unverified_net" },
+        { method: "power", offered: true, verified: false, reason: "unverified_power_unsigned" },
+      ],
+      drawn: "sensor.server",
       returned: "sensor.server_returned",
-      returned_disabled: false,
-      circuit_power: "sensor.server_power",
-      solar_power: "sensor.solar_power",
-      daily: [],
-      integrals: [],
+      invert: false,
+      drawn_candidates: [{ entity: "sensor.server", disabled: false }],
+      returned_candidates: [{ entity: "sensor.server_returned", disabled: false }],
+      power: {
+        circuit: "sensor.server_power",
+        solar: "sensor.solar_power",
+        signed: false,
+        circuit_from: "saved",
+        solar_from: "saved",
+      },
+      live: { circuit_w: 50, solar_w: 1, gross_w: 51 },
+      evidence: { "sensor.server": lifetime, "sensor.server_returned": lifetime },
+      solar_term: { kind: "integral", reuse: "sensor.solar_energy" },
+      helpers: [
+        { role: "power", name_default: "x" },
+        { role: "energy", name_default: "x" },
+      ],
+      offset: 0,
       blocked: null,
       blocked_entity: null,
       ...extra,
@@ -5246,8 +5268,8 @@ describe("hints and solar setup", () => {
     await settle(el);
   }
 
-  function kindRadio(el: EnergyFlowMapperPanel, kind: string): HTMLInputElement {
-    return dialogEl(el).querySelector<HTMLInputElement>(`input[type="radio"][name="solar-kind"][value="${kind}"]`)!;
+  function methodRadio(el: EnergyFlowMapperPanel, method: string): HTMLInputElement {
+    return dialogEl(el).querySelector<HTMLInputElement>(`input[type="radio"][name="solar-method"][value="${method}"]`)!;
   }
 
   function textInputs(el: EnergyFlowMapperPanel): HTMLInputElement[] {
@@ -5442,52 +5464,39 @@ describe("hints and solar setup", () => {
     expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ stat: "sensor.server" });
   });
 
-  it("setup preselects suggested kind and explains both", async () => {
+  it("setup preselects the only solar and shows the suggested method", async () => {
     const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { kind?: string }) =>
-      preview(msg.kind ? { kind: msg.kind } : {});
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) =>
+      preview(msg.method ? { method: msg.method } : {});
     const el = await mount(mock);
     await openSetup(el);
-    // The only solar is preselected; the first preview asks for the suggested kind.
+    // The only solar is preselected; nothing but the device and solar is sent.
     expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
       type: "energy_flow_mapper/solar_setup_preview",
       stat: "sensor.server",
       solar: "sensor.solar",
     });
     expect(dialogEl(el).textContent).toContain("Roof solar");
-    // What the setup is for: the devices on the circuit use the solar's energy before the meter.
     expect(dialogEl(el).textContent).toContain("the devices on it use its energy before it reaches the meter");
-    expect(kindRadio(el, "draws").checked).toBe(true);
-    expect(kindRadio(el, "net").checked).toBe(false);
+    expect(methodRadio(el, "em").checked).toBe(true);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("Counts both ways");
-    expect(content).toContain("gross = meter + solar");
-    expect(content).toContain("Counts only what it draws");
-    expect(content).toContain("gross = drawn − returned + solar");
-    // The reason of the preselection names the returned sensor.
-    expect(content).toContain("Server returned");
-    // What will be created, with editable names.
-    expect(textInputs(el).map((i) => i.value)).toEqual(["Server & co gross", "Server & co gross power"]);
+    expect(content).toContain("Suggested");
+    expect(content).toContain("not verified – only pick this if your meter counts backwards");
+    expect(textInputs(el).map((i) => i.value)).toEqual(["Server & co gross power", "Server & co gross"]);
     expect(content).toContain("takes the place of Server & co");
-
-    kindRadio(el, "net").click();
+    methodRadio(el, "net").click();
     await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
-      type: "energy_flow_mapper/solar_setup_preview",
-      stat: "sensor.server",
-      solar: "sensor.solar",
-      kind: "net",
-    });
-    expect(kindRadio(el, "net").checked).toBe(true);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ method: "net" });
+    expect(methodRadio(el, "net").checked).toBe(true);
   });
 
-  it("setup notes a disabled returned sensor and a missing solar power", async () => {
+  it("setup sends the draft, and its buttons reach the power dialog and the settings", async () => {
     const snap = solarSnapshot();
     delete snap.prefs.energy_sources.at(-1)!.stat_rate;
     const mock = hintMock(snap);
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
-      returned_disabled: true,
-      solar_power: null,
+      power: { circuit: "sensor.server_power", solar: null, signed: true, circuit_from: "saved", solar_from: null },
+      returned_candidates: [{ entity: "sensor.server_returned", disabled: true }],
       blocked: "returned_disabled",
       blocked_entity: "sensor.server_returned",
     });
@@ -5497,9 +5506,8 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
     expect(content).toContain("The returned energy sensor Server returned is disabled.");
-    expect(content).toContain("no live value");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
-    // The solar's power sensor can be set first, in the draft.
+    expect(dialogButton(el, "Set up")!.disabled).toBe(true);
+    // The solar's power sensor is set in the draft, and the setup works on it.
     dialogButton(el, "Set power sensor of the solar")!.click();
     await settle(el);
     const select = dialogEl(el).querySelector<HTMLSelectElement>("select")!;
@@ -5508,14 +5516,21 @@ describe("hints and solar setup", () => {
     await settle(el);
     dialogButton(el, "OK")!.click();
     await settle(el);
-    expect(el._changes).toEqual([
+    const changes = [
       { type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.solar_power" },
-    ]);
-    // The backend reads the saved settings: the dialog says so.
+    ];
+    expect(el._changes).toEqual(changes);
     await openSetup(el);
-    expect(dialogEl(el).textContent).toContain("the setup uses the saved ones");
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toEqual({
+      type: "energy_flow_mapper/solar_setup_preview",
+      stat: "sensor.server",
+      solar: "sensor.solar",
+      base_hash: "hash-1",
+      changes,
+    });
+    expect(dialogEl(el).textContent).not.toContain("Save your draft first");
     // The returned sensor's settings open in HA; the panel's dialog closes.
-    dialogButton(el, "Open its settings")!.click();
+    dialogEl(el).querySelector<HTMLButtonElement>(".solar-blocked-action")!.click();
     await settle(el);
     expect(opened).toEqual([{ entityId: "sensor.server_returned", view: "settings" }]);
     expect(el._dialog).toBeNull();
@@ -5523,11 +5538,62 @@ describe("hints and solar setup", () => {
     expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toBeUndefined();
   });
 
+  it("setup works for a device only in the draft, opened from a sum", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({ drawn: "sensor.printer" });
+    mock.responses["energy_flow_mapper/create_solar_setup"] = { entity_id: "sensor.printer_gross", stat_rate: null };
+    const el = await mount(mock);
+    el._change({ type: "add", stat: "sensor.printer", parent: null });
+    await settle(el);
+    el._openSolarSetup("sensor.printer", "sensor.solar");
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({
+      stat: "sensor.printer",
+      solar: "sensor.solar",
+      base_hash: "hash-1",
+      changes: [{ type: "add", stat: "sensor.printer", parent: null }],
+    });
+    expect(dialogEl(el).textContent).not.toContain("Save your draft first");
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toMatchObject({
+      stat: "sensor.printer",
+      base_hash: "hash-1",
+    });
+    expect(el._changes).toContainEqual({ type: "remove", stat: "sensor.printer" });
+    expect(el._changes).toContainEqual(expect.objectContaining({ type: "add", stat: "sensor.printer_gross" }));
+  });
+
+  it("setup on a stale draft loads the settings again and checks once more", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { base_hash?: string }) =>
+      msg.base_hash === "hash-1" ? { translation_key: "conflict" } : preview();
+    const el = await mount(mock);
+    el._change({ type: "rename", stat: "sensor.tv", name: "Telly" });
+    await settle(el);
+    const loads = mock.calls.filter((c) => c.type === "energy_flow_mapper/get").length;
+    // Saved elsewhere meanwhile: the settings have a new hash.
+    const newer = solarSnapshot();
+    newer.hash = "hash-9";
+    mock.responses["energy_flow_mapper/get"] = newer;
+    await openSetup(el);
+    expect(mock.calls.filter((c) => c.type === "energy_flow_mapper/get").length).toBe(loads + 1);
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ base_hash: "hash-9" });
+    // The draft is kept.
+    expect(el._changes).toEqual([{ type: "rename", stat: "sensor.tv", name: "Telly" }]);
+    expect(dialogButton(el, "Set up")!.disabled).toBe(false);
+  });
+
   it("setup replaces the device with the created meter", async () => {
     const mock = hintMock();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
-      daily: ["sensor.solar"],
-      integrals: [{ stat: "sensor.solar", power: "sensor.solar_power" }],
+      solar_term: { kind: "integral", reuse: null },
+      helpers: [
+        { role: "solar_power", name_default: "x" },
+        { role: "solar_energy", name_default: "x" },
+        { role: "power", name_default: "x" },
+        { role: "energy", name_default: "x" },
+      ],
     });
     mock.responses["energy_flow_mapper/create_solar_setup"] = {
       entity_id: "sensor.server_gross",
@@ -5536,9 +5602,10 @@ describe("hints and solar setup", () => {
     const el = await mount(mock);
     await openSetup(el);
     expect(textInputs(el).map((i) => i.value)).toEqual([
+      "Solar power (0 when offline)",
       "Solar power Energy",
-      "Server & co gross",
       "Server & co gross power",
+      "Server & co gross",
     ]);
     const type = async (index: number, value: string) => {
       const input = textInputs(el)[index];
@@ -5547,24 +5614,32 @@ describe("hints and solar setup", () => {
       await settle(el);
     };
     // Every name shown is needed: an empty one would get an untranslated default.
-    for (const index of [0, 1, 2]) {
+    for (const index of [0, 1, 2, 3]) {
       const before = textInputs(el)[index].value;
       await type(index, "  ");
       expect(dialogButton(el, "Set up")!.disabled).toBe(true);
+      expect(dialogEl(el).textContent).toContain("Give every helper a name.");
       await type(index, before);
       expect(dialogButton(el, "Set up")!.disabled).toBe(false);
     }
-    await type(1, "Circuit F11 gross");
+    await type(3, "Circuit F11 gross");
     dialogButton(el, "Set up")!.click();
     await settle(el);
     expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toEqual({
       type: "energy_flow_mapper/create_solar_setup",
       stat: "sensor.server",
       solar: "sensor.solar",
-      kind: "draws",
-      name: "Circuit F11 gross",
-      power_name: "Server & co gross power",
-      integral_names: { "sensor.solar_power": "Solar power Energy" },
+      method: "em",
+      drawn: "sensor.server",
+      returned: "sensor.server_returned",
+      invert: false,
+      offset: 0,
+      names: {
+        solar_power: "Solar power (0 when offline)",
+        solar_energy: "Solar power Energy",
+        power: "Server & co gross power",
+        energy: "Circuit F11 gross",
+      },
     });
     // One step: the gross meter takes the server's place and its children.
     expect(el._changes).toEqual([
@@ -5574,7 +5649,44 @@ describe("hints and solar setup", () => {
     ]);
     expect(el._dialog).toBeNull();
     expect(el._selected).toBe("sensor.server_gross");
+    expect(el._toast).toBe("Gross meter “Circuit F11 gross” created; it takes the place of Server & co in the draft.");
     el._undoChange();
+    expect(el._changes).toEqual([]);
+  });
+
+  it("setup cancelled while creating still puts the meter into the draft", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    await openSetup(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    // Escape (the dialog's cancel) while the helpers are being created.
+    dialogEl(el).dispatchEvent(new Event("cancel", { cancelable: true }));
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    resolve({ entity_id: "sensor.server_gross", stat_rate: "sensor.server_gross_power" });
+    await settle(el);
+    expect(el._changes).toContainEqual({ type: "remove", stat: "sensor.server" });
+    expect(el._toast).toContain("Gross meter “Server & co gross” created");
+  });
+
+  it("setup that fails keeps the dialog open", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    mock.responses["energy_flow_mapper/create_solar_setup"] = {
+      translation_key: "template_failed",
+      translation_placeholders: {},
+    };
+    const el = await mount(mock);
+    await openSetup(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "solar", stat: "sensor.server" });
+    expect(el._toast).toBe("The template helper for the meter could not be created.");
+    expect(dialogButton(el, "Set up")!.disabled).toBe(false);
     expect(el._changes).toEqual([]);
   });
 
@@ -5600,43 +5712,7 @@ describe("hints and solar setup", () => {
     );
   });
 
-  it("setup text names the gross power only when there is one", async () => {
-    const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
-    const el = await mount(mock);
-    await openSetup(el);
-    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("and the name you gave Server & co, if any. It gets the gross power as its power sensor.");
-    dialogButton(el, "Cancel")!.click();
-    await settle(el);
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({ circuit_power: null });
-    await openSetup(el);
-    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("has no power sensor, so there is no gross power");
-    expect(content).toContain("and the name you gave Server & co, if any. Save as usual.");
-    expect(content).not.toContain("gross power as its power sensor");
-  });
-
-  it("blocked setup offers no set up button", async () => {
-    const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
-      suggested_kind: "net",
-      kind: "net",
-      returned: null,
-      daily: ["sensor.server"],
-      circuit_power: null,
-      blocked: "daily_without_power",
-      blocked_entity: "sensor.server",
-    });
-    const el = await mount(mock);
-    await openSetup(el);
-    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("starts again at 0 every day and has no power sensor");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
-    expect(dialogButton(el, "Cancel")).toBeDefined();
-  });
-
-  it("setup stops when the meter already adds up the solar", async () => {
+  it("blocked setup has a disabled set up that says why", async () => {
     const mock = hintMock();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
       blocked: "solar_already_in_meter",
@@ -5646,7 +5722,9 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
     expect(content).toContain("Server & co already adds up the solar, so a gross meter would count the solar twice.");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
+    expect(content).toContain("Solve the problem above first.");
+    expect(dialogButton(el, "Set up")!.disabled).toBe(true);
+    expect(dialogButton(el, "Cancel")).toBeDefined();
   });
 
   it("setup ignores a preview that answers after the dialog was opened again", async () => {
@@ -5660,6 +5738,7 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     // Two solars: nothing is asked until one is picked.
     expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toBeUndefined();
+    expect(dialogEl(el).textContent).toContain("Choose a solar.");
     dialogEl(el).querySelector<HTMLInputElement>('input[name="solar-source"][value="sensor.solar"]')!.click();
     await settle(el);
     dialogButton(el, "Cancel")!.click();
@@ -5672,9 +5751,9 @@ describe("hints and solar setup", () => {
     const sources = [...dialogEl(el).querySelectorAll<HTMLInputElement>('input[name="solar-source"]')];
     expect(sources).toHaveLength(2);
     expect(sources.some((input) => input.checked)).toBe(false);
-    expect(dialogEl(el).querySelector('input[name="solar-kind"]')).toBeNull();
+    expect(dialogEl(el).querySelector('input[name="solar-method"]')).toBeNull();
     expect(dialogEl(el).textContent).not.toContain("Checking");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
+    expect(dialogButton(el, "Set up")!.disabled).toBe(true);
   });
 
   it("setup ignores the preview of a solar picked before the current one", async () => {
@@ -5697,71 +5776,12 @@ describe("hints and solar setup", () => {
     pending["sensor.solar"](preview({ offset: 300 }));
     await settle(el);
     expect(dialogEl(el).textContent).toContain("Checking");
-    expect(dialogEl(el).querySelector('input[name="solar-kind"]')).toBeNull();
+    expect(dialogEl(el).querySelector('input[name="solar-method"]')).toBeNull();
     pending["sensor.balcony"](preview());
     await settle(el);
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("Server & co − Server returned + Balcony solar");
     expect(content).not.toContain("300 kWh");
-    expect(dialogButton(el, "Set up")).toBeDefined();
-  });
-
-  it("setup leaves out the gross power when a power sensor has no usable unit", async () => {
-    const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({ unusable_power: "sensor.solar_power" });
-    mock.responses["energy_flow_mapper/create_solar_setup"] = { entity_id: "sensor.server_gross", stat_rate: null };
-    const el = await mount(mock);
-    await openSetup(el);
-    const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain(
-      "Solar power has no power unit that can be read, so there is no gross power and the gross meter shows no live value.",
-    );
-    expect(content).toContain("and the name you gave Server & co, if any. Save as usual.");
-    expect(textInputs(el).map((i) => i.value)).toEqual(["Server & co gross"]);
-    dialogButton(el, "Set up")!.click();
-    await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).not.toHaveProperty("power_name");
-  });
-
-  it("setup explains why it has to wait", async () => {
-    const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
-      blocked: "input_not_ready",
-      blocked_entity: "sensor.solar_power",
-    });
-    const el = await mount(mock);
-    await openSetup(el);
-    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("Solar power has no value right now");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
-    dialogButton(el, "Cancel")!.click();
-    await settle(el);
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
-      blocked: "daily_check_failed",
-      blocked_entity: "sensor.server",
-    });
-    await openSetup(el);
-    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("the recorder did not answer in time. Try again in a moment.");
-    expect(dialogButton(el, "Set up")).toBeUndefined();
-  });
-
-  it("setup shows the offset that lifts the gross meter above 0", async () => {
-    const mock = hintMock();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { kind?: string }) =>
-      preview({ offset: msg.kind === "net" ? 0 : 300 });
-    const el = await mount(mock);
-    await openSetup(el);
-    let content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).toContain("Server & co − Server returned + Roof solar + 300 kWh");
-    expect(content).toContain(
-      "The 300 kWh are added so the gross meter starts above 0: Home Assistant ignores a meter while it is below 0. They do not change what it counts.",
-    );
-    kindRadio(el, "net").click();
-    await settle(el);
-    content = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(content).not.toContain("kWh are added");
-    expect(content).not.toContain("+ 0 kWh");
+    expect(dialogButton(el, "Set up")!.disabled).toBe(false);
   });
 
   it("offers the setup only for electricity devices with a solar source", async () => {

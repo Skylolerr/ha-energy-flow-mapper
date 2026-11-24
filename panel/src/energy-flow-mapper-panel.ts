@@ -199,7 +199,7 @@ type Dialog =
   | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string }
   /**
    * "Solar feeds in here" for the electricity device `stat`; its own state
-   * (solar, meter kind, preview, names) lives in `<efm-solar-setup>`.
+   * (solar, method, choices, preview, names) lives in `<efm-solar-setup>`.
    * `solar` is the solar source the user came with (from a sum), if any.
    */
   | { kind: "solar"; stat: string; solar?: string };
@@ -2475,14 +2475,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     return this.draftSources.some((s) => s.type === "solar" && !!s.stat_energy_from);
   }
 
-  /**
-   * The solar sources the setup can use: saved ones (the backend works on the
-   * saved settings) that the draft still has.
-   */
+  /** The solar sources the setup can use: the draft's (saved or new). */
   private _setupSolars(): string[] {
-    const draft = new Set(this.draftSources.filter((s) => s.type === "solar").map((s) => s.stat_energy_from));
-    return (this._snapshot?.prefs.energy_sources ?? [])
-      .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string" && draft.has(s.stat_energy_from))
+    return this.draftSources
+      .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string" && s.stat_energy_from !== "")
       .map((s) => s.stat_energy_from as string);
   }
 
@@ -2493,11 +2489,6 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._hasSolar() &&
       this.draft.some((d) => d.stat_consumption === stat)
     );
-  }
-
-  /** Whether the setup can run: the device is saved (the backend reads the saved settings). */
-  private _solarDeviceSaved(stat: string): boolean {
-    return (this._snapshot?.prefs.device_consumption ?? []).some((d) => d.stat_consumption === stat);
   }
 
   /**
@@ -4782,20 +4773,19 @@ export class EnergyFlowMapperPanel extends LitElement {
    * dialog, so a late answer for an earlier one cannot reach it.
    */
   private _renderSolar(dialog: SolarDialog): TemplateResult {
-    const prefs = this._snapshot?.prefs;
     const context: SolarSetupContext = {
       stat: dialog.stat,
       solar: dialog.solar ?? null,
       deviceName: this._name(dialog.stat, this.draft),
-      saved: this._solarDeviceSaved(dialog.stat),
       solars: this._setupSolars(),
-      savedSources: prefs?.energy_sources ?? [],
-      draftSources: this.draftSources,
-      savedDevice: (prefs?.device_consumption ?? []).find((d) => d.stat_consumption === dialog.stat),
-      draftDevice: this.draft.find((d) => d.stat_consumption === dialog.stat),
       busy: this._busy,
       name: (stat) => this._name(stat),
       sensorName: (entityId) => this._sensorName(entityId),
+      // The setup plans on the draft, so a device or solar only there works too.
+      draft: () =>
+        this._snapshot && this._changes.length ? { base_hash: this._snapshot.hash, changes: this._changes } : null,
+      // A stale draft: load the settings again; the draft is kept for them.
+      reload: () => this._load(),
     };
     return html`${keyed(
       dialog,
@@ -5962,6 +5952,60 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .power-variant-hint {
       margin: 0 0 8px 24px;
+    }
+    .solar-method,
+    .solar-input {
+      margin: 0 0 8px;
+    }
+    .solar-method label.check {
+      margin-bottom: 0;
+    }
+    .solar-method .hint,
+    .solar-input .hint {
+      margin: 0 0 0 24px;
+    }
+    .solar-method.not-offered {
+      opacity: 0.7;
+    }
+    .solar-method.unverified .solar-method-status {
+      color: var(--warning-color, #ffa600);
+    }
+    .solar-suggested {
+      font-size: 0.85em;
+      padding: 0 6px;
+      border-radius: 8px;
+      background: var(--primary-color);
+      color: var(--text-primary-color, #fff);
+    }
+    .solar-input-head {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+    .solar-input .hint.solar-evidence {
+      margin-left: 0;
+    }
+    .solar-sparkline {
+      color: var(--primary-color);
+      flex: none;
+    }
+    .solar-sparkline .drop {
+      fill: var(--error-color, #db4437);
+    }
+    .solar-picker {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin: 8px 0;
+    }
+    .solar-live {
+      font-weight: 500;
+    }
+    .solar-why {
+      margin-right: auto;
+      align-self: center;
     }
     .periods button.active,
     .coverage-toggle.active,
