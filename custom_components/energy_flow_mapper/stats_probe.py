@@ -531,12 +531,16 @@ def _local(timestamp: float) -> datetime:
 def _hourly(points: list[Point], *, last: bool) -> list[Point]:
     """Return one point per hour: the last value, or the mean.
 
-    Hours are UTC hours shown in local time, so the two 02:00 hours of the
-    night the clocks go back stay apart.
+    Hours start at the local full hour, also in a zone half an hour off UTC,
+    and are keyed by their UTC time, so the two 02:00 hours of the night the
+    clocks go back stay apart.
     """
     hours: dict[float, list[float]] = {}
     for when, value in points:
-        hours.setdefault(when.timestamp() // 3600 * 3600, []).append(value)
+        stamp = when.timestamp()
+        offset = when.utcoffset() or timedelta()
+        start = stamp - (stamp + offset.total_seconds()) % 3600
+        hours.setdefault(start, []).append(value)
     return [
         (_local(hour), values[-1] if last else sum(values) / len(values))
         for hour, values in hours.items()

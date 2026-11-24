@@ -284,6 +284,22 @@ async def test_power_windows_in_utc_on_the_fall_back_night(
     assert [when.hour for when, _ in hours].count(2) == 4
 
 
+async def test_hourly_points_start_at_local_hours(hass: HomeAssistant) -> None:
+    """A zone half an hour off UTC gets full local hours, not :30 labels."""
+    await hass.config.async_set_time_zone("Asia/Kolkata")
+    zone = dt_util.get_time_zone("Asia/Kolkata")
+    assert zone is not None
+    first = datetime(2026, 11, 22, 0, 0, tzinfo=UTC)  # 05:30 in Kolkata
+    states = [
+        ((first + timedelta(minutes=5 * index)).astimezone(zone), float(index))
+        for index in range(24)
+    ]
+    hours = stats_probe._hourly(states, last=True)
+    assert [(when.hour, when.minute) for when, _ in hours] == [(5, 0), (6, 0), (7, 0)]
+    # 05:30-05:55 is one local hour, 06:00-06:55 the next.
+    assert [value for _, value in hours] == [5.0, 17.0, 23.0]
+
+
 @pytest.mark.parametrize(
     ("resolution", "lag"),
     [(0.01, 0), (0.01, 60), (0.001, 60), (0.001, 120), (0.001, 240)],
