@@ -495,7 +495,10 @@ about 10 minutes, then counts 0. An `unknown` state, and one restored after a re
 Home Assistant, count as 0 at once. Every gross power reads the same held value. So a
 dropout of a few minutes costs nothing; a longer one, and the time Home Assistant is not
 running, still lose the solar's energy of that time in the gross meter (the solar term
-counts nothing then; the circuit's meter goes on counting in the device).
+counts nothing then; the circuit's meter goes on counting in the device). If Home
+Assistant is down for longer during the day, an *EM*, *Plug* or *Net* gross meter can show
+that hour below 0: the returned or net counter catches up, the solar term does not. The
+totals are then short by the solar of that time.
 
 **Without a solar power sensor** the gross meter reads the solar's counter as it is. If
 that counter has no value while the inverter is offline at night, the gross meter has none
