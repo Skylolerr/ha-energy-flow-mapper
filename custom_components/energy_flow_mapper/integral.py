@@ -6,6 +6,7 @@ integration: it keeps working without Energy Flow Mapper.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from homeassistant.components.sensor import SensorDeviceClass
@@ -34,6 +35,15 @@ INTEGRAL_OPTIONS = {
     "unit_time": "h",
     "max_sub_interval": {"hours": 0, "minutes": 5, "seconds": 0},
 }
+# The integrals of the solar setup (its solar term and From power) update
+# every minute. A template writes only when its value changes, so while its
+# source holds an exact constant (an inverter at its limit, a steady load)
+# the integral moves on this timer alone; at 5 minutes the gross meter lagged
+# up to 5 minutes of that power at an hour's end, which the hourly
+# statistics showed as a false dip or a false fall.
+GROSS_INTEGRAL_OPTIONS = INTEGRAL_OPTIONS | {
+    "max_sub_interval": {"hours": 0, "minutes": 1, "seconds": 0},
+}
 
 
 def entity_unit(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -56,19 +66,20 @@ def energy_unit(power_unit: str | None) -> str:
     return f"{power_unit}h"
 
 
-def _options(hass: HomeAssistant, source: str, kind: DeviceKind) -> dict[str, Any]:
+def _options(
+    hass: HomeAssistant, source: str, kind: DeviceKind, base: Mapping[str, Any]
+) -> dict[str, Any]:
     """Return the helper options: kWh for power, the flow's volume for water.
 
-    A power in W gets the prefix k; any other power unit has its own prefix
-    and gets none. A flow is integrated over the time unit of its own unit
-    and without a prefix, so L/min becomes L and m³/h becomes m³.
+    `base` are the options to start from. A power in W gets the prefix k; any
+    other power unit has its own prefix and gets none. A flow is integrated
+    over the time unit of its own unit and without a prefix, so L/min becomes
+    L and m³/h becomes m³.
     """
-    without_prefix = {
-        key: value for key, value in INTEGRAL_OPTIONS.items() if key != "unit_prefix"
-    }
+    without_prefix = {key: value for key, value in base.items() if key != "unit_prefix"}
     if kind is DeviceKind.ELECTRICITY:
         unit = entity_unit(hass, source)
-        return INTEGRAL_OPTIONS if unit in (None, UnitOfPower.WATT) else without_prefix
+        return dict(base) if unit in (None, UnitOfPower.WATT) else without_prefix
     state = hass.states.get(source)
     unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) if state else None
     if unit not in FLOW_TIME_UNITS:
@@ -87,18 +98,23 @@ async def async_create_integral(
     source: str,
     name: str,
     kind: DeviceKind = DeviceKind.ELECTRICITY,
+    *,
+    options: Mapping[str, Any] = INTEGRAL_OPTIONS,
 ) -> tuple[str, str]:
     """Create an integral helper for `source`; return entry ID and entity ID.
+
+    `options` are INTEGRAL_OPTIONS, or GROSS_INTEGRAL_OPTIONS for the solar
+    setup's integrals.
 
     The integral of a flow gets no device class from the helper, so it is
     shown as water through the entity registry, like "Show as" in the UI;
     the energy dashboard only accepts water meters with that class.
     """
-    options = _options(hass, source, kind)
+    found = _options(hass, source, kind, options)
     entry_id, entity_id = await async_run_helper_flow(
         hass,
         INTEGRATION_DOMAIN,
-        [{CONF_NAME: name, "source": source, **options}],
+        [{CONF_NAME: name, "source": source, **found}],
         _failed,
     )
     if kind is DeviceKind.WATER:

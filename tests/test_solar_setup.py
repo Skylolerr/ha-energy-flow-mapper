@@ -24,7 +24,7 @@ from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import template_meter as template_module
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.device_rules import Method
-from custom_components.energy_flow_mapper.integral import INTEGRAL_OPTIONS
+from custom_components.energy_flow_mapper.integral import GROSS_INTEGRAL_OPTIONS
 from custom_components.energy_flow_mapper.meter_inputs import meter_inputs
 from custom_components.energy_flow_mapper.solar_setup import (
     KWH,
@@ -442,32 +442,42 @@ async def test_our_gross_meter_subtracts_only_returned(hass: HomeAssistant) -> N
 
 
 async def test_gross_power_template(hass: HomeAssistant) -> None:
-    """Circuit + solar in W; an offline solar counts as 0, the circuit must be."""
-    template = gross_power_template("sensor.c", "sensor.p")
+    """Circuit + the held solar in W; the circuit must be a number."""
+    template = gross_power_template("sensor.c", "sensor.p", "sensor.h")
     _set(hass, "sensor.c", "-120.04", "W")
     _set(hass, "sensor.p", "0.3", "kW")
+    _set(hass, "sensor.h", "300", "W")
     assert render(hass, template) == 180.0
-    # Offline solar while the circuit feeds in: unknown, never a fall.
+    # A dropout of the solar: its held value counts while it holds.
     _set(hass, "sensor.p", "unavailable", None)
+    assert render(hass, template) == 180.0
+    # The hold has ended while the circuit feeds in: unknown, never a fall.
+    _set(hass, "sensor.h", "0", "W")
     assert render(hass, template) is None
     _set(hass, "sensor.c", "120", "W")
     assert render(hass, template) == 120.0
-    _set(hass, "sensor.c", "-120.04", "W")
+    # A held template without a number counts 0 while the solar has none...
+    _set(hass, "sensor.h", "unknown", None)
+    assert render(hass, template) == 120.0
+    # ... but not while the solar has one it cannot read (an odd unit).
     _set(hass, "sensor.p", "5", "%")
     assert render(hass, template) is None
     _set(hass, "sensor.p", "300", "W")
+    _set(hass, "sensor.h", "300", "W")
     _set(hass, "sensor.c", "unknown", "W")
     assert render(hass, template) is None
 
 
 async def test_gross_power_template_inverted(hass: HomeAssistant) -> None:
     """An export-positive circuit power is turned around."""
-    template = gross_power_template("sensor.c", "sensor.p", invert=True)
+    template = gross_power_template("sensor.c", "sensor.p", "sensor.h", invert=True)
     _set(hass, "sensor.c", "120", "W")
     _set(hass, "sensor.p", "300", "W")
+    _set(hass, "sensor.h", "300", "W")
     assert render(hass, template) == 180.0
-    # After the turn the circuit feeds in: an offline solar gives unknown.
+    # After the turn the circuit feeds in: once the hold ended, unknown.
     _set(hass, "sensor.p", "unavailable", None)
+    _set(hass, "sensor.h", "0", "W")
     assert render(hass, template) is None
     _set(hass, "sensor.c", "-50", "W")
     assert render(hass, template) == 50.0
@@ -643,7 +653,8 @@ async def test_preview_unknown_device_power_unverified_without_negative(
         "power": (True, False, "unverified_power_unsigned"),
     }
     assert result["power"]["signed"] is False
-    assert [h["role"] for h in result["helpers"]] == ["power", "energy"]
+    # From power reads the solar through the solar's held template too.
+    assert [h["role"] for h in result["helpers"]] == ["solar_power", "power", "energy"]
     assert result["offset"] == 0
 
     evidence[MAIN_POWER] = lifetime(went_negative=True)
@@ -1508,7 +1519,14 @@ async def test_create_em_template_state_class_total(
     assert energy.options["state"] == gross_energy_template(
         Method.EM, PRO_EM, integral, PRO_EM_RETURNED
     )
-    assert power.options["state"] == gross_power_template(PRO_EM_POWER, SOLAR_POWER)
+    held = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
+    )
+    assert power.options["state"] == gross_power_template(
+        PRO_EM_POWER, SOLAR_POWER, _entity_of(hass, held.entry_id)
+    )
     assert power.options["state_class"] == "measurement"
     result = response["result"]
     assert result == {
@@ -1767,16 +1785,21 @@ async def test_power_method_invert(
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
 ) -> None:
-    """From power: an integral of (-circuit + solar), no solar term, no offset."""
+    """From power: an integral of (-circuit + held solar), no solar term, no offset."""
     hass.states.async_set(MAIN_POWER, "150", {"unit_of_measurement": "W"})
     response = await create(hass_ws_client, hass, method="power", invert=True, offset=0)
     assert response["success"], response
     await hass.async_block_till_done()
     power = _template_entries(hass)["Main gross power"]
+    held = _template_entries(hass)["Solar power (0 when offline)"]
+    assert held.options["state"] == solar_power_template(SOLAR_POWER)
     assert power.options["state"] == gross_power_template(
-        MAIN_POWER, SOLAR_POWER, invert=True
+        MAIN_POWER, SOLAR_POWER, _entity_of(hass, held.entry_id), invert=True
     )
-    assert set(_template_entries(hass)) == {"Main gross power"}
+    assert set(_template_entries(hass)) == {
+        "Main gross power",
+        "Solar power (0 when offline)",
+    }
     stat_rate = _entity_of(hass, power.entry_id)
     state = hass.states.get(stat_rate)
     assert state is not None
@@ -1788,6 +1811,11 @@ async def test_power_method_invert(
     )
     assert integral.title == "Main gross"
     assert integral.options["unit_prefix"] == "k"
+    assert integral.options["max_sub_interval"] == {
+        "hours": 0,
+        "minutes": 1,
+        "seconds": 0,
+    }
     assert response["result"] == {
         "entity_id": _entity_of(hass, integral.entry_id),
         "stat_rate": stat_rate,
@@ -1796,6 +1824,7 @@ async def test_power_method_invert(
     assert records[integral.entry_id]["kind"] == "gross_energy"
     assert records[integral.entry_id]["power"] == power.entry_id
     assert records[integral.entry_id]["method"] == "power"
+    assert records[held.entry_id] == {"kind": "solar_power", "power": SOLAR_POWER}
 
 
 @pytest.mark.usefixtures("evidence")
@@ -2204,24 +2233,30 @@ async def _minutes(
 async def test_from_power_never_falls_in_a_solar_dropout(
     hass: HomeAssistant, freezer: FrozenDateTimeFactory, invert: bool
 ) -> None:
-    """Circuit -400 W, solar 600 W, the solar offline for 10 of 30 minutes.
+    """Circuit -400 W, solar 600 W, the solar offline for 20 of 40 minutes.
 
-    The gross power is unknown while the solar is offline and the circuit
-    feeds in; Home Assistant's integral counts no area for it and stays
-    available, so the gross energy never falls below its start.
+    The gross power holds the solar 10 minutes, then is unknown while the
+    solar is offline and the circuit feeds in; Home Assistant's integral
+    counts no area for it and stays available, so the gross energy never
+    falls below its start.
     """
     _set(hass, "sensor.c", "400" if invert else "-400", "W")
     _set(hass, "sensor.p", "590", "W")
+    held = await _set_up(
+        hass, _template_helper(hass, "sp", solar_power_template("sensor.p"))
+    )
     power = await _set_up(
         hass,
         _template_helper(
-            hass, "gp", gross_power_template("sensor.c", "sensor.p", invert=invert)
+            hass,
+            "gp",
+            gross_power_template("sensor.c", "sensor.p", held, invert=invert),
         ),
     )
     integral = MockConfigEntry(
         domain="integration",
         title="gross",
-        options={"name": "gross", "source": power, **INTEGRAL_OPTIONS},
+        options={"name": "gross", "source": power, **GROSS_INTEGRAL_OPTIONS},
     )
     integral.add_to_hass(hass)
     assert await _set_up(hass, integral) == "sensor.gross"
@@ -2234,7 +2269,7 @@ async def test_from_power_never_falls_in_a_solar_dropout(
     before = await _minutes(hass, freezer, 10)
     _set(hass, "sensor.p", "unavailable", "W")
     await hass.async_block_till_done()
-    gap = await _minutes(hass, freezer, 10)
+    gap = await _minutes(hass, freezer, 20)
     _set(hass, "sensor.p", "600", "W")
     await hass.async_block_till_done()
     after = await _minutes(hass, freezer, 10)
@@ -2242,6 +2277,8 @@ async def test_from_power_never_falls_in_a_solar_dropout(
     assert min(values) >= start
     assert values == sorted(values)
     assert values[-1] > start
+    # After the hold the gross power is unknown: nothing is counted.
+    assert gap[-1] == gap[-5]
 
 
 SOLAR_COUNTER_CASES = [
@@ -2447,6 +2484,8 @@ async def test_em_verified_only_with_the_rules_returned_sensor(
         ("integration", "unit_prefix", "M"),
         ("integration", "unit_time", "min"),
         ("integration", "max_sub_interval", {"hours": 1, "minutes": 0, "seconds": 0}),
+        # The interval before the 1-minute one: such terms get a new integral.
+        ("integration", "max_sub_interval", {"hours": 0, "minutes": 5, "seconds": 0}),
     ],
 )
 async def test_solar_term_changed_by_hand_is_not_reused(
@@ -2622,7 +2661,7 @@ async def _solar_term_helpers(
     integral = MockConfigEntry(
         domain="integration",
         title="gross",
-        options={"name": "gross", "source": template, **INTEGRAL_OPTIONS},
+        options={"name": "gross", "source": template, **GROSS_INTEGRAL_OPTIONS},
     )
     integral.add_to_hass(hass)
     assert await _set_up(hass, integral) == "sensor.gross"
@@ -2919,7 +2958,110 @@ async def test_em_gross_power_with_a_signed_circuit_power_respects_invert(
     response = await create(hass_ws_client, hass, stat=PRO_EM, method="em", invert=True)
     assert response["success"], response
     power = _template_entries(hass)["Pro EM gross power"]
+    held = _template_entries(hass)["Solar power (0 when offline)"]
     assert power.options["state"] == gross_power_template(
-        PRO_EM_POWER, SOLAR_POWER, invert=True
+        PRO_EM_POWER, SOLAR_POWER, _entity_of(hass, held.entry_id), invert=True
     )
     assert response["result"]["stat_rate"] == _entity_of(hass, power.entry_id)
+
+
+# --- Task 11 fix round: the held solar of every gross power -------------------
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("signed")
+async def test_held_template_of_from_power_is_reused(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """From power makes the held template alone; a later setup reuses it.
+
+    A Net setup then only adds the solar term's integral of it; a third
+    setup reuses the pair. An integral changed by hand keeps the template.
+    """
+    response = await create(hass_ws_client, hass, method="power", offset=0)
+    assert response["success"], response
+    held = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(SOLAR_POWER)
+    )
+    held_entity = _entity_of(hass, held.entry_id)
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.garage_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+    assert [h["role"] for h in result["helpers"]] == ["solar_energy", "energy"]
+    response = await create(
+        hass_ws_client, hass, stat="sensor.garage_energy", method="net"
+    )
+    assert response["success"], response
+    integral = _solar_integral(hass)
+    entry = next(
+        e
+        for e in hass.config_entries.async_entries("integration")
+        if e.options.get("source") == held_entity
+    )
+    assert (
+        entry.options["max_sub_interval"] == GROSS_INTEGRAL_OPTIONS["max_sub_interval"]
+    )
+    records = loaded_entry.runtime_data.helpers.records()
+    assert records[entry.entry_id] == {
+        "kind": "solar_energy",
+        "power": SOLAR_POWER,
+        "template": held.entry_id,
+    }
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.kitchen_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": integral}
+    assert [h["role"] for h in result["helpers"]] == ["energy"]
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "round": 1})
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.kitchen_energy", method="net"
+    )
+    assert [h["role"] for h in result["helpers"]] == ["solar_energy", "energy"]
+    # A changed template is not reused.
+    hass.config_entries.async_update_entry(
+        held, options={**held.options, "state": "{{ 1 }}"}
+    )
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.kitchen_energy", method="net"
+    )
+    assert [h["role"] for h in result["helpers"]] == [
+        "solar_power",
+        "solar_energy",
+        "energy",
+    ]
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("signed", "loaded_entry")
+async def test_live_gross_power_follows_the_hold(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+) -> None:
+    """The preview's live gross power reads the solar as the template does.
+
+    Without a number the solar is what our held template holds, else 0
+    (a new one starts at 0); once that is 0 while the circuit feeds in, the
+    live gross power is unknown.
+    """
+    hass.states.async_set(MAIN_POWER, "-100", {"unit_of_measurement": "W"})
+    hass.states.async_set(SOLAR_POWER, "unavailable", {})
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert result["live"] == {"circuit_w": -100.0, "solar_w": 0.0, "gross_w": None}
+    hass.states.async_set(MAIN_POWER, "100", {"unit_of_measurement": "W"})
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert result["live"]["gross_w"] == 100.0
+    # Our held template, holding the last 300 W.
+    hass.states.async_set(SOLAR_POWER, "300", {"unit_of_measurement": "W"})
+    response = await create(hass_ws_client, hass, method="power", offset=0)
+    assert response["success"], response
+    await hass.async_block_till_done()
+    hass.states.async_set(SOLAR_POWER, "unavailable", {})
+    await hass.async_block_till_done()
+    hass.states.async_set(MAIN_POWER, "-100", {"unit_of_measurement": "W"})
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert result["live"] == {"circuit_w": -100.0, "solar_w": 300.0, "gross_w": 200.0}

@@ -8,11 +8,16 @@ which also builds the hours. The tests assert the gross meter's hourly
 `change`: exactly what the energy dashboard shows.
 
 Timing. Every report happens one second before a whole minute, so a value
-posted just before an hour ends belongs to that hour. The solar term's
-integral updates on a change of its source and then every 5 minutes
-(`max_sub_interval`); changes of the powers happen on 5-minute marks unless a
-test says otherwise, so the integral has caught up at every hour's end.
-Within a minute the inputs report a millisecond apart (`Circuit.report`).
+posted just before an hour ends belongs to that hour. The setup's integrals
+(the solar term, From power) update on a change of their source and then
+every minute (`max_sub_interval`), so they have caught up at every hour's
+end. Within a minute the inputs report a millisecond apart
+(`Circuit.report`). Home Assistant renders a template with `now()` (the
+solar's held power) at the start of each minute; here that render happens
+at the minute's report, 59 seconds later. So a hold that starts at a
+report ends at the report 11 minutes later (its first render 600 s or more
+after the dropout), where Home Assistant ends it 10 to 11 minutes after the
+dropout.
 
 The setup's look at the inputs' history (`async_probe`) is replaced: the
 statistics only begin with the test, so every input counts as a lifetime
@@ -86,8 +91,9 @@ EARLY = timedelta(seconds=1)
 # The inputs report this far apart (see `Circuit.report`).
 STAGGER = timedelta(milliseconds=1)
 # Timers due by then run at a minute's report: those set by the reports of
-# the minute before (5 inputs, 5 ms) as well.
-SLACK = timedelta(milliseconds=10)
+# the minute before (the solar and the circuit report within 4 ms) as well.
+# An integral's timer counts it once more (1 Wh per hour at 10 kW).
+SLACK = timedelta(milliseconds=5)
 
 ENERGY = {"device_class": "energy", "unit_of_measurement": "kWh"}
 POWER = {
@@ -126,9 +132,25 @@ def settings(stat: str, rate: str, solar_rate: str | None = SOLAR_POWER) -> Any:
     }
 
 
+# Home Assistant starts at this time (UTC); the first measured hour is two
+# hours later. A test on another day parametrizes `epoch`.
+EPOCH = datetime(2026, 11, 20, 10, tzinfo=dt_util.UTC)
+# The tests' time zone (US/Pacific) falls back at 09:00 UTC on this day.
+DST_EPOCH = datetime(2026, 11, 1, 6, tzinfo=dt_util.UTC)
+
+
 @pytest.fixture
-def mock_recorder_before_hass(async_test_recorder: Any) -> None:
-    """Prepare the recorder's database before Home Assistant starts."""
+def epoch() -> datetime:
+    """Return the time Home Assistant starts at."""
+    return EPOCH
+
+
+@pytest.fixture
+def mock_recorder_before_hass(
+    async_test_recorder: Any, freezer: FrozenDateTimeFactory, epoch: datetime
+) -> None:
+    """Prepare the recorder's database and the time before Home Assistant starts."""
+    freezer.move_to(epoch)
 
 
 @pytest.fixture(autouse=True)
@@ -239,14 +261,24 @@ class Circuit:
     drawn: float = 500.0
     returned: float = 20.0
     solar_kwh: float = 1000.0
-    # None: the solar power is a number; else "unavailable", "unknown" or
-    # "restored" (unavailable, as Home Assistant restores it after a start).
+    # None: the solar power is a number in W; "kW": in kW; else
+    # "unavailable", "unknown" or "restored" (unavailable, as Home Assistant
+    # restores it after a start).
     solar_state: str | None = None
     # The solar's energy counter is offline (the inverter at night).
     counter_offline: bool = False
     # The circuit's power is reported positive on export.
     invert: bool = False
     units: dict[str, str] = field(default_factory=dict)
+    # None: the circuit's power is a number; else this state.
+    power_state: str | None = None
+    # The circuit lies in a parent circuit with its own net meter (`NET`)
+    # and power, whose other loads draw this much (W); None: no parent.
+    parent_load: float | None = None
+    parent: float = 800.0
+    # Inputs polled slowly: entity -> (every, at): it reports only in the
+    # minutes whose number is `at` modulo `every`.
+    slow: dict[str, tuple[int, int]] = field(default_factory=dict)
     # The true consumption (kWh) per hour (its start), to cross-check the
     # hand calculations of the tests.
     consumed: dict[datetime, float] = field(default_factory=dict)
@@ -292,6 +324,8 @@ class Circuit:
         else:
             self.drawn += flow
         self.solar_kwh += self.solar / 1000 * hours
+        if self.parent_load is not None:
+            self.parent += (self.circuit + self.parent_load) / 1000 * hours
 
     def _energy(self, entity_id: str, kwh: float) -> tuple[str, str, dict[str, Any]]:
         unit = self.units.get(entity_id, "kWh")
@@ -309,8 +343,14 @@ class Circuit:
         if self.returned_sensor is not None:
             found.append(self._energy(self.returned_sensor, self.returned))
         power = -self.circuit if self.invert else self.circuit
-        found.append((self.power, f"{power:.1f}", POWER))
-        if self.solar_state is None:
+        if self.power_state is None:
+            found.append((self.power, f"{power:.1f}", POWER))
+        else:
+            found.append((self.power, self.power_state, {}))
+        if self.solar_state == "kW":
+            kilowatts = {**POWER, "unit_of_measurement": "kW"}
+            found.append((SOLAR_POWER, f"{self.solar / 1000:.4f}", kilowatts))
+        elif self.solar_state is None:
             found.append((SOLAR_POWER, f"{self.solar:.1f}", POWER))
         elif self.solar_state == "restored":
             found.append((SOLAR_POWER, "unavailable", {**POWER, "restored": True}))
@@ -320,16 +360,28 @@ class Circuit:
             found.append((SOLAR, "unavailable", {}))
         else:
             found.append(self._energy(SOLAR, self.solar_kwh))
+        if self.parent_load is not None:
+            found.append(self._energy(NET, self.parent))
+            parent_power = self.circuit + self.parent_load
+            found.append((NET_POWER, f"{parent_power:.1f}", POWER))
         return found
 
-    async def report(self, hass: HomeAssistant, freezer: FrozenDateTimeFactory) -> None:
+    async def report(
+        self, hass: HomeAssistant, freezer: FrozenDateTimeFactory, minute: int = 0
+    ) -> None:
         """Report every input, one after the other, a millisecond apart.
+
+        `minute` is the minute of the hour the report is for; a slowly polled
+        input (`slow`) leaves out the others.
 
         A template renders on each input's change; apart in time, its last
         state of the minute is never tied with one it had on the way, which
         the recorder could otherwise take as the state at a period's start.
         """
         for entity_id, state, attributes in self.states():
+            every, at = self.slow.get(entity_id, (1, 0))
+            if minute % every != at:
+                continue
             hass.states.async_set(entity_id, state, attributes)
             await hass.async_block_till_done()
             freezer.tick(STAGGER)
@@ -374,7 +426,7 @@ class Clock:
                 done := event(circuit)
             ) is not None:
                 await done
-            await circuit.report(self.hass, self.freezer)
+            await circuit.report(self.hass, self.freezer, (when + EARLY).minute)
             await self.hass.async_block_till_done()
             boundary = when.replace(minute=when.minute - when.minute % 5, second=0)
             if boundary > self.now:
@@ -464,9 +516,10 @@ async def start(
     hass: HomeAssistant,
     freezer: FrozenDateTimeFactory,
     loaded_entry: MockConfigEntry,
+    epoch: datetime,
 ) -> datetime:
     """Return the first measured hour, two hours after Home Assistant started."""
-    return dt_util.utcnow().replace(minute=0, second=0, microsecond=0) + 2 * HOUR
+    return epoch + 2 * HOUR
 
 
 @pytest.fixture
@@ -496,15 +549,19 @@ async def begin(
     freezer: FrozenDateTimeFactory,
     circuit: Circuit,
     start: datetime,
+    until: datetime | None = None,
     **choices: Any,
 ) -> tuple[Clock, str, str | None]:
-    """Set up the gross meter 20 minutes before `start` and run until `start`."""
+    """Set up the gross meter 20 minutes before `start`; run until `until`.
+
+    `until` defaults to `start`.
+    """
     clock = Clock(hass, freezer, start - 20 * MINUTE - EARLY)
     await circuit.report(hass, freezer)
     await hass.async_block_till_done()
     await async_wait_recording_done(hass)
     gross, power = await set_up(hass, client, circuit, **choices)
-    await clock.run(circuit, start)
+    await clock.run(circuit, until or start)
     return clock, gross, power
 
 
@@ -548,32 +605,35 @@ async def test_compile_lag_dip_cancels(
     freezer: FrozenDateTimeFactory,
     start: datetime,
 ) -> None:
-    """EM, exporting: the solar term lags the returned meter by 4 minutes.
+    """EM, exporting: the returned meter lags, polled every 5 minutes.
 
-    Load 50 W, solar 1200 W, then 1500 W from :41 (off the 5-minute marks):
-    the solar term's integral then updates at :46, :51, :56 and :01, so at the
-    end of hour 0 it lacks 4 minutes of solar while the returned meter is up
-    to date. A change at 1:30 (a 5-minute mark) brings it back in step.
+    The solar term updates every minute (GROSS_INTEGRAL_OPTIONS), so the lag
+    comes from a meter here: from 0:30 to 1:30 the returned meter reports
+    only at :31, :36, ..., :56, 1:01, ..., 1:26. At the end of hour 0 its last
+    report is from 0:56, 4 minutes of export short, while the solar term is
+    up to date; the gross meter is that much too high, and too low by the
+    same once the meter catches up in hour 1.
 
-    True consumption: 50 W for each hour = 0.05 kWh.
-    Hour 0: 0.05 - 4 min x 1.5 kW (0.1 kWh, the lag at its end) = -0.05.
-    Hour 1: 0.05 + 0.1 (the lag made up) = 0.15.
+    Load 50 W, solar 1500 W (export 1.45 kW). True consumption: 0.05 kWh per
+    hour; the lag at the end of hour 0: 1.45 kW x 4 min = 0.0967 kWh.
+    Hour 0: 0.05 + 0.0967 = 0.1467. Hour 1: 0.05 - 0.0967 = -0.0467, below 0.
     Hour 2: 0.05. Hours 0 and 1 together: 0.1 = 2 x 0.05, nothing lost; the
     `total` state class books the dip below 0 and its return 1:1.
     """
-    circuit = Circuit("em", load=50, solar=1200)
+    circuit = Circuit("em", load=50, solar=1500)
     clock, gross, _ = await begin(hass, client, freezer, circuit, start)
     await clock.run(
         circuit,
         start + 3 * HOUR,
         {
-            start + 41 * MINUTE: change(solar=1500),
-            start + 90 * MINUTE: change(solar=1400),
+            start + 30 * MINUTE: change(slow={PRO_EM_RETURNED: (5, 1)}),
+            start + 90 * MINUTE: change(slow={}),
         },
     )
     assert circuit.truth(start, 3) == pytest.approx([0.05] * 3)
+    lag = 1.45 * 4 / 60
     changes = await hourly(hass, gross, start, 3)
-    assert changes == approx([-0.05, 0.15, 0.05])
+    assert changes == approx([0.05 + lag, 0.05 - lag, 0.05])
     assert sum(value or 0.0 for value in changes[:2]) == pytest.approx(0.1, abs=0.01)
 
 
@@ -813,7 +873,7 @@ async def test_compile_short_dropout_held(
     )
     assert circuit.truth(start, 2) == pytest.approx([0.2] * 2)
     changes = await hourly(hass, gross, start, 2)
-    assert changes[0] == pytest.approx(0.2, abs=0.02)
+    assert changes[0] == pytest.approx(0.2, abs=0.005)
     assert changes[1] == pytest.approx(0.2, abs=0.01)
 
 
@@ -824,16 +884,20 @@ async def test_compile_from_power_dropout_never_falls(
     freezer: FrozenDateTimeFactory,
     start: datetime,
 ) -> None:
-    """From power, exporting: the solar power is unavailable from 0:20 to 0:30.
+    """From power, exporting: the solar power is unavailable 0:20-0:50.
 
-    The circuit feeds in, so the gross power is unknown in the gap (H6a)
-    instead of the circuit's -400 W: the integral counts nothing for it and
-    never falls.
+    The gross power holds the solar like the solar term (10 minutes, as
+    rendered: see the module docstring), then the hold ends while the
+    circuit feeds in: the gross power is unknown (H6a) instead of the
+    circuit's -400 W, so the integral counts nothing and never falls.
 
     Load 200 W, solar 600 W (circuit -400 W). True consumption: 0.2 kWh per
-    hour. Hour 0 loses the load in the gap: 0.2 - 0.2 x 10/60 = 0.1667 kWh
-    (the ruling's small undercount). Counting the gap at -400 W would have
-    given 0.2 - 0.6 x 10/60 = 0.1.
+    hour. The held template renders 0 at 0:30:59 (its first render 600 s or
+    more after the dropout), just after the integral's update of that
+    minute: the integral has counted the held 200 W up to 0:30:59 and counts
+    again from 0:49:59, 19 minutes lost at 200 W.
+    Hour 0: 0.2 - 0.2 x 19/60 = 0.1367 kWh. Counting the gap at -400 W would
+    have given 0.2 - 0.6 x 19/60 = 0.01.
     """
     circuit = Circuit("power", load=200, solar=600)
     clock, gross, _ = await begin(hass, client, freezer, circuit, start)
@@ -842,11 +906,11 @@ async def test_compile_from_power_dropout_never_falls(
         start + 2 * HOUR,
         {
             start + 20 * MINUTE: change(solar_state="unavailable"),
-            start + 30 * MINUTE: change(solar_state=None),
+            start + 50 * MINUTE: change(solar_state=None),
         },
     )
     assert circuit.truth(start, 2) == pytest.approx([0.2] * 2)
-    assert await hourly(hass, gross, start, 2) == approx([0.2 - 0.2 / 6, 0.2])
+    assert await hourly(hass, gross, start, 2) == approx([0.2 - 0.2 * 19 / 60, 0.2])
     steps = await short_term(hass, gross, start, start + 2 * HOUR)
     assert len(steps) == 24
     assert min(steps) >= 0
@@ -949,3 +1013,317 @@ async def test_compile_counter_solar_term_night_pause(
     evening = -0.2 * 30 / 60 + 0.5 * 29 / 60
     assert [changes[0], changes[4]] == approx([evening, 1.5 - evening])
     assert sum(value or 0.0 for value in changes) == pytest.approx(1.5, abs=0.01)
+    # The documented night pause of the counter path is no safety-net hint.
+    hints = await safety_net(hass, client, gross, None)
+    assert not [hint for hint in hints if hint["code"] == "gross_unknown"]
+
+
+async def safety_net(
+    hass: HomeAssistant, client: Connect, stat: str, rate: str | None
+) -> list[dict[str, Any]]:
+    """Make the gross meter the device and return the hints `get` gives it."""
+    prefs = settings(stat, rate or "")
+    if rate is None:
+        del prefs["device_consumption"][0]["stat_rate"]
+    await energy_access.async_write(hass, prefs)
+    response = await send(client, type=f"{DOMAIN}/get")
+    assert response["success"], response
+    return [hint for hint in response["result"]["hints"] if hint["stat"] == stat]
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(PRO_EM, PRO_EM_POWER)])
+async def test_compile_constant_solar_no_lag(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """EM, a large solar held exactly constant (an inverter at its limit).
+
+    Its template writes only on a change, so the solar term's integral moves
+    on its own timer alone; at a 5-minute interval it lagged up to 5
+    minutes at 10 kW behind the export the returned meter counts at once.
+    It updates every minute now.
+
+    Load 100 W, solar 9 kW, 10 kW from 0:56. True consumption: 0.1 kWh per
+    hour; no safety-net hint.
+    """
+    circuit = Circuit("em", load=100, solar=9000)
+    clock, gross, power = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit, start + 3 * HOUR, {start + 56 * MINUTE: change(solar=10000)}
+    )
+    assert circuit.truth(start, 3) == pytest.approx([0.1] * 3)
+    assert await hourly(hass, gross, start, 3) == approx([0.1] * 3, 0.02)
+    hints = await safety_net(hass, client, gross, power)
+    assert not [hint for hint in hints if hint["code"] == "gross_off"]
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_constant_load_no_lag(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power: an 11 kW load starts at 0:51 and stays exactly constant.
+
+    The gross power then changes no more; its integral moves on its own
+    timer, every minute.
+
+    Hour 0: 100 W for 51 minutes and 11 kW for 9: 0.085 + 1.65 = 1.735 kWh.
+    Hours 1 and 2: 11 kWh each. No safety-net hint.
+    """
+    circuit = Circuit("power", load=100, solar=0)
+    clock, gross, power = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit, start + 3 * HOUR, {start + 51 * MINUTE: change(load=11000)}
+    )
+    assert circuit.truth(start, 3) == pytest.approx([1.735, 11, 11])
+    assert await hourly(hass, gross, start, 3) == approx([1.735, 11, 11], 0.02)
+    hints = await safety_net(hass, client, gross, power)
+    assert not [hint for hint in hints if hint["code"] == "gross_off"]
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_dropout_held(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power, importing: the solar power is unavailable 0:20-0:30.
+
+    The gross power takes the solar from the held solar power template, as
+    the solar term does: the 10 minutes are held.
+
+    Load 800 W, solar 600 W (circuit +200 W). True consumption: 0.8 kWh per
+    hour. Without the hold, hour 0 would lose 600 W x 10 min = 0.1 kWh.
+    """
+    circuit = Circuit("power", load=800, solar=600)
+    clock, gross, _ = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 2 * HOUR,
+        {
+            start + 20 * MINUTE: change(solar_state="unavailable"),
+            start + 30 * MINUTE: change(solar_state=None),
+        },
+    )
+    assert circuit.truth(start, 2) == pytest.approx([0.8] * 2)
+    assert await hourly(hass, gross, start, 2) == approx([0.8, 0.8], 0.02)
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_night_keeps_counting(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power at sunset: the solar goes to 0, then unavailable all night.
+
+    The circuit draws, so the gross power stays the circuit's power plus the
+    held 0: the integral keeps counting all night.
+
+    Load 300 W, solar 200 W until 0:10, 0 W until 0:20, then unavailable.
+    True consumption: 0.3 kWh in each hour.
+    """
+    circuit = Circuit("power", load=300, solar=200)
+    clock, gross, _ = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 3 * HOUR,
+        {
+            start + 10 * MINUTE: change(solar=0),
+            start + 20 * MINUTE: change(solar_state="unavailable"),
+        },
+    )
+    assert circuit.truth(start, 3) == pytest.approx([0.3] * 3)
+    assert await hourly(hass, gross, start, 3) == approx([0.3, 0.3, 0.3])
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(PRO_EM, PRO_EM_POWER)])
+async def test_compile_long_dropout_hold_ends(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """EM, exporting: the solar is unavailable 0:20-0:50, longer than the hold.
+
+    The solar term holds the last 600 W, then counts 0 until the solar
+    reports again.
+
+    Load 200 W, solar 600 W (400 W export). True consumption: 0.2 kWh per
+    hour. The hold lasts from the report at 0:19:59 to the render at 0:30:59
+    (the first 600 s or more after it; see the module docstring): 11
+    minutes; then 0 until 0:49:59: 19 minutes x 0.6 kW = 0.19 kWh missed.
+    Hour 0: 0.2 - 0.19 = 0.01 kWh. Hour 1: 0.2 kWh.
+    """
+    circuit = Circuit("em", load=200, solar=600)
+    clock, gross, _ = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 2 * HOUR,
+        {
+            start + 20 * MINUTE: change(solar_state="unavailable"),
+            start + 50 * MINUTE: change(solar_state=None),
+        },
+    )
+    assert circuit.truth(start, 2) == pytest.approx([0.2] * 2)
+    assert await hourly(hass, gross, start, 2) == approx([0.2 - 0.6 * 19 / 60, 0.2])
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_circuit_offline_gross_unknown(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power: the circuit's power is unavailable 0:10-1:40.
+
+    The gross power is unknown meanwhile; its integral counts nothing, and
+    the safety net names the circuit's power.
+
+    Load 300 W, no solar. True consumption: 0.3 kWh per hour.
+    Hour 0: 10 minutes counted, 0.05. Hour 1: from 1:40, 20 minutes: 0.1.
+    Hour 2: 0.3. The gross power's last 5-minute row before the gap is the
+    one of 0:05 (it turned unknown at 0:09:59), the first after it the one of
+    1:35 (back at 1:39:59): 85 minutes without a row.
+    """
+    circuit = Circuit("power", load=300, solar=0)
+    clock, gross, power = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 3 * HOUR,
+        {
+            start + 10 * MINUTE: change(power_state="unavailable"),
+            start + 100 * MINUTE: change(power_state=None),
+        },
+    )
+    assert circuit.truth(start, 3) == pytest.approx([0.3] * 3)
+    assert await hourly(hass, gross, start, 3) == approx([0.05, 0.1, 0.3])
+    hints = await safety_net(hass, client, gross, power)
+    unknown = [hint for hint in hints if hint["code"] == "gross_unknown"]
+    assert [hint["data"] for hint in unknown] == [
+        {
+            "hour": dt_util.as_local(start + 10 * MINUTE).isoformat(),
+            "minutes": 85,
+            "method": "power",
+            "input": NET_POWER,
+        }
+    ]
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(PRO_EM, PRO_EM_POWER)])
+async def test_compile_solar_power_unit_change_is_flat(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """EM: the solar's power switches from W to kW at 0:20, back at 1:20.
+
+    The held template reads it in W at render time: the solar term, and so
+    the gross meter, do not jump.
+
+    Load 400 W, solar 1000 W. True consumption: 0.4 kWh per hour.
+    """
+    circuit = Circuit("em", load=400, solar=1000)
+    clock, gross, _ = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 3 * HOUR,
+        {
+            start + 20 * MINUTE: change(solar_state="kW"),
+            start + 80 * MINUTE: change(solar_state=None),
+        },
+    )
+    assert circuit.truth(start, 3) == pytest.approx([0.4] * 3)
+    assert await hourly(hass, gross, start, 3) == approx([0.4, 0.4, 0.4])
+
+
+NESTED = {
+    **settings(NET, NET_POWER),
+    "device_consumption": [
+        {"stat_consumption": NET, "stat_rate": NET_POWER, "name": "Main"},
+        {
+            "stat_consumption": PRO_EM,
+            "stat_rate": PRO_EM_POWER,
+            "name": "Circuit",
+            "included_in_stat": NET,
+        },
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [NESTED])
+async def test_compile_solar_term_reused_by_a_nested_setup(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """The solar feeds an EM circuit inside the main circuit (a Net meter).
+
+    The EM circuit is set up first, the main circuit 10 minutes later; its
+    setup reuses the solar term (no new solar helpers) and is right too.
+
+    EM circuit: load 300 W, solar 1000 W, then 0 W from 1:00. The rest of
+    the main circuit draws 500 W.
+    EM gross: 0.3 kWh per hour. Main gross (net meter + the same solar
+    term): 0.3 + 0.5 = 0.8 kWh per hour.
+    """
+    circuit = Circuit("em", load=300, solar=1000, parent_load=500)
+    clock, gross, _ = await begin(
+        hass, client, freezer, circuit, start, start - 10 * MINUTE
+    )
+    term = solar_term(hass)
+    before = set(records(hass))
+    shown = await send(
+        client,
+        type=f"{DOMAIN}/solar_setup_preview",
+        stat=NET,
+        solar=SOLAR,
+        method="net",
+    )
+    assert shown["result"]["solar_term"]["reuse"] == term
+    assert [h["role"] for h in shown["result"]["helpers"]] == ["power", "energy"]
+    main, _ = await set_up(hass, client, circuit, stat=NET, method="net")
+    new = {records(hass)[entry]["kind"] for entry in set(records(hass)) - before}
+    assert new == {"gross_power", "gross_energy"}
+    await clock.run(circuit, start + 2 * HOUR, {start + HOUR: change(solar=0)})
+    assert circuit.truth(start, 2) == pytest.approx([0.3] * 2)
+    assert await hourly(hass, gross, start, 2) == approx([0.3, 0.3])
+    assert await hourly(hass, main, start, 2) == approx([0.8, 0.8])
+
+
+@pytest.mark.parametrize("epoch", [DST_EPOCH])
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_across_the_fall_back(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """Net, through the night the clocks go back (US/Pacific, 1 November).
+
+    Statistics hours are UTC hours: 01:00 PDT, 01:00 PST and 02:00 PST are
+    three hours of 0.3 kWh, and the safety net, which works in local time,
+    finds nothing.
+
+    Load 300 W, solar 1000 W, 0 W from 1:30. True consumption: 0.3 kWh per
+    hour.
+    """
+    local = [dt_util.as_local(start + hour * HOUR) for hour in range(3)]
+    assert [when.hour for when in local] == [1, 1, 2]
+    assert local[0].utcoffset() != local[1].utcoffset()
+    circuit = Circuit("net", load=300, solar=1000)
+    clock, gross, power = await begin(hass, client, freezer, circuit, start)
+    await clock.run(circuit, start + 3 * HOUR, {start + 90 * MINUTE: change(solar=0)})
+    assert circuit.truth(start, 3) == pytest.approx([0.3] * 3)
+    assert await hourly(hass, gross, start, 3) == approx([0.3, 0.3, 0.3])
+    hints = await safety_net(hass, client, gross, power)
+    assert not [h for h in hints if h["code"] in ("gross_off", "gross_unknown")]

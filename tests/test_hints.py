@@ -777,7 +777,7 @@ def _setup(
             GROSS_POWER,
             {
                 "template_type": "sensor",
-                "state": gross_power_template(CIRCUIT_POWER, PV_POWER),
+                "state": gross_power_template(CIRCUIT_POWER, PV_POWER, TERM_POWER),
             },
         )
         records[power_entry] = {"kind": "gross_power", "stat": DRAWN, "method": method}

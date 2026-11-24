@@ -98,7 +98,7 @@ from .hierarchy import (
     Prefs,
     used_stats,
 )
-from .integral import INTEGRAL_OPTIONS, async_create_integral, entity_unit
+from .integral import GROSS_INTEGRAL_OPTIONS, async_create_integral, entity_unit
 from .meter_inputs import Cache, meter_inputs
 from .stats_probe import StatsEvidence, async_probe
 from .template_meter import SENSOR_OPTIONS, TemplateKind, async_create_template
@@ -318,25 +318,37 @@ def gross_energy_template(
     return _template(terms, energy=True, offset=offset)
 
 
-def gross_power_template(circuit: str, solar: str, *, invert: bool = False) -> str:
+def gross_power_template(
+    circuit: str, solar: str, held: str, *, invert: bool = False
+) -> str:
     """Return the gross power template (W, 1 decimal): circuit + solar.
 
     The circuit's power is turned around with `invert` (positive on export);
-    without a number it makes the template `none`. An offline solar is 0,
-    except while the circuit feeds in: then the template is `none`, as its
-    true value is unknown. Home Assistant's integral counts no energy for an
-    unknown source and stays available, so the gross energy never falls
-    for a dropout of the solar. There is no floor at 0: a wrong sign must
-    stay visible.
+    without a number it makes the template `none`. The solar part is `held`,
+    the solar's held power template (`solar_power_template`, as the solar
+    term reads it): through a short dropout of `solar` it keeps the solar's
+    last power, then 0; without a number it counts 0, unless `solar` has
+    one (a unit the held template cannot read): `none`. Once the hold has
+    ended (`solar` still not a number, `held` 0) while the circuit feeds in,
+    the template is `none` (H6a), as its true value is unknown. Home
+    Assistant's integral counts no energy for an unknown source and stays
+    available, so the gross energy never falls for a dropout of the solar.
+    There is no floor at 0: a wrong sign must stay visible.
     """
     circuit_term = _Term("circuit", circuit, -1 if invert else 1)
+    held_term = _Term("held", held, zero=True)
     circuit_w = _w(circuit_term)[2]
     if invert:
         circuit_w = f"-1 * {circuit_w}"
+    held_w = _w(held_term)[2]
+    raw = f"states('{solar}') | is_number"
     return _template(
-        [circuit_term, _Term("solar", solar, zero=True)],
+        [circuit_term, held_term],
         energy=False,
-        guard=f"(solar | is_number or {circuit_w} >= 0)",
+        guard=(
+            f"(held | is_number or not {raw})"
+            f" and ({raw} or {held_w} != 0 or {circuit_w} >= 0)"
+        ),
     )
 
 
@@ -598,16 +610,19 @@ class MethodStatus:
 class SolarTerm:
     """Where the solar energy of EM, Plug and Net comes from.
 
-    `kind` "integral": the integral of the 0-mapped template of the power
-    sensor `source`, `reuse` when one of ours exists already. "counter": the
-    solar's own lifetime counter `source`. None: it cannot be built, for the
-    reason `missing`.
+    `kind` "integral": the integral of the 0-mapped (held) template of the
+    power sensor `source`, `reuse` when one of ours exists already. "counter":
+    the solar's own lifetime counter `source`. None: it cannot be built, for
+    the reason `missing`. `held` is our held template of the solar power to
+    reuse, (entry ID, entity): the solar term's and every gross power's
+    solar part.
     """
 
     kind: Literal["integral", "counter"] | None
     source: str
     reuse: str | None = None
     missing: Blocked | None = None
+    held: tuple[str, str] | None = None
 
     def reads(self) -> str | None:
         """Return the entity the gross template reads now (None: a new one)."""
@@ -658,14 +673,24 @@ class Plan:
         """Return the helpers create makes, in order."""
         if self.method is None:
             return []
+        roles = [Role.SOLAR_POWER] if self.needs_held() else []
         if self.method is Method.POWER:
-            return [Role.POWER, Role.ENERGY]
-        roles = []
+            return [*roles, Role.POWER, Role.ENERGY]
         if self.solar_term.kind == "integral" and self.solar_term.reuse is None:
-            roles += [Role.SOLAR_POWER, Role.SOLAR_ENERGY]
+            roles.append(Role.SOLAR_ENERGY)
         if self.gross_power is not None:
             roles.append(Role.POWER)
         return [*roles, Role.ENERGY]
+
+    def needs_held(self) -> bool:
+        """Return True if create makes the solar's held template.
+
+        The gross power and the solar term read it; one of ours is reused.
+        """
+        uses = self.gross_power is not None or (
+            self.method is not Method.POWER and self.solar_term.kind == "integral"
+        )
+        return uses and self.solar_term.held is None
 
     def default_name(self, hass: HomeAssistant, role: Role) -> str:
         """Return the name a helper gets when the panel gives none."""
@@ -790,14 +815,17 @@ def _find_saved(
     return device, source
 
 
-def _reusable_solar_term(
+def _reusable_solar(
     hass: HomeAssistant, helpers: CreatedHelpers, solar_power: str
-) -> str | None:
-    """Return our integral of `solar_power`'s 0-mapped template, or None.
+) -> tuple[tuple[str, str] | None, str | None]:
+    """Return our held template of `solar_power` and our integral of it.
 
-    Only a pair exactly as the setup builds it now: our template of the
-    solar power with our options, and our left integral of it with our
-    options, both enabled. A helper the user changed is never reused.
+    The held template is (entry ID, entity), or None; the integral its
+    entity, or None. Only helpers exactly as the setup builds them now: our
+    template of the solar power with our options, and our left integral of
+    it with our options (GROSS_INTEGRAL_OPTIONS), each enabled. A pair is
+    preferred; else the newest such template alone, which a From power setup
+    makes. A helper the user changed is never reused.
     """
     registry = er.async_get(hass)
     entries = hass.config_entries
@@ -815,23 +843,33 @@ def _reusable_solar_term(
     template_options = {"state": solar_power_template(solar_power)} | SENSOR_OPTIONS[
         "power"
     ]
-    for entry_id, record in reversed(helpers.records().items()):
-        if (
-            record.get("kind") != KIND_SOLAR_ENERGY
-            or record.get("power") != solar_power
+
+    def held_of(entry_id: Any) -> tuple[str, str] | None:
+        template = entity_of(entry_id, "template")
+        if template is None or any(
+            template[1].get(k) != v for k, v in template_options.items()
         ):
+            return None
+        return str(entry_id), template[0]
+
+    alone: tuple[str, str] | None = None
+    for entry_id, record in reversed(helpers.records().items()):
+        if record.get("power") != solar_power:
             continue
-        template = entity_of(record.get("template"), "template")
+        if record.get("kind") == KIND_SOLAR_POWER and alone is None:
+            alone = held_of(entry_id)
+        if record.get("kind") != KIND_SOLAR_ENERGY:
+            continue
+        held = held_of(record.get("template"))
         integral = entity_of(entry_id, "integration")
         if (
-            template is not None
+            held is not None
             and integral is not None
-            and all(template[1].get(k) == v for k, v in template_options.items())
-            and integral[1].get("source") == template[0]
-            and all(integral[1].get(k) == v for k, v in INTEGRAL_OPTIONS.items())
+            and integral[1].get("source") == held[1]
+            and all(integral[1].get(k) == v for k, v in GROSS_INTEGRAL_OPTIONS.items())
         ):
-            return integral[0]
-    return None
+            return held, integral[0]
+    return alone, None
 
 
 @dataclass
@@ -994,23 +1032,29 @@ def _live(
     solar_power: str | None,
     *,
     invert: bool,
+    held: str | None = None,
 ) -> dict[str, float | None]:
-    """Return the circuit, solar and gross power now, as the template reads them."""
+    """Return the circuit, solar and gross power now, as the template reads them.
+
+    The solar without a number is what its held template `held` (ours, to
+    be reused) holds, else 0: a new one starts without a value of its own.
+    """
     circuit_w = _value(hass, circuit, "power") if circuit is not None else None
     if circuit_w is not None and invert:
         circuit_w = -circuit_w
     solar_w: float | None = None
     offline = False
     if solar_power is not None:
-        # Offline (not a number) is 0, like in the template.
         state = hass.states.get(solar_power)
         offline = state is None or not _is_number(state.state)
-        solar_w = 0.0 if offline else _value(hass, solar_power, "power")
+        solar_w = _value(hass, solar_power, "power")
+        if offline:
+            solar_w = (_value(hass, held, "power") if held is not None else None) or 0.0
     gross_w = (
         round(circuit_w + solar_w, POWER_DECIMALS)
         if circuit_w is not None
         and solar_w is not None
-        and not (offline and circuit_w < 0)
+        and not (offline and solar_w == 0 and circuit_w < 0)
         else None
     )
     return {"circuit_w": circuit_w, "solar_w": solar_w, "gross_w": gross_w}
@@ -1025,9 +1069,8 @@ def _solar_term(
 ) -> SolarTerm:
     """Return where the solar energy comes from (R1: power first)."""
     if solar_power is not None:
-        return SolarTerm(
-            "integral", solar_power, _reusable_solar_term(hass, helpers, solar_power)
-        )
+        held, reuse = _reusable_solar(hass, helpers, solar_power)
+        return SolarTerm("integral", solar_power, reuse, held=held)
     if not _usable(hass, solar, "energy"):
         return SolarTerm(None, solar, missing=Blocked.UNSUPPORTED_INPUT)
     if (missing := inputs.counter(solar)) is not None:
@@ -1163,6 +1206,7 @@ async def async_plan(
     invert = choices.invert
     if invert is None:
         invert = circuit[0] is not None and default_inverted(hass, circuit[0])
+    term = _solar_term(hass, helpers, inputs, solar, solar_power[0])
     plan = Plan(
         stat=stat,
         meter_name=device.get(NAME) or _name(hass, stat) or stat,
@@ -1179,7 +1223,7 @@ async def async_plan(
         solar=solar_power,
         signed=signed,
         evidence=inputs.evidence,
-        solar_term=_solar_term(hass, helpers, inputs, solar, solar_power[0]),
+        solar_term=term,
         gross_power=(circuit[0], solar_power[0])
         if circuit[0] is not None
         and solar_power[0] is not None
@@ -1187,7 +1231,13 @@ async def async_plan(
         and not _disabled(hass, circuit[0])
         and _usable(hass, solar_power[0], "power")
         else None,
-        live=_live(hass, circuit[0], solar_power[0], invert=invert),
+        live=_live(
+            hass,
+            circuit[0],
+            solar_power[0],
+            invert=invert,
+            held=term.held[1] if term.held is not None else None,
+        ),
     )
     if plan.method in ENERGY_METHODS and plan.gross_power is not None and not signed:
         # The live gross power of EM, Plug and Net has the circuit power's
@@ -1289,11 +1339,23 @@ async def async_create(
     try:
         power_entry: str | None = None
         stat_rate: str | None = None
+        held = plan.solar_term.held
+
+        async def held_now() -> tuple[str, str]:
+            """Return the held template: ours to reuse, else a new one."""
+            nonlocal held
+            if held is None:
+                held = await _async_held(hass, plan.solar_term.source, name, record)
+            return held
+
         if plan.gross_power is not None:
+            held_entity = (await held_now())[1]
             power_entry, stat_rate = await async_create_template(
                 hass,
                 name(Role.POWER),
-                gross_power_template(*plan.gross_power, invert=plan.invert),
+                gross_power_template(
+                    *plan.gross_power, held_entity, invert=plan.invert
+                ),
                 "power",
             )
             await record(
@@ -1304,10 +1366,12 @@ async def async_create(
             )
         if method is Method.POWER and stat_rate is not None:
             entry_id, gross = await async_create_integral(
-                hass, stat_rate, name(Role.ENERGY)
+                hass, stat_rate, name(Role.ENERGY), options=GROSS_INTEGRAL_OPTIONS
             )
         else:
-            solar = await _async_solar_energy(hass, plan.solar_term, name, record)
+            solar = plan.solar_term.reads() or await _async_solar_energy(
+                hass, plan.solar_term.source, await held_now(), name, record
+            )
             entry_id, gross = await async_create_template(
                 hass,
                 name(Role.ENERGY),
@@ -1330,27 +1394,30 @@ async def async_create(
     return gross, stat_rate
 
 
+async def _async_held(
+    hass: HomeAssistant, solar_power: str, name: Callable[[Role], str], record: _Record
+) -> tuple[str, str]:
+    """Create the solar's held power template; return its entry ID and entity."""
+    entry_id, template = await async_create_template(
+        hass, name(Role.SOLAR_POWER), solar_power_template(solar_power), "power"
+    )
+    await record(entry_id, kind=KIND_SOLAR_POWER, power=solar_power)
+    return entry_id, template
+
+
 async def _async_solar_energy(
     hass: HomeAssistant,
-    term: SolarTerm,
+    solar_power: str,
+    held: tuple[str, str],
     name: Callable[[Role], str],
     record: _Record,
 ) -> str:
-    """Return the solar term's entity: the counter, reused, or a new integral.
+    """Return a new solar term: the integral (kWh) of the held template `held`.
 
-    A new one is the 0-mapped template of the solar's power and its integral
-    (kWh), recorded so the next setup with this solar reuses them.
+    It is recorded, so the next setup with this solar reuses it.
     """
-    if (reads := term.reads()) is not None:
-        return reads
-    template_entry, template = await async_create_template(
-        hass, name(Role.SOLAR_POWER), solar_power_template(term.source), "power"
-    )
-    await record(template_entry, kind=KIND_SOLAR_POWER, power=term.source)
     entry_id, integral = await async_create_integral(
-        hass, template, name(Role.SOLAR_ENERGY)
+        hass, held[1], name(Role.SOLAR_ENERGY), options=GROSS_INTEGRAL_OPTIONS
     )
-    await record(
-        entry_id, kind=KIND_SOLAR_ENERGY, power=term.source, template=template_entry
-    )
+    await record(entry_id, kind=KIND_SOLAR_ENERGY, power=solar_power, template=held[0])
     return integral
