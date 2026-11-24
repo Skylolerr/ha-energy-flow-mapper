@@ -28,10 +28,15 @@ PLAUSIBILITY_MIN_LITERS: Final = 10.0
 ISSUE_UNSUPPORTED_ENERGY_API: Final = "unsupported_energy_api"
 
 HELPERS_STORAGE_VERSION: Final = 1
-# 2: a record per helper (what the setup made it for), next to the IDs. Only
+# 2: a record per helper (what the setup made it for), next to the IDs. 3: the
+# records moved to their own file (HELPER_RECORDS_STORAGE_KEY). Only
 # the minor version grows, so an older release can still load the file.
-HELPERS_STORAGE_MINOR_VERSION: Final = 2
+HELPERS_STORAGE_MINOR_VERSION: Final = 3
 HELPERS_STORAGE_KEY: Final = f"{DOMAIN}.helpers"
+# What each created helper was made for, by entry ID. In a file of its own:
+# 0.10.x never knows it, so its saves of the helpers file cannot drop it.
+HELPER_RECORDS_STORAGE_VERSION: Final = 1
+HELPER_RECORDS_STORAGE_KEY: Final = f"{DOMAIN}.helper_records"
 SUGGESTIONS_STORAGE_VERSION: Final = 1
 # 2: dismissed hints next to the ignored suggestions. 3: a dismissal of a
 # safety-net hint names its event (hour or day). Only the minor version grows,

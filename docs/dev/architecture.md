@@ -38,8 +38,10 @@ All in `.storage/`, each with its own version:
 
 - `energy_flow_mapper.backups` (`STORAGE_VERSION` 1 / `STORAGE_MINOR_VERSION` 2)
 - `energy_flow_mapper.helpers` (`HELPERS_STORAGE_VERSION` 1 /
-  `HELPERS_STORAGE_MINOR_VERSION` 2): `entries`, the config entry IDs of the helpers the
-  panel created, and `records`, entry ID → what the solar setup made the helper for:
+  `HELPERS_STORAGE_MINOR_VERSION` 3): `entries`, the config entry IDs of the helpers the
+  panel created.
+- `energy_flow_mapper.helper_records` (`HELPER_RECORDS_STORAGE_VERSION` 1): `records`,
+  entry ID → what the solar setup made the helper for:
   - `{kind: "solar_power", power}`: the held template of the solar power sensor `power`;
   - `{kind: "solar_energy", power, template}`: the solar term, the integral of the held
     template whose entry ID is `template`;
@@ -48,8 +50,16 @@ All in `.storage/`, each with its own version:
     of its gross power, or None.
 
   The setup reuses solar terms by their records, the safety net and `SolarHolds` find the
-  gross meters by them. Records of IDs that are not in `entries` are dropped on load. The
-  migration from 1.1 adds empty records.
+  gross meters by them. Both files belong to `CreatedHelpers`; a change writes the records
+  file first, then the helpers file; removing the integration deletes both, like the other
+  stores (unloading keeps them). Records of IDs that are not in `entries` are dropped
+  on load. Records of helpers the user deleted in Home Assistant are kept: every consumer
+  reaches a record only through an existing config entry (an entity's, or one the record
+  names), and entry IDs are never reused, so such a record does nothing
+  (`test_records_of_removed_helpers_do_nothing`). The records have their own file because
+  0.10.x saves the helpers file with `entries` only. In 1.2 they were in the helpers file:
+  on load, records still there move once to the records file (which wins where both have
+  one), and only then is the helpers file saved without them. 1.1 files have no records.
 - `energy_flow_mapper.groups` (`GROUPS_STORAGE_VERSION` 1)
 - `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
   `SUGGESTIONS_STORAGE_MINOR_VERSION` 3): ignored suggestions and dismissed hints
@@ -67,9 +77,11 @@ Any change of a store format bumps its version and adds a migration, with a test
 and another minor version even without a migration for it (the base
 `_async_migrate_func` raises `NotImplementedError`, and with an equal major version the data
 is kept as it is) and saves it again under its own version. So 0.10.x (helpers and
-suggestions 1.1) loads the 1.2 and 1.3 files; the first save of its own then keeps only
-what it knows (`entries`, `ignored`). `test_store_1_3_loads_in_older_releases` loads the
-suggestions file with a plain version-1 `Store`.
+suggestions 1.1) loads the 1.3 files; the first save of its own then keeps only what it
+knows (`entries`, `ignored`). It never opens the records file, so only the dismissed hints
+are lost. `test_store_1_3_loads_in_older_releases` loads the suggestions file with a plain
+version-1 `Store`; `test_records_survive_a_downgrade_to_0_10` and
+`test_setup_records_survive_a_downgrade_to_0_10` save the helpers file as 0.10.x does.
 
 ### Writing the energy preferences
 

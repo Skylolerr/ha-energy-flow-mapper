@@ -743,10 +743,11 @@ source when they differ by more than 0.5 kWh or 15 %, whichever is larger.
   Energy Flow Mapper reads it fresh, writes it through the same checks as the energy
   settings page and always sends complete lists, so unrelated settings are kept.
 - Backups are stored in `.storage/energy_flow_mapper.backups` (see [Backups](#backups)),
-  the list of helpers created by the panel (and what *Solar feeds in here…* made each one
-  for) in `.storage/energy_flow_mapper.helpers`, your
-  groups in `.storage/energy_flow_mapper.groups`, ignored suggestions and dismissed hints
-  in `.storage/energy_flow_mapper.suggestions`.
+  the list of helpers created by the panel in `.storage/energy_flow_mapper.helpers` and
+  what *Solar feeds in here…* made each one for in
+  `.storage/energy_flow_mapper.helper_records`, your groups in
+  `.storage/energy_flow_mapper.groups`, ignored suggestions and dismissed hints in
+  `.storage/energy_flow_mapper.suggestions`.
 - The integration has no entities and no devices.
 - The card is served with the panel. Its small loader is added to every frontend page;
   the card itself only loads when a dashboard shows it. Its one command only reads the

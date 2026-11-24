@@ -118,15 +118,15 @@ and Home Assistant show when they offer the update.
 
 ### ↩️ Going back to 0.10.x
 
-- 0.10.x still loads the stores of this release – the created helpers (1.2) and the
-  suggestions with the dismissed hints (1.3) – and keeps their content. The next time
-  0.10.x saves one of them itself (*Create meter*, *Create sum meter*, ignoring a
-  suggestion, *Show ignored suggestions again*), it drops what it does not know: the
-  records of what the setup made each helper for, and the dismissed hints. The gross
-  meters and their helpers stay and keep counting.
-- Back on 0.11 after such a save, the safety net no longer finds those gross meters, the
-  sum dialog asks to mark them as gross meters, a new setup makes a new helper for the
-  solar's energy instead of reusing it, and dismissed hints show again.
+- 0.10.x still loads the stores of this release – the created helpers (1.3) and the
+  suggestions with the dismissed hints (1.3) – and keeps their content. What the setup
+  made each helper for is kept in a file of its own that 0.10.x never touches, so it
+  survives the downgrade. The gross meters and their helpers stay and keep counting.
+- The next time 0.10.x saves the suggestions itself (ignoring a suggestion, *Show ignored
+  suggestions again*), it drops the dismissed hints. Back on 0.11 after such a save, they
+  show again. The safety net, the sum dialog and the reuse of the solar's energy work as
+  before. Helpers made on 0.10.x (*Create meter*, *Create sum meter*) have no such record,
+  as on 0.11.
 - A backup made by this release that changed a source's power sensor shows «source_rate: N»
   (N changed sources) in its summary on 0.10.x.
 - Dismissed safety-net hints from a test build of 0.11 are removed once on the update:

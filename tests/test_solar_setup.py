@@ -13,6 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.template import Template
 from homeassistant.util.unit_conversion import EnergyConverter, PowerConverter
 
@@ -22,8 +23,13 @@ from custom_components.energy_flow_mapper import (
 )
 from custom_components.energy_flow_mapper import integral as integral_module
 from custom_components.energy_flow_mapper import template_meter as template_module
-from custom_components.energy_flow_mapper.const import DOMAIN
+from custom_components.energy_flow_mapper.const import (
+    DOMAIN,
+    HELPER_RECORDS_STORAGE_KEY,
+    HELPERS_STORAGE_KEY,
+)
 from custom_components.energy_flow_mapper.device_rules import Method
+from custom_components.energy_flow_mapper.hints import _gross_meters
 from custom_components.energy_flow_mapper.integral import GROSS_INTEGRAL_OPTIONS
 from custom_components.energy_flow_mapper.meter_inputs import meter_inputs
 from custom_components.energy_flow_mapper.solar_setup import (
@@ -38,6 +44,7 @@ from custom_components.energy_flow_mapper.solar_setup import (
     solar_power_template,
 )
 from custom_components.energy_flow_mapper.stats_probe import StatsEvidence
+from custom_components.energy_flow_mapper.sum_meter import SolarHolds
 
 from .common import MockConfigEntry, WebSocketGenerator, async_fire_time_changed
 from .conftest import ENERGY_PREFS, _meter
@@ -1927,6 +1934,92 @@ async def test_solar_term_reused_for_second_setup(
     assert result["solar_term"] == {"kind": "integral", "reuse": None}
 
 
+def _with_device(stat: str) -> dict[str, Any]:
+    """Return the settings with a solar power and `stat` as the only device."""
+    return {**WITH_SOLAR_POWER, "device_consumption": [{"stat_consumption": stat}]}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_setup_records_survive_a_downgrade_to_0_10(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    hass_storage: dict[str, Any],
+) -> None:
+    """0.10.x saving the helpers file keeps what the setup's helpers are for.
+
+    0.10.x loads the helpers file as it is (same major version) and saves
+    the IDs only. Back on 0.11, the safety net still knows the gross meter,
+    the sum dialog lets it in, and the solar term is reused.
+    """
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    gross = response["result"]["entity_id"]
+    integral = _solar_integral(hass)
+    hass.states.async_set(integral, "12.5", {"unit_of_measurement": "kWh"})
+    records = loaded_entry.runtime_data.helpers.records()
+    assert sorted(record["kind"] for record in records.values()) == [
+        "gross_energy",
+        KIND_SOLAR_ENERGY,
+        KIND_SOLAR_POWER,
+    ]
+
+    # 0.10.x: a plain Store of version 1.1, any save writes the IDs only.
+    old: Store[dict[str, Any]] = Store(hass, 1, HELPERS_STORAGE_KEY)
+    data = await old.async_load()
+    assert data is not None
+    await old.async_save({"entries": [*data["entries"], "made_in_0_10"]})
+    assert "records" not in hass_storage[HELPERS_STORAGE_KEY]["data"]
+
+    # Back on 0.11.
+    assert await hass.config_entries.async_reload(loaded_entry.entry_id)
+    await hass.async_block_till_done()
+    helpers = loaded_entry.runtime_data.helpers
+    assert "made_in_0_10" in helpers.entries()
+    assert helpers.records() == records
+    grosses = _gross_meters(hass, _with_device(gross), helpers.records())
+    assert [found.stat for found in grosses] == [gross]
+    assert SolarHolds(hass, WITH_SOLAR_POWER, helpers).hold(gross) is None
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.garage_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": integral}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_records_of_removed_helpers_do_nothing(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """The user deletes the setup's helpers: their records stay, but are dead.
+
+    A record is only ever reached through a config entry of Home Assistant
+    (an entity's, or one it names). A removed entry's ID never comes back,
+    so the record gives no hint, no reuse and no block.
+    """
+    response = await create(hass_ws_client, hass, method="net")
+    assert response["success"], response
+    gross = response["result"]["entity_id"]
+    helpers = loaded_entry.runtime_data.helpers
+    records = helpers.records()
+    for entry_id in records:
+        await hass.config_entries.async_remove(entry_id)
+    await hass.async_block_till_done()
+
+    assert helpers.records() == records
+    assert _gross_meters(hass, _with_device(gross), records) == []
+    holds = SolarHolds(hass, WITH_SOLAR_POWER, helpers)
+    assert holds.solar == {SOLAR, SOLAR_POWER}
+    assert holds._gross == set()
+    result = await result_of(
+        hass_ws_client, hass, stat="sensor.garage_energy", method="net"
+    )
+    assert result["solar_term"] == {"kind": "integral", "reuse": None}
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
 @pytest.mark.usefixtures("loaded_entry", "evidence")
 async def test_offset_from_used_values_new_integral_zero(
@@ -2121,9 +2214,13 @@ async def test_solar_setup_rolls_back_on_failure(
     hass_ws_client: WebSocketGenerator,
     loaded_entry: MockConfigEntry,
     monkeypatch: pytest.MonkeyPatch,
+    hass_storage: dict[str, Any],
     failing: int,
 ) -> None:
-    """A failing template removes every helper of the request and forgets it."""
+    """A failing template removes every helper of the request and forgets it.
+
+    Its records go from the records file as well.
+    """
     original = solar_setup.async_create_template
     calls = 0
 
@@ -2140,6 +2237,10 @@ async def test_solar_setup_rolls_back_on_failure(
     assert hass.config_entries.async_entries("template") == []
     assert hass.config_entries.async_entries("integration") == _poe(hass)
     assert loaded_entry.runtime_data.helpers.entries() == []
+    assert loaded_entry.runtime_data.helpers.records() == {}
+    if failing > 1:  # something was made and recorded before
+        assert hass_storage[HELPER_RECORDS_STORAGE_KEY]["data"] == {"records": {}}
+        assert hass_storage[HELPERS_STORAGE_KEY]["data"] == {"entries": []}
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
