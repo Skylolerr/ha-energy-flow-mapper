@@ -127,6 +127,9 @@ and Home Assistant show when they offer the update.
   show again. The safety net, the sum dialog and the reuse of the solar's energy work as
   before. Helpers made on 0.10.x (*Create meter*, *Create sum meter*) have no such record,
   as on 0.11.
+- Removing the integration while on 0.10.x leaves `.storage/energy_flow_mapper.helper_records`
+  behind. It is harmless: 0.11 uses none of its records once the list of created helpers is
+  gone.
 - A backup made by this release that changed a source's power sensor shows «source_rate: N»
   (N changed sources) in its summary on 0.10.x.
 - Dismissed safety-net hints from a test build of 0.11 are removed once on the update:

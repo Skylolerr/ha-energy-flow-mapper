@@ -50,10 +50,11 @@ All in `.storage/`, each with its own version:
     of its gross power, or None.
 
   The setup reuses solar terms by their records, the safety net and `SolarHolds` find the
-  gross meters by them. Both files belong to `CreatedHelpers`; a change writes the records
-  file first, then the helpers file; removing the integration deletes both, like the other
-  stores (unloading keeps them). Records of IDs that are not in `entries` are dropped
-  on load. Records of helpers the user deleted in Home Assistant are kept: every consumer
+  gross meters by them. Both files belong to `CreatedHelpers` and are written atomically
+  (`atomic_writes=True`). A save writes the records file first, then the helpers file;
+  removing the integration deletes both, the helpers file first, like the other stores
+  (unloading keeps them). Records of IDs that are not in `entries` are dropped in memory
+  on load, and from the file at the next save of the records. Records of helpers the user deleted in Home Assistant are kept: every consumer
   reaches a record only through an existing config entry (an entity's, or one the record
   names), and entry IDs are never reused, so such a record does nothing
   (`test_records_of_removed_helpers_do_nothing`). The records have their own file because

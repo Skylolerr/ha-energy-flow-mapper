@@ -50,9 +50,9 @@ class _HelpersStore(Store[CreatedHelpersData]):
         return old_data
 
 
-def _records_of(data: Mapping[str, Any] | None) -> dict[str, Record]:
-    """Return the well-formed records of a loaded file."""
-    raw = data.get("records") if data else None
+def _records_of(data: object) -> dict[str, Record]:
+    """Return the well-formed records of a loaded file (anything else: none)."""
+    raw = data.get("records") if isinstance(data, Mapping) else None
     if not isinstance(raw, dict):
         return {}
     return {
@@ -72,8 +72,10 @@ class CreatedHelpers:
 
     The records live in a file of their own (`HELPER_RECORDS_STORAGE_KEY`):
     0.10.x loads and saves the helpers file with the IDs only, and so would
-    drop records kept in it. It never touches the records file. Every change
-    writes the records file first, then the helpers file.
+    drop records kept in it. It never touches the records file. Every save
+    writes the records file first, then the helpers file; removing deletes
+    the helpers file first, so a crash in between leaves only records whose
+    IDs are on no list. Both files are written atomically.
     """
 
     def __init__(self, hass: HomeAssistant) -> None:
@@ -83,9 +85,13 @@ class CreatedHelpers:
             HELPERS_STORAGE_VERSION,
             HELPERS_STORAGE_KEY,
             minor_version=HELPERS_STORAGE_MINOR_VERSION,
+            atomic_writes=True,
         )
         self._records_store: Store[HelperRecordsData] = Store(
-            hass, HELPER_RECORDS_STORAGE_VERSION, HELPER_RECORDS_STORAGE_KEY
+            hass,
+            HELPER_RECORDS_STORAGE_VERSION,
+            HELPER_RECORDS_STORAGE_KEY,
+            atomic_writes=True,
         )
         self._entries: list[str] = []
         self._records: dict[str, Record] = {}
@@ -98,7 +104,7 @@ class CreatedHelpers:
         before the helpers file loses them: a crash in between loses nothing.
         """
         data: Mapping[str, Any] | None = await self._store.async_load()
-        stored: Mapping[str, Any] | None = await self._records_store.async_load()
+        stored: object = await self._records_store.async_load()
         self._entries = list(data["entries"]) if data else []
         merged = _records_of(data) | _records_of(stored)
         self._records = {
@@ -132,25 +138,32 @@ class CreatedHelpers:
     async def async_add(
         self, entry_id: str, record: Mapping[str, Any] | None = None
     ) -> None:
-        """Remember a created helper (and what it is for); save immediately."""
+        """Remember a created helper (and what it is for); save immediately.
+
+        Both are taken in memory before any save, so a failed save leaves
+        nothing that `async_discard` cannot forget again.
+        """
+        if entry_id not in self._entries:
+            self._entries.append(entry_id)
         if record is not None:
             self._records[entry_id] = dict(record)
             await self._save_records()
-        if entry_id not in self._entries:
-            self._entries.append(entry_id)
         await self._save_entries()
 
     async def async_discard(self, entry_id: str) -> None:
         """Forget one helper (it was removed again) and save immediately."""
-        if entry_id in self._entries:
-            if self._records.pop(entry_id, None) is not None:
-                await self._save_records()
+        recorded = self._records.pop(entry_id, None) is not None
+        listed = entry_id in self._entries
+        if listed:
             self._entries.remove(entry_id)
+        if recorded:
+            await self._save_records()
+        if listed:
             await self._save_entries()
 
     async def async_remove(self) -> None:
-        """Delete both files; the helpers themselves stay."""
+        """Delete both files, the helpers file first; the helpers themselves stay."""
         self._entries = []
         self._records = {}
-        await self._records_store.async_remove()
         await self._store.async_remove()
+        await self._records_store.async_remove()

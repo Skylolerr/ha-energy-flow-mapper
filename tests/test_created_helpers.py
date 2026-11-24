@@ -195,16 +195,15 @@ async def test_damaged_records_are_left_out(
     assert store.records() == {"a": {"kind": "x"}, "d": {"kind": "z"}}
 
 
+@pytest.mark.parametrize("data", [{"records": ["a"]}, ["a"], "x", 3])
 async def test_damaged_records_file_is_read_as_empty(
-    hass: HomeAssistant, hass_storage: dict[str, Any]
+    hass: HomeAssistant, hass_storage: dict[str, Any], data: Any
 ) -> None:
-    """A records file without a records mapping gives no records."""
+    """A records file without a records mapping gives no records, and loads."""
     hass_storage[HELPERS_STORAGE_KEY] = _file(
         HELPERS_STORAGE_KEY, {"entries": ["a"]}, minor=3
     )
-    hass_storage[HELPER_RECORDS_STORAGE_KEY] = _file(
-        HELPER_RECORDS_STORAGE_KEY, {"records": ["a"]}
-    )
+    hass_storage[HELPER_RECORDS_STORAGE_KEY] = _file(HELPER_RECORDS_STORAGE_KEY, data)
     store = CreatedHelpers(hass)
     await store.async_load()
     assert store.entries() == ["a"]
@@ -262,3 +261,101 @@ async def test_records_survive_a_downgrade_to_0_10(
     assert again.entries() == ["gross1", "term1", "integral_made_in_0_10"]
     assert again.records() == {"gross1": gross, "term1": term}
     assert hass_storage[HELPERS_STORAGE_KEY]["minor_version"] == 3
+
+
+REC = {"kind": "gross_energy", "stat": "sensor.main_energy", "method": "em"}
+
+
+def _failing(monkeypatch: pytest.MonkeyPatch, method: str, key: str) -> None:
+    """Make `Store.<method>` raise for the file `key` (a full disk, a power cut)."""
+    original = getattr(Store, method)
+
+    async def fail(self: Store[Any], *args: Any) -> None:
+        if self.key == key:
+            raise OSError("power cut")
+        await original(self, *args)
+
+    monkeypatch.setattr(Store, method, fail)
+
+
+async def test_add_writes_the_records_file_first(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash before the helpers file is written finds the record saved."""
+    store = CreatedHelpers(hass)
+    await store.async_load()
+    _failing(monkeypatch, "async_save", HELPERS_STORAGE_KEY)
+    with pytest.raises(OSError, match="power cut"):
+        await store.async_add("g", REC)
+    assert hass_storage[HELPER_RECORDS_STORAGE_KEY]["data"] == {"records": {"g": REC}}
+    assert HELPERS_STORAGE_KEY not in hass_storage
+
+
+async def test_discard_after_a_failed_records_save(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The setup's undo of a helper whose records save failed forgets it all."""
+    store = CreatedHelpers(hass)
+    await store.async_load()
+    _failing(monkeypatch, "async_save", HELPER_RECORDS_STORAGE_KEY)
+    with pytest.raises(OSError, match="power cut"):
+        await store.async_add("g", REC)
+    monkeypatch.undo()
+    await store.async_discard("g")
+    assert store.records() == {}
+    assert store.entries() == []
+    assert hass_storage[HELPER_RECORDS_STORAGE_KEY]["data"] == {"records": {}}
+    assert hass_storage[HELPERS_STORAGE_KEY]["data"] == {"entries": []}
+
+
+async def test_discard_forgets_a_record_of_an_unlisted_id(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A record without its ID on the list is forgotten as well."""
+    store = CreatedHelpers(hass)
+    await store.async_load()
+    await store.async_add("g", REC)
+    monkeypatch.setattr(store, "_entries", [])
+    await store.async_discard("g")
+    assert store.records() == {}
+
+
+async def test_remove_deletes_the_helpers_file_first(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A crash in between leaves only the records file, whose records are dead."""
+    store = CreatedHelpers(hass)
+    await store.async_load()
+    await store.async_add("g", REC)
+    _failing(monkeypatch, "async_remove", HELPER_RECORDS_STORAGE_KEY)
+    with pytest.raises(OSError, match="power cut"):
+        await store.async_remove()
+    assert HELPERS_STORAGE_KEY not in hass_storage
+    assert HELPER_RECORDS_STORAGE_KEY in hass_storage
+    monkeypatch.undo()
+    again = CreatedHelpers(hass)
+    await again.async_load()
+    assert again.entries() == []
+    assert again.records() == {}
+
+
+async def test_both_files_are_written_atomically(
+    hass: HomeAssistant, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A power cut during a write cannot leave a truncated file."""
+    atomic: dict[str, bool] = {}
+    original = Store.__init__
+
+    def init(self: Store[Any], *args: Any, **kwargs: Any) -> None:
+        original(self, *args, **kwargs)
+        atomic[self.key] = kwargs.get("atomic_writes", False)
+
+    monkeypatch.setattr(Store, "__init__", init)
+    CreatedHelpers(hass)
+    assert atomic == {HELPERS_STORAGE_KEY: True, HELPER_RECORDS_STORAGE_KEY: True}
