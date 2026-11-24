@@ -4968,7 +4968,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             ${this._t("sum_solar_save_first", { names: saveFirst.map((stat) => this._name(stat)).join(", ") })}
           </p>`
         : nothing}
-      ${solar !== null ? this._renderSumSolar(solar) : nothing}
+      ${solar !== null ? this._renderSumSolar(solar, fixed) : nothing}
       ${mixed ? this._renderSumMixed(all) : nothing}
       ${periodic.length
         ? html`<div class="warning sum-periodic">
@@ -5053,25 +5053,40 @@ export class EnergyFlowMapperPanel extends LitElement {
    * Why a sum with a solar is not built, and the way on: which members are a
    * solar or part of one, which hold one (they can be marked as gross meters),
    * and a setup button for each device of the sum that is no solar holder;
-   * with several, the gross meter stays a device of its own.
+   * with several, the gross meter stays a device of its own. A group's
+   * devices (`fixed`) cannot be removed from its sum: the way on is to move
+   * them out of the group first.
    */
-  private _renderSumSolar(solar: NonNullable<ReturnType<EnergyFlowMapperPanel["_sumSolar"]>>): TemplateResult {
+  private _renderSumSolar(
+    solar: NonNullable<ReturnType<EnergyFlowMapperPanel["_sumSolar"]>>,
+    fixed: string[] = [],
+  ): TemplateResult {
     const { solars, holders, devices } = solar;
     const names = (stats: string[]) => stats.map((stat) => this._name(stat)).join(", ");
+    const inGroup = (stats: string[]) => stats.some((stat) => fixed.includes(stat));
+    const group = inGroup(solars);
     return html`${solars.length
         ? html`<p class="warning sum-solar-is">${this._t("sum_solar_is", { names: names(solars) })}</p>`
         : nothing}
       <p class="warning sum-solar">${this._t("sum_solar_use_setup")}</p>
       ${holders.length
-        ? html`<p class="hint sum-solar-holders">${this._t("sum_solar_holders", { names: names(holders) })}</p>`
+        ? html`<p class="hint sum-solar-holders">
+            ${this._t(inGroup(holders) ? "sum_solar_holders_group" : "sum_solar_holders", { names: names(holders) })}
+          </p>`
         : nothing}
       ${solars.length === 0
         ? nothing
         : devices.length === 0
-          ? html`<p class="hint sum-solar-no-device">${this._t("sum_solar_no_device")}</p>`
+          ? html`<p class="hint sum-solar-no-device">
+              ${this._t(group ? "sum_solar_no_device_group" : "sum_solar_no_device")}
+            </p>`
           : html`${devices.length > 1
-                ? html`<p class="hint sum-solar-one-device">${this._t("sum_solar_one_device")}</p>`
-                : nothing}
+                ? html`<p class="hint sum-solar-one-device">
+                    ${this._t(group ? "sum_solar_one_device_group" : "sum_solar_one_device")}
+                  </p>`
+                : group
+                  ? html`<p class="hint sum-solar-group-move">${this._t("sum_solar_group_move")}</p>`
+                  : nothing}
               ${devices.map(
                 (device) =>
                   html`<button class="sum-solar-setup" @click=${() => this._openSolarSetup(device, solar.solar)}>

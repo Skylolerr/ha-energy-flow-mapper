@@ -3825,6 +3825,35 @@ describe("groups", () => {
     expect(dialogButton(el, "Create").disabled).toBe(true);
   });
 
+  it("a group's sum says to move a fixed solar holder out of the group, not to remove it", async () => {
+    const mock = holderMock("holder");
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.groups = {
+      electricity: [{ id: "g1", name: "Roof", parent: null, group: null, members: ["sensor.tv", "sensor.roof_total"] }],
+    };
+    const el = await mount(mock);
+    el._openSum({ group: "g1" });
+    await settle(el);
+    const content = dialogText(el);
+    expect(content).toContain("Already hold a solar: Roof total.");
+    expect(content).toContain("move it out of the group first");
+    expect(content).not.toContain("remove it from the sum");
+    // A group's devices are fixed: no remove button.
+    expect(dialogEl(el).querySelector('.sum-member[data-stat="sensor.roof_total"] button.remove')).toBeNull();
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+
+    // The solar itself in a group: move it out, not remove it.
+    snap.groups = {
+      electricity: [{ id: "g2", name: "Roof", parent: null, group: null, members: ["sensor.solar", "sensor.tv"] }],
+    };
+    snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
+    await el._load();
+    el._openSum({ group: "g2" });
+    await settle(el);
+    expect(dialogText(el)).toContain("Move the solar out of the group first");
+    expect(dialogText(el)).not.toContain("Sum the other devices without the solar");
+  });
+
   it("sum never takes the solar itself", async () => {
     const mock = holderMock("solar");
     mock.responses["energy_flow_mapper/solar_setup_preview"] = new Error("not here");
