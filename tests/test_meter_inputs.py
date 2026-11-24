@@ -79,6 +79,11 @@ def _group(
             "{{ states['sensor.a'].state | float + states['sensor.b'].state | float }}",
             True,
         ),
+        # The form for an object ID that starts with a digit.
+        (
+            "{{ states.sensor['a'].state | float + states.sensor[ \"b\" ].state }}",
+            True,
+        ),
         # Only as quoted literals: inputs, but how they count is unknown.
         ("{{ ['sensor.a','sensor.b'] | map('states') | map('float',0) | sum }}", False),
         (
@@ -108,6 +113,23 @@ async def test_inputs_template_text_forms(
         "entities": {A, B},
         "signed_known": signed_known,
         "subtracted": set(),
+    }
+
+
+async def test_inputs_of_an_object_id_starting_with_a_digit(
+    hass: HomeAssistant,
+) -> None:
+    """`states.sensor['1_og']` reads `sensor.1_og`, a minus before it subtracts."""
+    _meter(hass, "sensor.1_og")
+    _template(
+        hass,
+        "sensor.t",
+        "{{ states('sensor.a') | float - states.sensor['1_og'].state | float }}",
+    )
+    assert meter_inputs(hass, "sensor.t") == {
+        "entities": {A, "sensor.1_og"},
+        "signed_known": True,
+        "subtracted": {"sensor.1_og"},
     }
 
 
@@ -305,6 +327,15 @@ async def test_inputs_depth_limit(hass: HomeAssistant) -> None:
     [
         ("{{ states('sensor.a') | float - states('sensor.b') | float }}", {B}),
         ("{{ states('sensor.a')|float-states.sensor.b.state|float }}", {B}),
+        ("{{ states('sensor.a')|float-states.sensor['b'].state|float }}", {B}),
+        # An age compared with a time subtracts nothing.
+        (
+            (
+                "{% if states.sensor['b'].last_changed"
+                " > now() - timedelta(minutes=5) %}{{ states('sensor.a') }}{% endif %}"
+            ),
+            set(),
+        ),
         ("{{ -states('sensor.a') | float + states('sensor.b') | float }}", {A}),
         # The minus ends at the bracket it stands in.
         (

@@ -14,7 +14,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `hierarchy.py` | Pure tree logic: build, validate, move, untracked consumption, plausibility, counted twice, error comparison. No HA imports needed to test it |
 | `groups.py` | Pure logic of the device groups |
 | `candidates.py` | Describe statistics (name, unit, device, power sensor, helper type) and find free sensors; `contained_in` names the meter of the settings that already holds a free sensor |
-| `meter_inputs.py` | What a meter holds: the inputs of template, group, integral and utility-meter helpers (from their config entries; YAML helpers are not seen), followed `MAX_DEPTH` (5) levels deep, with the subtracted ones and whether the signs are known. `direct_inputs` (one level), `meter_inputs` (all levels), `counted_inputs` (plus sign only, for `counted_twice`); feeds `contained_in`, `SolarHolds`, the safety net and the setup's "solar already in the meter" |
+| `meter_inputs.py` | What a meter holds: the inputs of template, group, integral and utility-meter helpers (from their config entries; YAML helpers are not seen), followed `MAX_DEPTH` (5) levels deep, with the subtracted ones and whether the signs are known; `states.<domain>['<id>']` reads as `states['<entity>']`. `direct_inputs` (one level), `meter_inputs` (all levels), `counted_inputs` (plus sign only, for `counted_twice`); feeds `contained_in`, `SolarHolds`, the safety net and the setup's "solar already in the meter" |
 | `device_rules.py` | Known-device rules of the solar setup (registry only, no state needed): `classify_meter` (Shelly RPC `em`/`em1`/`emdata`/`em1data` → EM; a Shelly `switch` with a returned sensor of its own: "Energy" → Plug, "Energy consumed" → EM; a meter that went below 0 → Net), the device family (own device, parent, children, disabled entities included), `drawn_candidates`, `returned_candidates` and `preselect_returned` (only a returned sensor of the meter's own channel, or the only one on its own device), `paired_power` (own device only, by a channel key per integration: Shelly, IoTaWatt, Emporia, Envoy, OpenDTU/AhoyDTU, Zigbee2MQTT), `default_inverted` (Huawei Solar's meter power) |
 | `energy_stats.py` | Energy per statistic in a period, from the recorder |
 | `daily_reset.py` | Recognise meters that reset periodically for `get` and the hints (the rule of `stats_probe.py`, utility meters with a cycle) |
@@ -143,8 +143,10 @@ helpers. The setup never writes the energy settings.
   W; while it is exactly `unavailable` and not `restored`, its own last value for
   `SOLAR_HOLD_SECONDS` (600; `now()` renders it every minute, so 10 to 11 minutes), then 0;
   `unknown`, a restored state or no own value yet give 0 at once; a number in an unknown
-  unit gives `none`. One per solar power, reused (`_reusable_solar`) when it is exactly
-  as the setup builds it now.
+  unit gives `none`. The solar's `last_changed` is read as `states.<domain>['<id>']` (an
+  object ID may start with a digit) and compared with `now() - timedelta(...)`, never
+  subtracted, so `meter_inputs` sees no minus on the solar. One per solar power, reused
+  (`_reusable_solar`) when it is exactly as the setup builds it now.
 - **Solar term** (`SolarTerm`, EM/Plug/Net): `integral` of the held template (record
   `solar_energy`, reused with it), or `counter`, the solar's own energy statistic, only
   without a solar power and when the evidence shows a lifetime counter (rises on

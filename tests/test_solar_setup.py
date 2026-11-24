@@ -520,6 +520,74 @@ async def test_solar_power_template_zero_mapped(hass: HomeAssistant) -> None:
     assert render(hass, template) is None
 
 
+# An object ID may start with a digit; `states.sensor.1_og_power` is no Jinja.
+DIGIT_POWER = "sensor.1_og_solar_power"
+
+
+async def test_templates_read_an_entity_starting_with_a_digit(
+    hass: HomeAssistant,
+) -> None:
+    """Every template is valid Jinja and reads inputs whose ID starts with a digit."""
+    held = solar_power_template(DIGIT_POWER)
+    gross_power = gross_power_template("sensor.2_circuit", DIGIT_POWER, "sensor.3_held")
+    gross_energy = gross_energy_template(
+        Method.EM, "sensor.4_drawn", "sensor.5_solar", "sensor.6_returned", offset=100
+    )
+    for text in (held, gross_power, gross_energy):
+        Template(text, hass).ensure_valid()
+    _set(hass, DIGIT_POWER, "0.6", "kW")
+    assert render(hass, held) == 600.0
+    _set(hass, "sensor.2_circuit", "-100", "W")
+    _set(hass, "sensor.3_held", "600", "W")
+    assert render(hass, gross_power) == 500.0
+    _set(hass, "sensor.4_drawn", "10", "kWh")
+    _set(hass, "sensor.5_solar", "3", "kWh")
+    _set(hass, "sensor.6_returned", "2000", "Wh")
+    assert render(hass, gross_energy) == 111.0
+
+
+async def test_solar_term_holds_an_entity_starting_with_a_digit(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """The hold reads the solar's last change also for a digit-leading ID."""
+    _set(hass, DIGIT_POWER, "600", "W")
+    template = await _set_up(
+        hass, _template_helper(hass, "sp", solar_power_template(DIGIT_POWER))
+    )
+    assert _number(hass, template) == 600
+    _set(hass, DIGIT_POWER, "unavailable", None)
+    await hass.async_block_till_done()
+    held = []
+    for _ in range(12):
+        freezer.tick(timedelta(minutes=1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        held.append(_number(hass, template))
+    assert held[:9] == [600.0] * 9
+    assert held[-1] == 0.0
+
+
+async def test_held_template_subtracts_nothing(hass: HomeAssistant) -> None:
+    """`meter_inputs` reads the held template as the solar, not minus it."""
+    for solar in (SOLAR_POWER, DIGIT_POWER):
+        _set(hass, solar, "300", "W")
+        state = solar_power_template(solar)
+        entry = _template_helper(hass, f"held {solar}", state)
+        name = f"held_{solar.removeprefix('sensor.')}"
+        er.async_get(hass).async_get_or_create(
+            "sensor",
+            "template",
+            entry.entry_id,
+            suggested_object_id=name,
+            config_entry=entry,
+        )
+        assert meter_inputs(hass, f"sensor.{name}") == {
+            "entities": {solar},
+            "signed_known": True,
+            "subtracted": set(),
+        }
+
+
 @pytest.mark.parametrize(
     ("unit", "kind", "factor"),
     [
@@ -1648,6 +1716,50 @@ async def test_solar_term_integral_of_zero_mapped_power(
         "power": SOLAR_POWER,
         "template": template.entry_id,
     }
+
+
+@pytest.mark.usefixtures("signed")
+@pytest.mark.parametrize("method", ["net", "power"])
+async def test_setup_with_a_solar_power_starting_with_a_digit(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    method: str,
+) -> None:
+    """`sensor.1_og_solar_power`: the template flow accepts the held template."""
+    _meter(
+        hass,
+        DIGIT_POWER,
+        device_class="power",
+        unit="W",
+        state_class="measurement",
+        state="300",
+    )
+    prefs = deepcopy(WITH_SOLAR_POWER)
+    for source in prefs["energy_sources"]:
+        if source["type"] == "solar":
+            source["stat_rate"] = DIGIT_POWER
+    await energy_access.async_write(hass, prefs)
+    hass.states.async_set(MAIN_POWER, "100", {"unit_of_measurement": "W"})
+    response = await create(hass_ws_client, hass, method=method)
+    assert response["success"], response
+    await hass.async_block_till_done()
+    held = next(
+        e
+        for e in hass.config_entries.async_entries("template")
+        if e.options["state"] == solar_power_template(DIGIT_POWER)
+    )
+    held_entity = _entity_of(hass, held.entry_id)
+    assert _number(hass, held_entity) == 300
+    hass.states.async_set(DIGIT_POWER, "unavailable", {})
+    await hass.async_block_till_done()
+    assert _number(hass, held_entity) == 300
+    gross = hass.states.get(response["result"]["entity_id"])
+    assert gross is not None
+    if method == "power":
+        rate = response["result"]["stat_rate"]
+        assert rate is not None
+        assert _number(hass, rate) == 400
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])

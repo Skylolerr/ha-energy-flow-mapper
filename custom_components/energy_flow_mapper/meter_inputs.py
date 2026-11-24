@@ -37,7 +37,8 @@ MAX_DEPTH: Final = 5
 
 # Where an entity ID stands in a template's text: as a function's argument,
 # `states.<entity>` or `states['<entity>']`, or in the filter form
-# (`'sensor.x' | states`).
+# (`'sensor.x' | states`). `states.<domain>['<object_id>']` is read as
+# `states['<entity>']` first (`_DOMAIN_ITEM`).
 _ENTITY = re.compile(
     r"(?:(?:states|state_attr|is_state|has_value)\(\s*|states\[\s*|states\.)['\"]?"
     r"([a-z_]+\.[a-z0-9_]+)"
@@ -46,6 +47,9 @@ _ENTITY_FILTER = re.compile(
     r"['\"]([a-z_]+\.[a-z0-9_]+)['\"]\s*\|\s*"
     r"(?:states|state_attr|is_state|has_value)\b"
 )
+# `states.<domain>['<object_id>']`, the form for an object ID that starts with
+# a digit (`states.sensor.1_x` is no Jinja).
+_DOMAIN_ITEM = re.compile(r"\bstates\.([a-z_]+)\[\s*(['\"])([a-z0-9_]+)\2\s*\]")
 # Any quoted entity ID; one that only stands here makes the signs unknown.
 _LITERAL_ENTITY = re.compile(r"['\"]([a-z_]+\.[a-z0-9_]+)['\"]")
 # Text that needs a render: `expand(` and the functions that list entities,
@@ -91,6 +95,11 @@ def _known(hass: HomeAssistant, registry: er.EntityRegistry, entity_id: str) -> 
         registry.async_get(entity_id) is not None
         or hass.states.get(entity_id) is not None
     )
+
+
+def _whole_ids(text: str) -> str:
+    """Return `text` with `states.<domain>['<id>']` as `states['<domain>.<id>']`."""
+    return _DOMAIN_ITEM.sub(lambda m: f"states['{m[1]}.{m[3]}']", text)
 
 
 def _code(text: str) -> str:
@@ -176,7 +185,9 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
 
     Entity IDs are read with `_ENTITY` and `_ENTITY_FILTER` and kept if they
     are entities. Any other quoted entity ID is an input too, but how it
-    counts is unknown (`['sensor.a'] | map('states')`). Text with `expand(`,
+    counts is unknown (`['sensor.a'] | map('states')`).
+    `states.<domain>['<id>']` names its entity as `states['<entity>']` does.
+    Text with `expand(`,
     a function that lists entities, or that iterates states is rendered: the
     render adds the entities it reads (iterated states add none) and the
     signs are unknown then. Jinja comments are no part of the text read.
@@ -190,7 +201,7 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
             if valid_entity_id(entity) and _known(hass, registry, entity)
         }
 
-    read = _COMMENT.sub(" ", text)
+    read = _whole_ids(_COMMENT.sub(" ", text))
     entities = known([*_ENTITY.findall(read), *_ENTITY_FILTER.findall(read)])
     literals = known(_LITERAL_ENTITY.findall(read))
     signed_known = literals <= entities
@@ -208,7 +219,7 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
             _LOGGER.debug("Reading the inputs of a template failed", exc_info=True)
         else:
             entities |= set(info.entities)
-    code = _code(text)
+    code = _code(_whole_ids(text))
     variables = {
         name: {entity for entity in entities if _mentions(value, entity)}
         for name, value in _SET.findall(code)

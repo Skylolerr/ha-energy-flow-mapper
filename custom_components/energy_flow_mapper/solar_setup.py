@@ -371,10 +371,14 @@ def solar_power_template(solar_power: str) -> str:
     started) or without the solar entity it is 0; a number in an unknown
     unit gives `none`. There is no bound on how long the template's own
     value is unchanged: an inverter capped at its limit is constant for
-    hours.
+    hours. The solar's state object is read as `states.<domain>['<id>']`:
+    an object ID may start with a digit, which `states.sensor.1_x` cannot
+    name. Its age is compared with a time, never subtracted, so
+    `meter_inputs` does not read the solar as taken away.
     """
     sets, check, value = _w(_Term("solar", solar_power))
-    entity = f"states.{solar_power}"
+    domain, object_id = solar_power.split(".", 1)
+    entity = f"states.{domain}['{object_id}']"
     return (
         f"{_table('w', WATTS)}{sets}"
         "{% if solar | is_number %}"
@@ -384,8 +388,8 @@ def solar_power_template(solar_power: str) -> str:
         f" and state_attr('{solar_power}', 'restored') is not true"
         " and this is defined and this.state | is_number"
         f" and {entity} is not none"
-        f" and (now() - {entity}.last_changed).total_seconds()"
-        f" < {SOLAR_HOLD_SECONDS} %}}"
+        f" and {entity}.last_changed"
+        f" > now() - timedelta(seconds={SOLAR_HOLD_SECONDS}) %}}"
         "{{ this.state | float }}"
         "{% else %}{{ 0 }}{% endif %}"
     )
