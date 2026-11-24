@@ -33,7 +33,6 @@ from .candidates import (
     async_child_pairs,
     async_external_candidates,
     async_external_statistics,
-    async_is_rate_sensor,
     async_mark_created,
     async_power_candidates,
     async_stat_info,
@@ -120,6 +119,7 @@ from .sum_meter import (
     check_no_solar,
     check_rate_members,
     check_sum_members,
+    gross_meter_stats,
 )
 from .transfer import InvalidImportError, build_export, parse_import
 
@@ -127,7 +127,6 @@ ATTR_BASE_HASH = "base_hash"
 ATTR_CHANGES = "changes"
 ATTR_BACKUP_ID = "backup_id"
 ATTR_POWER_ENTITY_ID = "power_entity_id"
-ATTR_OF_SOURCE = "of_source"
 ATTR_NAME = "name"
 ATTR_PERIOD = "period"
 ATTR_DOCUMENT = "document"
@@ -419,8 +418,9 @@ async def websocket_get(
     candidates carry `contained_in`, the meter of the settings that holds
     them already. `inputs` maps a meter (of devices, sources and electricity
     and water candidates) to what it counts with a plus sign, for the
-    panel's `countedTwice`. `hints` are the hints of devices and sources (see
-    `hints`).
+    panel's `countedTwice`. `gross_meters` are the gross energy meters the
+    solar setup made (a sum may hold them). `hints` are the hints of devices
+    and sources (see `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -482,6 +482,7 @@ async def websocket_get(
             "hints": await async_hints(
                 hass, prefs, stats, daily, Readings(counted, watched)
             ),
+            "gross_meters": sorted(gross_meter_stats(hass, runtime.helpers)),
             "inputs": counted_inputs(
                 hass,
                 sorted(meter_stats(prefs) | {c["stat"] for c in [*candidates, *water]}),
@@ -699,7 +700,6 @@ async def websocket_restore(
         vol.Required("type"): f"{DOMAIN}/create_integral",
         vol.Required(ATTR_POWER_ENTITY_ID): str,
         vol.Required(ATTR_NAME): str,
-        vol.Optional(ATTR_OF_SOURCE, default=False): bool,
     }
 )
 @require_admin
@@ -710,36 +710,19 @@ async def websocket_create_integral(
     """Create an integral helper for a power or flow sensor without meter.
 
     The helper is created at once, not on save; the panel then adds its meter
-    to the draft, in the list `kind` names. With `of_source`, the sensor must
-    be the power sensor of a saved solar source (a sum meter uses its integral
-    in place of a daily resetting solar meter); it is used and has a meter, so
-    the candidate check does not apply.
+    to the draft, in the list `kind` names.
     """
     runtime = _runtime(hass)
     power = msg[ATTR_POWER_ENTITY_ID]
     prefs = await energy_access.async_get_prefs(hass)
-    kind: DeviceKind | None
-    if msg[ATTR_OF_SOURCE]:
-        solar = {
-            source.get("stat_rate")
-            for source in prefs.get(KEY_SOURCES, [])
-            if source.get("type") == "solar"
-        }
-        if power not in solar or not async_is_rate_sensor(
-            hass, power, DeviceKind.ELECTRICITY
-        ):
-            raise _error("not_a_solar_power", entity_id=power)
-        kind = DeviceKind.ELECTRICITY
-    else:
-        kind = next(
-            (
-                kind
-                for kind in DEVICE_KEYS
-                if power
-                in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
-            ),
-            None,
-        )
+    kind = next(
+        (
+            kind
+            for kind in DEVICE_KEYS
+            if power in {c["stat"] for c in async_power_candidates(hass, prefs, kind)}
+        ),
+        None,
+    )
     if kind is None:
         raise _error("not_a_power_candidate", entity_id=power)
     entry_id, entity_id = await async_create_integral(
@@ -759,6 +742,7 @@ async def websocket_create_integral(
         vol.Required("entity_ids"): vol.All([str], vol.Length(min=1)),
         vol.Optional("rate_entity_ids"): [str],
         vol.Optional("rate_name"): str,
+        vol.Optional("gross_ok", default=[]): [str],
     }
 )
 @require_admin
@@ -772,7 +756,8 @@ async def websocket_create_sum_meter(
     meter to the draft. `name` is passed ready (translated) by the panel; the
     rate sum is named `rate_name`, or `name` plus " power" / " flow". A saved
     solar source, or a meter that holds one, is refused: its gross meter is
-    built by the guided setup.
+    built by the guided setup. A gross meter of ours, or a member in
+    `gross_ok` (the user says it is a gross meter already), may hold one.
     """
     runtime = _runtime(hass)
     kind = DeviceKind(msg[ATTR_KIND])
@@ -790,6 +775,7 @@ async def websocket_create_sum_meter(
             for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
             if stat
         },
+        gross_meter_stats(hass, runtime.helpers) | set(msg["gross_ok"]),
     )
     suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
     entity_id, stat_rate = await async_create_sums(

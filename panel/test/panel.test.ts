@@ -3732,6 +3732,87 @@ describe("groups", () => {
     expect(checkCalls(mock)).toBe(0);
   });
 
+  /** The solar setup plus «Roof total», a device whose meter holds the solar's power. */
+  function holderMock(ours: boolean): Mock {
+    const mock = solarMock();
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.prefs.device_consumption.push({ stat_consumption: "sensor.roof_total" });
+    snap.stats["sensor.roof_total"] = info("sensor.roof_total", "Roof total");
+    snap.inputs = { "sensor.roof_total": ["sensor.solar_power", "sensor.x"] };
+    snap.gross_meters = ours ? ["sensor.roof_total"] : [];
+    mock.hass.states["sensor.roof_total"] = meter("sensor.roof_total");
+    return mock;
+  }
+
+  function grossBox(el: EnergyFlowMapperPanel, stat: string): HTMLInputElement | null {
+    return dialogEl(el).querySelector<HTMLInputElement>(`.sum-member[data-stat="${stat}"] .sum-gross-ok input`);
+  }
+
+  it("sum with our gross meter builds", async () => {
+    const mock = holderMock(true);
+    const el = await mount(mock);
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    expect(dialogText(el)).not.toContain("needs the guided setup");
+    expect(grossBox(el, "sensor.roof_total")).toBeNull();
+    expect(checkCalls(mock)).toBe(1);
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toEqual({
+      type: "energy_flow_mapper/create_sum_meter",
+      kind: "electricity",
+      name: "Panel Energy",
+      entity_ids: ["sensor.tv", "sensor.roof_total"],
+    });
+  });
+
+  it("sum with a hand-made gross meter builds only when marked", async () => {
+    const mock = holderMock(false);
+    const el = await mount(mock);
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    expect(dialogText(el)).toContain("These meters already hold the solar: Roof total.");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    expect(checkCalls(mock)).toBe(0);
+    const box = grossBox(el, "sensor.roof_total")!;
+    expect(box.checked).toBe(false);
+    expect(box.closest("label")!.textContent!.replace(/\s+/g, " ")).toContain(
+      "Roof total is already a gross meter (consumption with solar) – sum anyway",
+    );
+    box.click();
+    await settle(el);
+    // Marked: an ordinary sum, checked like any other.
+    expect(grossBox(el, "sensor.roof_total")!.checked).toBe(true);
+    expect(dialogText(el)).not.toContain("needs the guided setup");
+    expect(checkCalls(mock)).toBe(1);
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toEqual({
+      type: "energy_flow_mapper/create_sum_meter",
+      kind: "electricity",
+      // The name still follows the members: nobody typed one.
+      name: "TV Energy",
+      entity_ids: ["sensor.tv", "sensor.roof_total"],
+      gross_ok: ["sensor.roof_total"],
+    });
+    // Unticked again, it is blocked again.
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    grossBox(el, "sensor.roof_total")!.click();
+    await settle(el);
+    grossBox(el, "sensor.roof_total")!.click();
+    await settle(el);
+    expect(dialogText(el)).toContain("needs the guided setup");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+  });
+
+  it("sum never takes the solar itself", async () => {
+    const el = await mount(holderMock(false));
+    await openSum(el, ["sensor.server", "sensor.solar"]);
+    expect(grossBox(el, "sensor.solar")).toBeNull();
+    expect(dialogText(el)).toContain("needs the guided setup");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+  });
+
   it("sum blocks a periodic draft member", async () => {
     const mock = solarMock();
     mock.hass.config = { time_zone: "Europe/Zurich" };

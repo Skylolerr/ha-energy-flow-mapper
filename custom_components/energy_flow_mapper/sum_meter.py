@@ -12,14 +12,16 @@ from collections.abc import Collection
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import ATTR_DEVICE_CLASS, CONF_ENTITIES, CONF_NAME, CONF_TYPE
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.helpers import entity_registry as er
 
 from ._flow import async_run_helper_flow
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
 from .hierarchy import DeviceKind
 from .meter_inputs import Cache, counted_inputs
+from .solar_setup import KIND_GROSS_ENERGY
 
 GROUP_DOMAIN = "group"
 CONF_HIDE_MEMBERS = "hide_members"
@@ -77,19 +79,40 @@ def check_sum_members(
         )
 
 
+@callback
+def gross_meter_stats(hass: HomeAssistant, helpers: CreatedHelpers) -> set[str]:
+    """Return the gross energy meters the solar setup made (from their records)."""
+    registry = er.async_get(hass)
+    return {
+        entry.entity_id
+        for entry_id, record in helpers.records().items()
+        if record.get("kind") == KIND_GROSS_ENERGY
+        for entry in er.async_entries_for_config_entry(registry, entry_id)
+    }
+
+
 def check_no_solar(
-    hass: HomeAssistant, entity_ids: list[str], solar: Collection[str]
+    hass: HomeAssistant,
+    entity_ids: list[str],
+    solar: Collection[str],
+    gross: Collection[str] = (),
 ) -> None:
     """Raise if a member is a solar meter or holds one (`solar`: its stats and powers).
 
     A group sum adds its members without knowing how a circuit meter counts,
     so a gross meter of a circuit with a solar is left to the guided setup.
+    `gross` are members known to be gross meters already (consumption with
+    their own solar: ours, or marked so by the user); they may hold a solar.
+    A solar's own stat or power never passes.
     """
     cache: Cache = {}
     for entity_id in entity_ids:
-        if entity_id in solar or set(
-            counted_inputs(hass, [entity_id], cache).get(entity_id, [])
-        ).intersection(solar):
+        if entity_id in solar or (
+            entity_id not in gross
+            and set(
+                counted_inputs(hass, [entity_id], cache).get(entity_id, [])
+            ).intersection(solar)
+        ):
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
                 translation_key="sum_with_solar",

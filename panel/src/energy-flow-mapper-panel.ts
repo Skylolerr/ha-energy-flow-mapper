@@ -171,6 +171,8 @@ type Dialog =
    * (`origin`, whose parent the meter takes); `added` are the chosen sensors.
    * `replace` is false once the user unticks *Replace <device>*; `named` once
    * the user typed a name, which then stays when the members change.
+   * `grossOk` are members that hold the solar which the user marked as gross
+   * meters already (consumption with their own solar).
    */
   | {
       kind: "sum";
@@ -180,6 +182,7 @@ type Dialog =
       picking: boolean;
       replace?: boolean;
       named?: boolean;
+      grossOk?: string[];
     }
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" }
@@ -603,7 +606,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (this._dialog?.kind === "sum") {
       const { all } = this._sumMembers(this._dialog);
       const key = JSON.stringify([this._tab, all]);
-      if (this._sumCheck?.key !== key && all.length > 0 && this._sumSolar(all) === null) {
+      if (this._sumCheck?.key !== key && all.length > 0 && this._sumSolar(all, this._dialog.grossOk) === null) {
         void this._checkSum(all, key);
       }
     }
@@ -2123,30 +2126,59 @@ export class EnergyFlowMapperPanel extends LitElement {
     return devices.length === 1 && all.some((stat) => sources.has(stat)) ? devices[0] : null;
   }
 
+  /** The solar sources of the draft, and the one whose meter or power sensor `stat` is. */
+  private _solarOf(stat: string): Source | undefined {
+    return this.draftSources.find(
+      (s) =>
+        s.type === "solar" &&
+        typeof s.stat_energy_from === "string" &&
+        (s.stat_energy_from === stat || (typeof s.stat_rate === "string" && s.stat_rate === stat)),
+    );
+  }
+
+  /** Whether `stat` is a solar source's meter. */
+  private _isSolarMeter(stat: string): boolean {
+    return this.draftSources.some((s) => s.type === "solar" && s.stat_energy_from === stat);
+  }
+
+  /**
+   * The members whose meter already holds a solar's meter or power sensor
+   * (from `inputs`), except the gross meters the setup made: those count
+   * consumption with their own solar and sum like any meter.
+   */
+  private _sumHolders(all: string[]): string[] {
+    const inputs = this._snapshot?.inputs ?? {};
+    const ours = new Set(this._snapshot?.gross_meters ?? []);
+    return all.filter(
+      (stat) =>
+        !this._isSolarMeter(stat) && !ours.has(stat) && (inputs[stat] ?? []).some((input) => this._solarOf(input)),
+    );
+  }
+
   /**
    * What makes a sum a gross meter of a circuit with a solar, which only the
-   * guided setup builds: members that are a solar source's meter (`solars`),
-   * members whose meter already holds a solar's meter or power sensor
-   * (`holders`, from `inputs`), and the other members that are devices.
-   * Null when the sum has no solar.
+   * guided setup builds: members that are a solar source's meter (`solars`,
+   * never allowed), members that hold a solar and are not marked as gross
+   * meters (`holders`, see `_sumHolders`; `grossOk` are the marked ones),
+   * and the other members that are devices. Null when the sum has no solar.
    */
-  private _sumSolar(all: string[]): { solars: string[]; holders: string[]; devices: string[]; solar: string } | null {
-    const sources = this.draftSources.filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string");
-    const meters = new Set(sources.map((s) => s.stat_energy_from as string));
-    const ofSolar = (stat: string) =>
-      sources.find((s) => s.stat_energy_from === stat || (typeof s.stat_rate === "string" && s.stat_rate === stat));
+  private _sumSolar(
+    all: string[],
+    grossOk: string[] = [],
+  ): { solars: string[]; holders: string[]; devices: string[]; solar: string } | null {
     const inputs = this._snapshot?.inputs ?? {};
-    const solars = all.filter((stat) => meters.has(stat));
-    const holders = all.filter((stat) => !meters.has(stat) && (inputs[stat] ?? []).some((input) => ofSolar(input)));
+    const solars = all.filter((stat) => this._isSolarMeter(stat));
+    const holders = this._sumHolders(all).filter((stat) => !grossOk.includes(stat));
     if (solars.length === 0 && holders.length === 0) {
       return null;
     }
     const devices = all.filter(
-      (stat) => !meters.has(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
+      (stat) =>
+        !this._isSolarMeter(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
     );
     const solar =
-      solars[0] ?? (inputs[holders[0]] ?? []).map((input) => ofSolar(input)?.stat_energy_from).find(Boolean) ?? "";
-    return { solars, holders, devices, solar: solar as string };
+      solars[0] ?? (inputs[holders[0]] ?? []).map((input) => this._solarOf(input)?.stat_energy_from).find(Boolean);
+    return { solars, holders, devices, solar: solar ?? "" };
   }
 
   /**
@@ -2266,6 +2298,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const following = new Set(nested.flatMap((id) => groupDevices(groups, id)));
     const moves = all.filter((stat) => devices.some((d) => d.stat_consumption === stat) && !following.has(stat));
     const { rates } = this._sumRates(all);
+    const grossOk = this._sumHolders(all).filter((stat) => dialog.grossOk?.includes(stat));
     const replacing = dialog.replace === false ? null : this._sumReplaceable(all);
     // A group's meter takes the group's place, a free one the device's group.
     const replaceGroup =
@@ -2282,6 +2315,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         name,
         entity_ids: all,
         ...(rates.length ? { rate_entity_ids: rates, rate_name: this._sumRateName(name) } : {}),
+        ...(grossOk.length ? { gross_ok: grossOk } : {}),
       });
       this._dialog = null;
       await this._load();
@@ -4439,7 +4473,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     const { fixed, all } = this._sumMembers(dialog);
     const reasons = new Map(all.map((stat) => [stat, this._sumReason(stat)]));
     const blocked = [...reasons.values()].some((reason) => reason !== null);
-    const solar = this._sumSolar(all);
+    const grossOk = dialog.grossOk ?? [];
+    const holders = this._sumHolders(all);
+    const solar = this._sumSolar(all, grossOk);
     const mixed = !blocked && solar === null && this._sumStateClasses(all).size > 1;
     const name = this._renameValue.trim();
     const { rates, missing, blockedBySource } = this._sumRates(all);
@@ -4489,6 +4525,22 @@ export class EnergyFlowMapperPanel extends LitElement {
             <div class="candidate-text">
               <span class="node-name">${label}</span>
               ${reason ? html`<span class="sub warning">${reason}</span>` : nothing}
+              ${holders.includes(stat)
+                ? html`<label class="check sum-gross-ok">
+                    <input
+                      type="checkbox"
+                      .checked=${grossOk.includes(stat)}
+                      @change=${(e: Event) =>
+                        this._setSum({
+                          ...dialog,
+                          grossOk: (e.target as HTMLInputElement).checked
+                            ? [...grossOk, stat]
+                            : grossOk.filter((s) => s !== stat),
+                        })}
+                    />
+                    ${this._t("sum_gross_ok", { name: label })}
+                  </label>`
+                : nothing}
             </div>
             ${fixed.includes(stat)
               ? nothing

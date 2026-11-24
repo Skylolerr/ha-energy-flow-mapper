@@ -88,10 +88,12 @@ When a later helper of the same request fails, the ones created before are remov
 with a live reading, statistics evidence, helpers, offset, why it is blocked) without
 creating anything; `create_solar_setup` plans again with the same choices and refuses
 anything the preview would not offer (`not_offered`) or an offset that is no longer enough
-(`values_changed`). `create_integral` with `of_source`
-builds the integral of a saved solar source's power (the panel no longer offers it).
+(`values_changed`).
 `create_sum_meter` refuses a saved solar source, or a meter whose inputs hold one
-(`sum_with_solar`); the panel's sum dialog sends such sums to *Solar feeds in here …* and
+(`sum_with_solar`). A gross meter the setup made (record `gross_energy`, listed in `get` as
+`gross_meters`) and a member in `gross_ok` (the user marked it as a gross meter already)
+may hold one; a solar's own meter or power never passes. The panel's sum dialog sends
+the other sums to *Solar feeds in here …* and
 checks its members with `daily_check` on demand (a periodic member blocks the sum). When
 the request fails or is cancelled, every sum it made is removed again (shielded).
 

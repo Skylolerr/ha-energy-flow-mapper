@@ -64,9 +64,6 @@
     "not_a_power_candidate": {
       "message": "{entity_id} is not a power or flow sensor without a meter."
     },
-    "not_a_solar_power": {
-      "message": "{entity_id} is not the power sensor of a saved solar source."
-    },
     "integral_failed": {
       "message": "The helper for the meter could not be created."
     },

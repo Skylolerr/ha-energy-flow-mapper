@@ -458,9 +458,7 @@ async def test_ws_create_sum_meter_refuses_a_solar(
 
     The guided setup builds that gross meter; nothing is created.
     """
-    _, holder = await sum_module.async_create_sum(
-        hass, "Solar and more", ["sensor.solar_energy", "sensor.garage_energy"]
-    )
+    _, holder = await _holder(hass)
     before = len(hass.config_entries.async_entries("group"))
     for member in ("sensor.solar_energy", holder):
         response = await send(
@@ -474,3 +472,73 @@ async def test_ws_create_sum_meter_refuses_a_solar(
         assert response["error"]["translation_key"] == "sum_with_solar", response
         assert response["error"]["translation_placeholders"] == {"entity": member}
     assert len(hass.config_entries.async_entries("group")) == before
+
+
+async def _holder(hass: HomeAssistant) -> tuple[str, str]:
+    """Create a hand-made meter that holds the solar (here a group sum)."""
+    return await sum_module.async_create_sum(
+        hass, "Solar and more", ["sensor.solar_energy", "sensor.garage_energy"]
+    )
+
+
+async def test_ws_create_sum_meter_takes_our_gross_meter(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A gross meter of the setup holds its solar, and sums like any meter."""
+    entry_id, gross = await _holder(hass)
+    await loaded_entry.runtime_data.helpers.async_add(
+        entry_id, {"kind": "gross_energy", "stat": "sensor.main_energy"}
+    )
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_sum_meter",
+        kind="electricity",
+        name="Both",
+        entity_ids=["sensor.kitchen_energy", gross],
+    )
+    assert response["success"], response
+    got = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert got["result"]["gross_meters"] == [gross]
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_create_sum_meter_hand_made_gross_needs_consent(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A meter of the user's that holds the solar sums only when marked gross."""
+    _, holder = await _holder(hass)
+    msg = {
+        "type": f"{DOMAIN}/create_sum_meter",
+        "kind": "electricity",
+        "name": "Both",
+        "entity_ids": ["sensor.kitchen_energy", holder],
+    }
+    response = await send(hass_ws_client, hass, **msg)
+    assert response["error"]["translation_key"] == "sum_with_solar"
+    # Marking another member does not help.
+    response = await send(
+        hass_ws_client, hass, **msg, gross_ok=["sensor.kitchen_energy"]
+    )
+    assert response["error"]["translation_key"] == "sum_with_solar"
+    response = await send(hass_ws_client, hass, **msg, gross_ok=[holder])
+    assert response["success"], response
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_create_sum_meter_solar_itself_never_passes(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """The solar's own meter is refused even when marked gross."""
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/create_sum_meter",
+        kind="electricity",
+        name="x",
+        entity_ids=["sensor.kitchen_energy", "sensor.solar_energy"],
+        gross_ok=["sensor.solar_energy"],
+    )
+    assert response["error"]["translation_key"] == "sum_with_solar"
