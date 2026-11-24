@@ -300,8 +300,8 @@ the sensors live.
   utility meters with a cycle, meters whose `last_reset` changes) are recognised: a meter
   that fell towards 0 – to less than half of the value before, from above or from
   below 0 – on at least 2 of the last 3 days. A fall that the meter's own power sensor
-  explains (a circuit exporting near 0) is no reset; without a power sensor, the fall must be more
-  than twice the meter's usual fall. In a sum, such a meter would make the sum drop at
+  explains (a circuit exporting near 0) is no reset; without a power sensor, the fall must
+  be more than twice the meter's usual fall. In a sum, such a meter would make the sum drop at
   each of its resets, and Home Assistant would count the whole sum again, so the sum
   dialog checks every member when you add it and refuses the ones that reset; a member it
   could not check (too few statistics, a busy recorder) is marked *Not checked* and can
@@ -547,8 +547,8 @@ built when the circuit and the solar have a power sensor whose unit can be read.
   holds the solar. Check that yourself.
 - **Don't delete the «… (0 when offline)» helper.** The solar term and every gross power
   read it. Without it the solar term stops counting the solar, and the gross power has no
-  value while the solar reports a number and shows the circuit alone while it does not –
-  so *From power* loses the daytime. If you did, build each gross meter of that solar
+  value while the solar reports a number; while it does not, it shows the circuit alone
+  (or no value while the circuit feeds in) – so *From power* loses the daytime. If you did, build each gross meter of that solar
   again: ⋮ → *Replace with …* the circuit's meter, then *Solar feeds in here…*. The old
   «… energy» integral then counts nothing any more; delete it once no gross meter reads
   it.
@@ -557,8 +557,8 @@ built when the circuit and the solar have a power sensor whose unit can be read.
   hour is a little more. Together they are right, and because the hints compare two-hour
   windows, such a dip does not raise one.
 - **The setup's integrals update every minute** (the solar term and *From power*), so a
-  gross meter has caught up at every hour's end even while a power stays constant. Each
-  of them writes about one state a minute to the recorder.
+  gross meter is at most about a minute behind at an hour's end, even while a power
+  stays constant. Each of them writes at least one state a minute to the recorder.
 - A gross meter is an ordinary meter: it can be a member of a sum meter (see below), and
   its helpers are ordinary helpers under Settings → Helpers. A solar term you changed by
   hand is no longer reused by the setup.
