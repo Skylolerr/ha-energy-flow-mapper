@@ -1091,7 +1091,7 @@ def _solar_term(
     solar: str,
     solar_power: str | None,
 ) -> SolarTerm:
-    """Return where the solar energy comes from (R1: power first)."""
+    """Return where the solar energy comes from: its power first, else its counter."""
     if solar_power is not None:
         held, reuse = _reusable_solar(hass, helpers, solar_power)
         return SolarTerm("integral", solar_power, reuse, held=held)

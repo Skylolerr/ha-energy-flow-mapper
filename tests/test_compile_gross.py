@@ -888,7 +888,7 @@ async def test_compile_from_power_dropout_never_falls(
 
     The gross power holds the solar like the solar term (10 minutes, as
     rendered: see the module docstring), then the hold ends while the
-    circuit feeds in: the gross power is unknown (H6a) instead of the
+    circuit feeds in: the gross power is unknown instead of the
     circuit's -400 W, so the integral counts nothing and never falls.
 
     Load 200 W, solar 600 W (circuit -400 W). True consumption: 0.2 kWh per
@@ -925,8 +925,8 @@ async def test_compile_unknown_and_restored_give_zero(
 ) -> None:
     """EM, exporting: the solar is `unknown` 0:20-0:30, `restored` 1:20-1:30.
 
-    No hold for either (maintainer decision H6b, fix round 3): the solar
-    term counts 0 at once. The returned meter still counts the export, so
+    No hold for either (`unknown` and a restored state are never held): the
+    solar term counts 0 at once. The returned meter still counts the export, so
     the gross meter misses that solar energy.
 
     Load 200 W, solar 600 W (400 W export). True consumption: 0.2 kWh per

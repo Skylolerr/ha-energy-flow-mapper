@@ -237,7 +237,7 @@ async def test_classify_shelly_consumed_is_em(hass: HomeAssistant) -> None:
 
 
 async def test_classify_switch_without_returned_is_none(hass: HomeAssistant) -> None:
-    """Without a returned sensor the firmware may reset the counter (R7)."""
+    """Without a returned sensor the firmware may reset the counter."""
     energy, consumed = _plug(hass, returned=False)
     assert classify_meter(hass, energy, None) == MeterClass(None, None)
     assert classify_meter(hass, consumed, None) == MeterClass(None, None)
@@ -303,7 +303,7 @@ async def test_classify_unknown_is_none(hass: HomeAssistant) -> None:
 
 
 async def test_classify_net_needs_negative_stats(hass: HomeAssistant) -> None:
-    """Net only when the statistics went below 0 (R4), not by state class."""
+    """Net only when the statistics went below 0, not by state class."""
     device = _device(hass, "net", platform="test")
     meter = _entity(hass, "sensor.net", device, "net", platform="test")
     hass.states.async_set(meter, "-3.0", {"state_class": "total"})

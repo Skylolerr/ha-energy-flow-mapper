@@ -2348,7 +2348,7 @@ async def test_disabled_power_sensors(
     assert result["blocked_entity"] == SOLAR_POWER
 
 
-# --- Fix round 1 -------------------------------------------------------------
+# --- Dropouts, inputs and pairing --------------------------------------------
 
 
 def _template_helper(hass: HomeAssistant, name: str, state: str) -> MockConfigEntry:
@@ -2807,7 +2807,7 @@ async def test_stale_draft_is_a_conflict(
     assert response["error"]["translation_key"] == "conflict"
 
 
-# --- Fix round 2 -------------------------------------------------------------
+# --- The solar term's hold ---------------------------------------------------
 
 
 async def _solar_term_helpers(
@@ -3001,7 +3001,7 @@ async def test_draft_power_with_wrong_attributes_is_refused(
     assert response["error"]["translation_key"] == "not_offered"
 
 
-# --- Fix round 3 -------------------------------------------------------------
+# --- More of the hold, draft powers and the gross power's sign ---------------
 
 
 async def test_solar_term_flapping_does_not_extend_the_hold(
@@ -3129,7 +3129,7 @@ async def test_em_gross_power_with_a_signed_circuit_power_respects_invert(
     assert response["result"]["stat_rate"] == _entity_of(hass, power.entry_id)
 
 
-# --- Task 11 fix round: the held solar of every gross power -------------------
+# --- The held solar of every gross power -------------------------------------
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])

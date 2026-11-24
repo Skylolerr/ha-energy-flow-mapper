@@ -5871,7 +5871,7 @@ describe("safety-net hints and list polish", () => {
   const README = "https://github.com/Skylolerr/ha-energy-flow-mapper";
   /**
    * The README headings the hints link to, as GitHub turns them into anchors.
-   * Task 12 writes these headings; a change here needs the README changed too.
+   * A change here needs the README's headings changed too.
    */
   const README_HEADINGS: Record<string, string> = {
     gross_off: "If a gross meter falls or jumps",
