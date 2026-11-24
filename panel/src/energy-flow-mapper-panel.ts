@@ -2726,9 +2726,9 @@ export class EnergyFlowMapperPanel extends LitElement {
    * in the draft (`_replaceSteps`, one undo step), with the gross power as its
    * power sensor. The user saves as usual. The answer may come after the
    * dialog was closed (Cancel or Escape while "Creating …"): it then closes
-   * no dialog opened since, only a setup of the same device, and the place
-   * is taken in the electricity list the setup was opened on, whichever tab
-   * shows now.
+   * no dialog opened since, only one of the replaced device (or a sum it is
+   * in), and the place is taken in the electricity list the setup was opened
+   * on, whichever tab shows now.
    */
   private async _onSolarCreated(dialog: SolarDialog, detail: SolarCreatedDetail): Promise<void> {
     const { stat, entity_id, stat_rate, name, old } = detail;
@@ -2745,6 +2745,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       const groupOf = this.groupsOf(deviceKind).find((g) => g.members.includes(stat))?.id ?? null;
       const changes = this._replaceSteps(stat, entity_id, stat_rate, groupOf, [], deviceKind);
       if (changes.length) {
+        // A dialog of the replaced device would leave a change on a removed one.
+        if (this._dialogOf(stat)) {
+          this._close();
+        }
         this._changeAll(changes);
         if (this._tab === deviceKind) {
           this._selected = entity_id;
@@ -2757,6 +2761,21 @@ export class EnergyFlowMapperPanel extends LitElement {
     } finally {
       this._busy = false;
     }
+  }
+
+  /** Whether the open dialog is about the device `stat`: its own, or a sum it is in. */
+  private _dialogOf(stat: string): boolean {
+    const open = this._dialog;
+    if (open === null) {
+      return false;
+    }
+    if (open.kind === "power") {
+      return open.target.kind === "device" && open.target.stat === stat;
+    }
+    if (open.kind === "sum") {
+      return this._sumMembers(open).all.includes(stat);
+    }
+    return "stat" in open && open.stat === stat;
   }
 
   /** *Set up* failed: the dialog stays open. */

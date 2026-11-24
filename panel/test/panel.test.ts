@@ -5789,6 +5789,55 @@ describe("hints and solar setup", () => {
     expect(el._changes).toContainEqual({ type: "rename", stat: "sensor.tv", name: "Telly" });
   });
 
+  it.each(["rename", "power", "sum"])(
+    "a late setup result closes a %s dialog of the device it replaces",
+    async (kind) => {
+      const mock = hintMock();
+      mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+      let resolve: (value: unknown) => void = () => {};
+      mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+      const el = await mount(mock);
+      await openSetup(el);
+      dialogButton(el, "Set up")!.click();
+      await settle(el);
+      dialogButton(el, "Cancel")!.click();
+      await settle(el);
+      // A dialog of the very device the setup replaces.
+      if (kind === "rename") {
+        el._dialog = { kind: "rename", stat: "sensor.server" };
+      } else if (kind === "power") {
+        el._openPowerDialog({ kind: "device", stat: "sensor.server" });
+      } else {
+        el._openSum({ origin: "sensor.server" });
+      }
+      await settle(el);
+      expect(el._dialog).toMatchObject({ kind });
+      resolve({ entity_id: "sensor.server_gross", stat_rate: "sensor.server_gross_power" });
+      await settle(el);
+      expect(el._changes).toContainEqual({ type: "remove", stat: "sensor.server" });
+      // Gone with its device: no change can be left on a removed device.
+      expect(el._dialog).toBeNull();
+    },
+  );
+
+  it("a late setup result keeps a dialog of another device open", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    await openSetup(el);
+    dialogButton(el, "Set up")!.click();
+    await settle(el);
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    el._openSum({ origin: "sensor.tv" });
+    await settle(el);
+    resolve({ entity_id: "sensor.server_gross", stat_rate: "sensor.server_gross_power" });
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "sum", origin: "sensor.tv" });
+  });
+
   it.each(["gas", "water"])("a late setup result is applied to electricity while the %s tab shows", async (tab) => {
     const snap = solarSnapshot();
     snap.groups = {
