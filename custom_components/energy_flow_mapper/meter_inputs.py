@@ -14,8 +14,10 @@ statistic and a helper set up in YAML (no config entry) hold nothing.
 `subtracted` are the inputs a template takes away (`a - b`). `signed_known` is
 False when it is unclear how an input counts: a group that does not add, a
 template that iterates states, uses `expand(` or another function that lists
-entities, or names an entity only as a quoted literal, one that does not
-compile or fails to render, a helper that holds itself, or helpers nested
+entities, or names an entity only as a quoted literal, one that turns a sign
+with a factor (`x * -1`, `x | multiply(-1)`) or with a minus inside a
+subtracted bracket (`a - (b - c)`, where `c` is not subtracted), one that does
+not compile or fails to render, a helper that holds itself, or helpers nested
 deeper than `MAX_DEPTH`.
 """
 
@@ -63,6 +65,9 @@ _NEEDS_RENDER = re.compile(
 _COMMENT = re.compile(r"\{#.*?#\}", re.DOTALL)
 _STRING = re.compile(r"'(?:[^'\\]|\\.)*'|\"(?:[^\"\\]|\\.)*\"", re.DOTALL)
 _ENTITY_ID = re.compile(r"[a-z_]+\.[a-z0-9_]+")
+# A sign flip by a factor (`x * -1`, `x / (-2)`, `x | multiply(-1)`): the minus
+# belongs to the number, so it makes the signs unknown.
+_NEGATE = re.compile(r"[*/]\s*(?:\(\s*)*-|\bmultiply\(\s*-")
 # `{% set name = ... %}`.
 _SET = re.compile(r"\{%-?\s*set\s+(\w+)\s*=(.*?)-?%\}", re.DOTALL)
 
@@ -146,8 +151,11 @@ def _block_start(text: str, position: int) -> int | None:
     return min(found, default=None)
 
 
-def _minus_operands(text: str) -> Iterable[str]:
-    """Yield the text of what each minus in the code `text` applies to.
+def _minus_operands(text: str) -> Iterable[tuple[int, int, str]]:
+    """Yield where each minus in the code `text` applies to, and its text.
+
+    Each is (start, end, operand): the minus at `start`, its operand up to
+    `end`.
 
     An operand runs to the next `+`, `-` or `,` at its own bracket level, or
     to the end of the expression (`}}`, `%}`, `{{`, `{%`, `#}`, a closing
@@ -177,7 +185,7 @@ def _minus_operands(text: str) -> Iterable[str]:
             ):
                 break
             end += 1
-        yield text[start + 1 : end]
+        yield start, end, text[start + 1 : end]
 
 
 def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
@@ -224,13 +232,28 @@ def _template_inputs(hass: HomeAssistant, text: str) -> _Direct:
         name: {entity for entity in entities if _mentions(value, entity)}
         for name, value in _SET.findall(code)
     }
-    subtracted: set[str] = set()
-    for operand in _minus_operands(code):
-        subtracted |= {entity for entity in entities if _mentions(operand, entity)}
+
+    def named(operand: str) -> set[str]:
+        """Return the entities `operand` names, itself or by a variable."""
+        found = {entity for entity in entities if _mentions(operand, entity)}
         for name, held in variables.items():
             if re.search(rf"(?<![\w.'\"]){re.escape(name)}(?!\w)", operand):
-                subtracted |= held
-    return _Direct(frozenset(entities), frozenset(subtracted), signed_known)
+                found |= held
+        return found
+
+    minuses = list(_minus_operands(code))
+    subtracted: set[str] = set()
+    # What a minus inside the operand of another minus applies to:
+    # `a - (b - c)` adds `c`.
+    turned: set[str] = set()
+    for start, end, operand in minuses:
+        names = named(operand)
+        subtracted |= names
+        if any(o_start < start and end <= o_end for o_start, o_end, _ in minuses):
+            turned |= names
+    if turned or _NEGATE.search(code):
+        signed_known = False
+    return _Direct(frozenset(entities), frozenset(subtracted - turned), signed_known)
 
 
 def _mentions(text: str, entity: str) -> bool:

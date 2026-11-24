@@ -406,6 +406,69 @@ async def test_inputs_subtracted_marked(
     assert inputs["signed_known"] is True
 
 
+@pytest.mark.parametrize(
+    ("state", "subtracted"),
+    [
+        # A sign flip by a factor: the minus belongs to the number.
+        ("{{ states('sensor.a') | float * -1 + states('sensor.b') | float }}", set()),
+        ("{{ states('sensor.a') | float *-2 + states('sensor.b') | float }}", set()),
+        ("{{ states('sensor.a') | float * (-1) + states('sensor.b') | float }}", set()),
+        ("{{ states('sensor.a') | float / -1 + states('sensor.b') | float }}", set()),
+        ("{{ states('sensor.a') | multiply(-1) + states('sensor.b') | float }}", set()),
+        (
+            "{{ states('sensor.a') | multiply( -1) + states('sensor.b') | float }}",
+            set(),
+        ),
+        # A minus in a subtracted bracket adds: never read as subtracted.
+        (
+            (
+                "{{ states('sensor.c') | float - (states('sensor.b') | float"
+                " - states('sensor.a') | float) }}"
+            ),
+            {B},
+        ),
+        (
+            (
+                "{% set x = states('sensor.a') | float %}"
+                "{{ states('sensor.c') | float - (states('sensor.b') | float - x) }}"
+            ),
+            {B},
+        ),
+    ],
+)
+async def test_inputs_unclear_sign_forms_are_unknown(
+    hass: HomeAssistant, state: str, subtracted: set[str]
+) -> None:
+    """Sign forms the minus reading cannot follow make the signs unknown.
+
+    Unknown signs make every input count, so a meter with the solar in such
+    a form is a holder: blocked, never counted twice.
+    """
+    _template(hass, "sensor.t", state)
+    inputs = meter_inputs(hass, "sensor.t")
+    assert inputs["signed_known"] is False
+    assert A not in inputs["subtracted"]
+    assert inputs["subtracted"] == subtracted
+
+
+@pytest.mark.parametrize(
+    "state",
+    [
+        "{{ states('sensor.c') | float - (states('sensor.b') | float(-1)) }}",
+        "{{ states('sensor.c') | float - float(states('sensor.b'), -1) * 2 }}",
+        "{{ states('sensor.c') | float * 2 - states('sensor.b') | float }}",
+    ],
+)
+async def test_inputs_negative_numbers_inside_a_minus_are_no_double_minus(
+    hass: HomeAssistant, state: str
+) -> None:
+    """A negative default or factor inside a minus names no input: signs known."""
+    _template(hass, "sensor.t", state)
+    inputs = meter_inputs(hass, "sensor.t")
+    assert inputs["signed_known"] is True
+    assert inputs["subtracted"] == {B}
+
+
 async def test_inputs_of_our_gross_meter(hass: HomeAssistant) -> None:
     """The setup's own gross meter subtracts the returned sensor only."""
     _template(

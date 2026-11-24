@@ -886,6 +886,38 @@ async def test_ws_sum_holder_deeper_than_the_inputs_needs_the_mark(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "state",
+    [
+        # Adds the solar: the minus in the bracket turns it around.
+        (
+            "{{ states('sensor.garage_energy') | float"
+            " - (states('sensor.kitchen_energy') | float"
+            " - states('sensor.solar_energy') | float) }}"
+        ),
+        # A sign flip by a factor: the signs are unknown, every input counts.
+        (
+            "{{ states('sensor.solar_energy') | float * -1"
+            " + states('sensor.garage_energy') | float }}"
+        ),
+        (
+            "{{ states('sensor.solar_energy') | multiply(-1)"
+            " + states('sensor.garage_energy') | float }}"
+        ),
+    ],
+)
+async def test_ws_sum_unclear_sign_of_the_solar_is_a_holder(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, state: str
+) -> None:
+    """A meter whose solar sign cannot be read holds it: refused from a sum."""
+    _template(hass, "sensor.unclear", state)
+    members = ["sensor.main_energy", "sensor.unclear"]
+    _refused(await _sum(hass, hass_ws_client, members), "sensor.unclear")
+    got = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")
+    assert got["result"]["solar_holds"]["sensor.unclear"] == "holder"
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_ws_sum_unknown_signs_without_solar_build(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:
