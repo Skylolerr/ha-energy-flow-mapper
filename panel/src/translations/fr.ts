@@ -323,7 +323,7 @@ export const fr: Translations = {
   sum_periodic_way: "Que faire : utilise plutôt le capteur du total cumulé de l’appareil, ou crée un compteur à partir de son capteur de puissance (une entrée d’aide intégrale sous Paramètres → Appareils et services → Entrées).",
   sum_mixed_total: "Un compteur en total (un compteur brut ou net, qui peut aussi baisser) ne peut pas être additionné à des compteurs qui ne font que monter (total_increasing) : Home Assistant n’accepterait pas la somme comme compteur. Garde plutôt ces appareils séparés dans l’arbre.",
   sum_state_class_list: "Classes d’état : {list}.",
-  sum_solar_save_first: "{names} n’est plus une installation solaire, mais seulement dans ton brouillon. Enregistre d’abord, puis crée la somme.",
+  sum_solar_save_first: "{names} : une installation solaire a été modifiée seulement dans ton brouillon (ajoutée, retirée ou avec un autre capteur de puissance). Enregistre d’abord, puis crée la somme.",
   sum_solar_no_device: "La somme n’a aucun appareil dans lequel l’installation solaire pourrait injecter. Retire l’installation solaire de la somme.",
   sum_solar_is: "Une installation solaire ou une partie : {names}.",
   sum_solar_open_setup: "Configurer le solaire pour {name}",

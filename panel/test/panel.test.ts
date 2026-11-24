@@ -3846,9 +3846,43 @@ describe("groups", () => {
     el._change({ type: "unassign_source", stat: "sensor.solar", role: "production" });
     await settle(el);
     await openSum(el, ["sensor.server", "sensor.solar"]);
-    expect(dialogText(el)).toContain("Roof solar is no solar any more in your draft only. Save first");
+    expect(dialogText(el)).toContain("Roof solar: a solar changed in your draft only");
+    expect(dialogText(el)).toContain("Save first, then create the sum.");
     expect(dialogText(el)).not.toContain("needs the guided setup");
     expect(dialogButton(el, "Create").disabled).toBe(true);
+  });
+
+  it("sum holding a solar that is only in the draft asks to save first", async () => {
+    const mock = holderMock(null);
+    (mock.responses["energy_flow_mapper/get"] as Snapshot).inputs = {
+      "sensor.roof_total": ["sensor.new_power", "sensor.x"],
+    };
+    const el = await mount(mock);
+    // The solar's new power sensor is in the draft only; the backend does not know it yet.
+    el._change({ type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.new_power" });
+    await settle(el);
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    expect(dialogText(el)).toContain("Roof total: a solar changed in your draft only");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // Without that change it sums.
+    el._undoChange();
+    await settle(el);
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    expect(dialogText(el)).not.toContain("changed in your draft only");
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+  });
+
+  it("sum gives a marked gross meter no setup button", async () => {
+    const mock = holderMock("holder");
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = new Error("not here");
+    const el = await mount(mock);
+    await openSum(el, ["sensor.server", "sensor.roof_total", "sensor.solar"]);
+    grossBox(el, "sensor.roof_total")!.click();
+    await settle(el);
+    expect(grossBox(el, "sensor.roof_total")!.checked).toBe(true);
+    // The solar still routes into the setup, for the server only.
+    expect(hasButton(el, "Set up the solar for Server & co")).toBe(true);
+    expect(hasButton(el, "Set up the solar for Roof total")).toBe(false);
   });
 
   it("sum blocks a periodic draft member", async () => {

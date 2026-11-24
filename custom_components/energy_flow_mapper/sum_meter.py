@@ -21,8 +21,14 @@ from homeassistant.helpers import entity_registry as er
 from ._flow import async_run_helper_flow
 from .const import DOMAIN
 from .created_helpers import CreatedHelpers
-from .hierarchy import KEY_SOURCES, DeviceKind
-from .meter_inputs import MAX_DEPTH, Cache, direct_inputs, meter_inputs
+from .hierarchy import DEVICE_KEYS, KEY_SOURCES, RATE, STAT, DeviceKind
+from .meter_inputs import (
+    MAX_DEPTH,
+    Cache,
+    MeterInputs,
+    direct_inputs,
+    meter_inputs,
+)
 from .solar_setup import (
     KIND_GROSS_ENERGY,
     KIND_SOLAR_ENERGY,
@@ -106,6 +112,35 @@ def _recorded(
     }
 
 
+def _counted(inputs: MeterInputs) -> set[str]:
+    """Return what a meter counts: with known signs, without what it subtracts."""
+    if inputs["signed_known"]:
+        return inputs["entities"] - inputs["subtracted"]
+    return set(inputs["entities"])
+
+
+def _settings_stats(prefs: Mapping[str, Any]) -> set[str]:
+    """Return the statistics and sensors of the sources and devices."""
+    found: set[str] = set()
+    for source in prefs.get(KEY_SOURCES, []):
+        found |= {
+            value
+            for key in ("stat_energy_from", "stat_energy_to", "stat_rate")
+            if isinstance(value := source.get(key), str)
+        }
+        config = source.get("power_config")
+        if isinstance(config, Mapping):
+            found |= {value for value in config.values() if isinstance(value, str)}
+    for key in DEVICE_KEYS.values():
+        for device in prefs.get(key, []):
+            found |= {
+                value
+                for field in (STAT, RATE)
+                if isinstance(value := device.get(field), str)
+            }
+    return found
+
+
 class SolarHolds:
     """Which meters are a solar, or hold one, for a sum (saved settings).
 
@@ -114,11 +149,11 @@ class SolarHolds:
     solar that is a sum), and the solar terms of the setup. A meter is the
     solar (`SOLAR`) when it is one of those or made only of them, at any
     level: no mark lets it into a sum. It holds the solar (`HOLDER`) when one
-    of its inputs is the solar, without the subtracted ones where the signs
-    are known; with unknown signs (`expand(`, a max group) every input
-    counts. A gross meter of the setup that still reads something besides
-    the solar is neither, and a solar reached only through one makes no
-    holder.
+    of its inputs, at any depth, is the solar, without the subtracted ones
+    where the signs are known; with unknown signs (`expand(`, a max group)
+    every input counts. A gross meter of the setup that still reads
+    something besides the solar is neither, and a path to the solar through
+    one does not count (another path still does).
     """
 
     def __init__(
@@ -138,11 +173,15 @@ class SolarHolds:
             for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
             if isinstance(stat, str) and stat
         }
+        # What the solar counts (not what it subtracts), but not the meters of
+        # the settings: a solar computed from the house and the grid does not
+        # make them solar.
+        others = _settings_stats(prefs) - own
         made_of = {
             entity
             for stat in own
-            for entity in meter_inputs(hass, stat, self._cache)["entities"]
-            if energy_or_power(hass, entity)
+            for entity in _counted(meter_inputs(hass, stat, self._cache))
+            if entity not in others and energy_or_power(hass, entity)
         }
         terms = _recorded(hass, helpers, (KIND_SOLAR_ENERGY, KIND_SOLAR_POWER))
         self.solar = own | made_of | terms
@@ -169,35 +208,29 @@ class SolarHolds:
             return SOLAR
         if entity in self._gross:
             return None
+        # Every path to the solar but those through our gross meters, which
+        # count their own solar; with known signs, not the subtracted ones.
         inputs = meter_inputs(self._hass, entity, self._cache)
-        reach = inputs["entities"]
+        reach = self._walk(entity)
         if inputs["signed_known"]:
-            reach = reach - inputs["subtracted"]
-        for gross in reach & self._gross:
-            reach = reach - meter_inputs(self._hass, gross, self._cache)["entities"]
-        if reach & self.solar or (
-            not inputs["signed_known"] and self._reaches_solar(entity)
-        ):
-            return HOLDER
-        return None
+            reach &= _counted(inputs)
+        return HOLDER if reach & self.solar else None
 
-    def _reaches_solar(self, entity: str) -> bool:
-        """Return True if the solar is among the inputs of `entity`, at any depth.
+    def _walk(self, entity: str) -> set[str]:
+        """Return the inputs of `entity` at any depth, not into our gross meters.
 
-        For meters whose inputs `meter_inputs` could not read in full (too
-        deep): every level, with a guard against cycles, not into our gross
-        meters.
+        Every level, also deeper than `meter_inputs` reads, with a guard
+        against cycles; a gross meter itself is in the result.
         """
-        seen = {entity}
+        seen: set[str] = set()
         todo = [entity]
         while todo:
             for found in direct_inputs(self._hass, todo.pop(), self._cache):
-                if found in self.solar:
-                    return True
-                if found not in seen and found not in self._gross:
+                if found not in seen and found != entity:
                     seen.add(found)
-                    todo.append(found)
-        return False
+                    if found not in self._gross:
+                        todo.append(found)
+        return seen
 
     def holds(self, entities: Collection[str]) -> dict[str, SolarHold]:
         """Return the meters of `entities` that are the solar or hold it."""

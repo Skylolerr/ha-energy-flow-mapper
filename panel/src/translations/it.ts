@@ -323,7 +323,7 @@ export const it: Translations = {
   sum_periodic_way: "Cosa fare: usa invece il sensore del totale complessivo del dispositivo, oppure crea un contatore dal suo sensore di potenza (un aiutante integrale in Impostazioni → Dispositivi e servizi → Aiutanti).",
   sum_mixed_total: "Un contatore total (un contatore lordo o netto, che può anche scendere) non può essere sommato a contatori che salgono soltanto (total_increasing): Home Assistant non accetterebbe la somma come contatore. Tieni invece questi dispositivi separati nell’albero.",
   sum_state_class_list: "Classi di stato: {list}.",
-  sum_solar_save_first: "{names} non è più un impianto solare, ma solo nella tua bozza. Salva prima, poi crea la somma.",
+  sum_solar_save_first: "{names}: un impianto solare è stato modificato solo nella tua bozza (aggiunto, rimosso o con un altro sensore di potenza). Salva prima, poi crea la somma.",
   sum_solar_no_device: "La somma non ha alcun dispositivo in cui l’impianto solare possa immettere. Rimuovi l’impianto solare dalla somma.",
   sum_solar_is: "Un impianto solare o una sua parte: {names}.",
   sum_solar_open_setup: "Configura il solare per {name}",

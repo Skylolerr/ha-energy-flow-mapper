@@ -323,7 +323,7 @@ export const de: Translations = {
   sum_periodic_way: "Was du tun kannst: Nimm stattdessen den Gesamtzähler des Geräts (seit Inbetriebnahme), oder erstelle einen Zähler aus seinem Leistungssensor (ein Integral-Helfer unter Einstellungen → Geräte & Dienste → Helfer).",
   sum_mixed_total: "Ein Zähler mit total (ein Brutto- oder Netto-Zähler, der auch fallen kann) lässt sich nicht mit Zählern summieren, die nur steigen (total_increasing): Home Assistant nähme die Summe nicht als Zähler an. Lass diese Geräte stattdessen einzeln im Baum.",
   sum_state_class_list: "Zustandsklassen: {list}.",
-  sum_solar_save_first: "{names} ist nur in deinem Entwurf keine Solaranlage mehr. Speichere zuerst, dann erstelle die Summe.",
+  sum_solar_save_first: "{names}: Eine Solaranlage wurde nur in deinem Entwurf geändert (hinzugefügt, entfernt oder mit einem anderen Leistungssensor). Speichere zuerst, dann erstelle die Summe.",
   sum_solar_no_device: "Die Summe hat kein Gerät, in das die Solaranlage einspeisen könnte. Entferne die Solaranlage aus der Summe.",
   sum_solar_is: "Eine Solaranlage oder ein Teil davon: {names}.",
   sum_solar_open_setup: "Solaranlage für {name} einrichten",

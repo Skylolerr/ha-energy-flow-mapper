@@ -321,7 +321,7 @@ export const en = {
   sum_periodic_way: "What to do: use the device's lifetime total sensor instead, or create a meter from its power sensor (an integral helper under Settings → Devices & services → Helpers).",
   sum_mixed_total: "A meter that counts total (a gross or net meter, which may also fall) cannot be summed with meters that only rise (total_increasing): Home Assistant would not take the sum as a meter. Instead, keep these devices separate in the tree.",
   sum_state_class_list: "State classes: {list}.",
-  sum_solar_save_first: "{names} is no solar any more in your draft only. Save first, then create the sum.",
+  sum_solar_save_first: "{names}: a solar changed in your draft only (added, removed or with another power sensor). Save first, then create the sum.",
   sum_solar_no_device: "The sum has no device the solar could feed into. Remove the solar from the sum.",
   sum_solar_is: "A solar or part of one: {names}.",
   sum_solar_open_setup: "Set up the solar for {name}",

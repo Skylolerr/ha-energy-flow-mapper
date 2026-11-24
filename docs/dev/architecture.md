@@ -90,13 +90,15 @@ creating anything; `create_solar_setup` plans again with the same choices and re
 anything the preview would not offer (`not_offered`) or an offset that is no longer enough
 (`values_changed`).
 `create_sum_meter` judges its members with `sum_meter.SolarHolds` on the saved settings.
-The solar is every solar source's statistic and power, what they are made of (energy and
-power sensors, e.g. the inverters of a solar sum) and the setup's solar terms. A member
+The solar is every solar source's statistic and power, what they count (energy and power
+sensors, e.g. the inverters of a solar sum; not what they subtract, and not the meters of
+the settings) and the setup's solar terms. A member
 that is the solar or made only of it is always refused (`sum_with_solar`), also as a rate
 member. A member that holds the solar (with unknown signs, any input counts) is refused
 unless it is in `gross_ok` (the user marked it as a gross meter already). A gross meter the
 setup made (record `gross_energy`) that still reads something besides the solar is no
-holder, and neither is a meter that reaches the solar only through one. `get` returns the
+holder; a path to the solar through such a gross meter does not count, another path
+still does. `get` returns the
 same judgement as `solar_holds`, so the panel offers the mark only where it can pass.
 The panel's sum dialog sends the other sums to *Solar feeds in here …* and checks its
 members with `daily_check` on demand, once per member and dialog (a periodic member

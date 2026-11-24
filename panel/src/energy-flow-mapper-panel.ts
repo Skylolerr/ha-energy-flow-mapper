@@ -2142,14 +2142,28 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * The members that are the meter of a saved solar source the draft no
-   * longer has: the backend still sees the solar there, so save first.
+   * The members whose solar changed in the draft only, so the backend (which
+   * judges the saved settings) would see them otherwise; save first. The
+   * meter of a saved solar source the draft no longer has, and a member
+   * whose inputs hold a solar's meter or power sensor that only the draft has.
    */
   private _sumSaveFirst(all: string[]): string[] {
-    const saved = (this._snapshot?.prefs.energy_sources ?? [])
+    const stats = (sources: Source[]) =>
+      sources
+        .filter((s) => s.type === "solar")
+        .flatMap((s) => [s.stat_energy_from, s.stat_rate])
+        .filter((stat): stat is string => typeof stat === "string" && stat !== "");
+    const saved = stats(this._snapshot?.prefs.energy_sources ?? []);
+    const meters = (this._snapshot?.prefs.energy_sources ?? [])
       .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string")
       .map((s) => s.stat_energy_from as string);
-    return all.filter((stat) => saved.includes(stat) && !this._isSolarMeter(stat));
+    const draftOnly = stats(this.draftSources).filter((stat) => !saved.includes(stat));
+    const inputs = this._snapshot?.inputs ?? {};
+    return all.filter(
+      (stat) =>
+        (meters.includes(stat) && !this._isSolarMeter(stat)) ||
+        (!this._isSolarMeter(stat) && (inputs[stat] ?? []).some((input) => draftOnly.includes(input))),
+    );
   }
 
   /**
@@ -2170,7 +2184,8 @@ export class EnergyFlowMapperPanel extends LitElement {
    * own gross meters are not among them: they sum like any meter.
    */
   private _sumHolders(all: string[]): string[] {
-    return all.filter((stat) => this._snapshot?.solar_holds?.[stat] === "holder");
+    const saveFirst = this._sumSaveFirst(all);
+    return all.filter((stat) => this._snapshot?.solar_holds?.[stat] === "holder" && !saveFirst.includes(stat));
   }
 
   /**
@@ -2186,13 +2201,19 @@ export class EnergyFlowMapperPanel extends LitElement {
     grossOk: string[] = [],
   ): { solars: string[]; holders: string[]; devices: string[]; solar?: string } | null {
     const solars = all.filter((stat) => this._isSolarMember(stat));
-    const holders = this._sumHolders(all).filter((stat) => !grossOk.includes(stat));
+    const held = this._sumHolders(all);
+    const holders = held.filter((stat) => !grossOk.includes(stat));
     if (solars.length === 0 && holders.length === 0) {
       return null;
     }
+    // A marked gross meter holds its own solar already: no setup for it either.
+    const saveFirst = this._sumSaveFirst(all);
     const devices = all.filter(
       (stat) =>
-        !solars.includes(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
+        !solars.includes(stat) &&
+        !held.includes(stat) &&
+        !saveFirst.includes(stat) &&
+        this.draft.some((d) => d.stat_consumption === stat),
     );
     const sources = this.draftSources
       .filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string")

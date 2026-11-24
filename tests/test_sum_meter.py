@@ -705,12 +705,16 @@ async def test_ws_sum_holder_with_unknown_signs_needs_the_mark(
     assert response["success"], response
 
 
+@pytest.mark.parametrize("group_type", ["sum", "max"])
 @pytest.mark.parametrize("energy_prefs", [SOLAR_OF_INVERTERS])
 @pytest.mark.usefixtures("loaded_entry")
 async def test_ws_sum_part_of_the_solar_is_never_gross(
-    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, group_type: str
 ) -> None:
-    """An inverter of a solar that is a sum of inverters is part of the solar."""
+    """An inverter of a solar made of inverters is part of the solar.
+
+    Also when the solar's signs are unknown (a max group).
+    """
     _meter(hass, "sensor.inv1")
     _meter(hass, "sensor.inv2")
     _helper(
@@ -719,7 +723,7 @@ async def test_ws_sum_part_of_the_solar_is_never_gross(
         "sensor.solar_total",
         {
             "group_type": "sensor",
-            "type": "sum",
+            "type": group_type,
             "entities": ["sensor.inv1", "sensor.inv2"],
         },
     )
@@ -897,3 +901,88 @@ async def test_ws_sum_unknown_signs_without_solar_build(
         hass, hass_ws_client, ["sensor.kitchen_energy", "sensor.cycle_a"]
     )
     assert response["success"], response
+
+
+async def _our_gross(hass: HomeAssistant, helpers: Any) -> str:
+    """Record a gross meter of ours that reads the garage and the solar."""
+    gross = _template(
+        hass,
+        "sensor.gross_a",
+        "{{ states('sensor.garage_energy') | float"
+        " + states('sensor.solar_energy') | float }}",
+    )
+    await helpers.async_add(
+        gross.entry_id, {"kind": "gross_energy", "stat": "sensor.garage_energy"}
+    )
+    return "sensor.gross_a"
+
+
+async def test_ws_sum_second_path_past_our_gross_meter_needs_the_mark(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A meter adding the solar besides our gross meter holds it (twice)."""
+    gross = await _our_gross(hass, loaded_entry.runtime_data.helpers)
+    _helper(
+        hass,
+        "group",
+        "sensor.house",
+        {
+            "group_type": "sensor",
+            "type": "sum",
+            "entities": [gross, "sensor.solar_energy"],
+        },
+    )
+    _template(hass, "sensor.solar_copy", "{{ states('sensor.solar_energy') | float }}")
+    _template(
+        hass,
+        "sensor.house_t",
+        f"{{{{ states('{gross}') | float + states('sensor.solar_copy') | float }}}}",
+    )
+    for member in ("sensor.house", "sensor.house_t"):
+        members = ["sensor.kitchen_energy", member]
+        _refused(await _sum(hass, hass_ws_client, members), member)
+        response = await _sum(hass, hass_ws_client, members, [member])
+        assert response["success"], response
+    holds = (await send(hass_ws_client, hass, type=f"{DOMAIN}/get"))["result"][
+        "solar_holds"
+    ]
+    assert holds["sensor.house"] == "holder"
+    assert holds["sensor.house_t"] == "holder"
+    assert gross not in holds
+
+
+SOLAR_FROM_METERS = {
+    **ENERGY_PREFS,
+    "energy_sources": [
+        {**source, "stat_energy_from": "sensor.solar_calc"}
+        if source["type"] == "solar"
+        else {**source, "power_config": {"stat_rate": "sensor.grid_power"}}
+        if source["type"] == "grid"
+        else source
+        for source in ENERGY_PREFS["energy_sources"]
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [SOLAR_FROM_METERS])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_sum_solar_built_from_other_meters_leaves_them_alone(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar computed from the house and the grid does not make them solar."""
+    _template(
+        hass,
+        "sensor.solar_calc",
+        "{{ states('sensor.main_energy') | float"
+        " - states('sensor.grid_import') | float"
+        " + states('sensor.grid_export') | float }}",
+    )
+    for member in ("sensor.grid_import", "sensor.grid_export"):
+        response = await _sum(hass, hass_ws_client, ["sensor.kitchen_energy", member])
+        assert response["success"], response
+    holds = (await send(hass_ws_client, hass, type=f"{DOMAIN}/get"))["result"][
+        "solar_holds"
+    ]
+    assert holds == {"sensor.solar_calc": "solar"}
