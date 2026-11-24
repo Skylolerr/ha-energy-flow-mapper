@@ -149,7 +149,7 @@ function sparkline(evidence: StatsEvidence): TemplateResult | typeof nothing {
  *
  * Events (none bubble): `close`, `created` (`SolarCreatedDetail`), `failed`
  * (`{ error }`), `set-solar-power` (`{ solar, state }`), `set-circuit-power`
- * (`{ stat, state }`) and `open-settings` (`{ entity_id }`); `state`
+ * (`{ stat, state }`) and `open-settings` (`{ entity_id, state }`); `state`
  * (`SolarSetupState`) lets the panel open the setup again as it was. It
  * renders into the panel's shadow root (no own shadow root), so the panel's
  * dialog styles apply.
@@ -274,6 +274,10 @@ export class EfmSolarSetup extends LitElement {
 
   private _setCircuitPower(): void {
     this._emit("set-circuit-power", { stat: this.context.stat, state: this._state() });
+  }
+
+  private _openSettings(entity: string): void {
+    this._emit("open-settings", { entity_id: entity, state: this._state() });
   }
 
   /** A device, solar or sensor by the name the user knows. */
@@ -434,6 +438,8 @@ export class EfmSolarSetup extends LitElement {
 
   private _pickSolar(solar: string): void {
     this._solar = solar;
+    // Asked for here: the next update must not ask again.
+    this._asked = true;
     this._preview = null;
     this._error = null;
     this._notice = null;
@@ -595,6 +601,7 @@ export class EfmSolarSetup extends LitElement {
                   name="solar-source"
                   value=${solar}
                   .checked=${this._solar === solar}
+                  ?disabled=${this._busy}
                   @change=${() => this._pickSolar(solar)}
                 />
                 ${this.context.name(solar)}
@@ -687,7 +694,7 @@ export class EfmSolarSetup extends LitElement {
           name="solar-method"
           value=${method}
           .checked=${preview.method === method}
-          ?disabled=${!status.offered}
+          ?disabled=${!status.offered || this._busy}
           @change=${() => this._choose({ method })}
         />
         <span>${this._t(`solar_method_${method}`)}</span>
@@ -717,6 +724,7 @@ export class EfmSolarSetup extends LitElement {
         ${t(kind === "drawn" ? "solar_setup_drawn" : "solar_setup_returned")}
         <select
           class="solar-${kind}"
+          ?disabled=${this._busy}
           @change=${(e: Event) => this._choose({ [kind]: (e.target as HTMLSelectElement).value || null })}
         >
           ${value === null ? html`<option value="" .selected=${true}>${t("solar_setup_choose")}</option>` : nothing}
@@ -733,7 +741,11 @@ export class EfmSolarSetup extends LitElement {
         .map(
           (c) => html`<p class="hint solar-disabled">
             ${t("solar_setup_disabled_sensor", { entity: name(c.entity) })}
-            <button class="link" @click=${() => this._emit("open-settings", { entity_id: c.entity })}>
+            <button
+              class="link"
+              ?disabled=${this._busy}
+              @click=${() => this._openSettings(c.entity)}
+            >
               ${t("solar_setup_open_settings")}
             </button>
           </p>`,
@@ -808,6 +820,7 @@ export class EfmSolarSetup extends LitElement {
             value=${value}
             aria-label=${`${meter}: ${label}`}
             .checked=${touched === (value === "daily")}
+            ?disabled=${this._busy}
             @change=${() => set(value === "daily")}
           />
           ${label}
@@ -823,6 +836,7 @@ export class EfmSolarSetup extends LitElement {
           class="solar-daily"
           aria-label=${`${meter}: ${daily}`}
           .checked=${touched ?? evidence.periodic}
+          ?disabled=${this._busy}
           @change=${(e: Event) => set((e.target as HTMLInputElement).checked)}
         />
         ${daily}
@@ -856,7 +870,7 @@ export class EfmSolarSetup extends LitElement {
           ? t("solar_setup_solar_power", { entity: this.context.sensorName(power.solar), from: from(power.solar_from) })
           : t("solar_setup_solar_none")}
         ${power.solar === null && askPower
-          ? html`<button class="link solar-set-power" @click=${() => this._setSolarPower()}>
+          ? html`<button class="link solar-set-power" ?disabled=${this._busy} @click=${() => this._setSolarPower()}>
               ${t("solar_setup_set_solar_power")}
             </button>`
           : nothing}
@@ -881,6 +895,7 @@ export class EfmSolarSetup extends LitElement {
                 type="checkbox"
                 class="solar-invert"
                 .checked=${preview.invert}
+                ?disabled=${this._busy}
                 @change=${(e: Event) => this._choose({ invert: (e.target as HTMLInputElement).checked })}
               />
               ${t("solar_setup_invert")}
@@ -911,8 +926,9 @@ export class EfmSolarSetup extends LitElement {
   }
 
   /**
-   * The way on from a block: set a missing power sensor, check again, or open
-   * a sensor's settings.
+   * The way on from a block: set a missing or unusable power sensor (also
+   * one that cannot be read or already holds the solar), check again, or
+   * open a sensor's settings.
    */
   private _renderBlockedAction(preview: SolarPreview, blocked: string): TemplateResult | typeof nothing {
     const t = this.localize;
@@ -947,7 +963,7 @@ export class EfmSolarSetup extends LitElement {
           ? action(t("solar_setup_set_circuit_power", { name }), () => this._setCircuitPower())
           : nothing}
         ${unusable
-          ? action(t("solar_setup_open_settings"), () => this._emit("open-settings", { entity_id: circuit }))
+          ? action(t("solar_setup_open_settings"), () => this._openSettings(circuit))
           : nothing}
         ${preview.power.solar === null ? action(t("solar_setup_set_solar_power"), () => this._setSolarPower()) : nothing}`;
       }
@@ -955,12 +971,23 @@ export class EfmSolarSetup extends LitElement {
       case "input_not_ready":
       case "not_offered":
         return action(t("solar_setup_check_again"), () => this._choose({}));
+      case "unsupported_input":
+      case "solar_already_in_meter":
+        // A power sensor the setup cannot use: set another one. A meter
+        // that already holds the solar is used as it is.
+        if (preview.blocked_entity !== null && preview.blocked_entity === preview.power.solar) {
+          return action(t("solar_setup_set_solar_power"), () => this._setSolarPower());
+        }
+        if (preview.blocked_entity !== null && preview.blocked_entity === preview.power.circuit) {
+          return action(t("solar_setup_set_circuit_power", { name: this.context.deviceName }), () =>
+            this._setCircuitPower(),
+          );
+        }
+        return nothing;
       case "input_disabled":
       case "returned_disabled":
         return preview.blocked_entity
-          ? action(t("solar_setup_open_settings"), () =>
-              this._emit("open-settings", { entity_id: preview.blocked_entity }),
-            )
+          ? action(t("solar_setup_open_settings"), () => this._openSettings(preview.blocked_entity ?? ""))
           : nothing;
       default:
         return nothing;
@@ -1016,6 +1043,7 @@ export class EfmSolarSetup extends LitElement {
                 class="solar-name"
                 data-role=${role}
                 .value=${this._nameOf(role, preview)}
+                ?disabled=${this._busy}
                 @input=${(e: Event) => (this._names = { ...this._names, [role]: (e.target as HTMLInputElement).value })}
               />
             </label>

@@ -5704,6 +5704,61 @@ describe("hints and solar setup", () => {
     expect(el._toast).toContain("Gross meter “Server & co gross” created");
   });
 
+  it("Open its settings comes back to the setup as the user left it", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) =>
+      preview({
+        method: msg.method ?? "em",
+        returned_candidates: [
+          { entity: "sensor.server_returned", disabled: false },
+          { entity: "sensor.server_returned_2", disabled: true },
+        ],
+      });
+    const el = await mount(mock);
+    const opened: unknown[] = [];
+    el.addEventListener("hass-more-info", (e) => opened.push((e as CustomEvent).detail));
+    const typeName = async (value: string) => {
+      const name = textInputs(el).find((i) => i.dataset.role === "energy")!;
+      name.value = value;
+      name.dispatchEvent(new Event("input"));
+      await settle(el);
+    };
+    const energyName = () => textInputs(el).find((i) => i.dataset.role === "energy")!.value;
+    await openSetup(el);
+    methodRadio(el, "plug").click();
+    await settle(el);
+    await typeName("Kept gross");
+    dialogButton(el, "Open its settings")!.click();
+    await settle(el);
+    expect(opened).toEqual([{ entityId: "sensor.server_returned_2", view: "settings" }]);
+    expect(el._dialog).toBeNull();
+    // Home Assistant's more-info dialog closes: the setup is back as it was.
+    window.dispatchEvent(new CustomEvent("dialog-closed", { detail: { dialog: "ha-more-info-dialog" } }));
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "solar", stat: "sensor.server" });
+    expect(methodRadio(el, "plug").checked).toBe(true);
+    expect(energyName()).toBe("Kept gross");
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ method: "plug" });
+
+    // Without that event, opening the setup again for the device resumes it.
+    await typeName("Kept again");
+    dialogButton(el, "Open its settings")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    await openSetup(el);
+    expect(methodRadio(el, "plug").checked).toBe(true);
+    expect(energyName()).toBe("Kept again");
+    // Only once: cancelled and opened again, it starts afresh.
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    window.dispatchEvent(new CustomEvent("dialog-closed", { detail: { dialog: "ha-more-info-dialog" } }));
+    await settle(el);
+    expect(el._dialog).toBeNull();
+    await openSetup(el);
+    expect(methodRadio(el, "em").checked).toBe(true);
+    expect(energyName()).not.toBe("Kept again");
+  });
+
   it("a late setup result leaves a dialog opened since alone", async () => {
     const mock = hintMock();
     mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();

@@ -403,7 +403,7 @@ describe("solar setup pickers", () => {
     ]);
     expect(content(el)).toContain("sensor.server_returned_b is disabled in Home Assistant.");
     button(el, "Open its settings")!.click();
-    expect(events["open-settings"]).toEqual([{ entity_id: "sensor.server_returned_b" }]);
+    expect(events["open-settings"]).toMatchObject([{ entity_id: "sensor.server_returned_b", state: { solar: "sensor.solar" } }]);
     // Picking runs the preview with the pick.
     const drawn = el.querySelector<HTMLSelectElement>("select.solar-drawn")!;
     drawn.value = "sensor.server_consumed";
@@ -740,7 +740,7 @@ describe("solar setup without dead ends", () => {
     await settle(el);
     expect(content(el)).toContain("Server consumed is disabled in Home Assistant");
     el.querySelector<HTMLButtonElement>(".solar-blocked-action")!.click();
-    expect(events["open-settings"]).toEqual([{ entity_id: "sensor.server_consumed" }]);
+    expect(events["open-settings"]).toMatchObject([{ entity_id: "sensor.server_consumed", state: { solar: "sensor.solar" } }]);
   });
 
   it("every blocked and error key of the setup has a text", () => {
@@ -1094,7 +1094,7 @@ describe("solar setup context and lifecycle", () => {
     actions[0].click();
     actions[1].click();
     expect(events["set-circuit-power"]).toHaveLength(1);
-    expect(events["open-settings"]).toEqual([{ entity_id: "sensor.server_power" }]);
+    expect(events["open-settings"]).toMatchObject([{ entity_id: "sensor.server_power", state: { solar: "sensor.solar" } }]);
   });
 
   it("create finds the suggested method gone: the way note, not the old one", async () => {
@@ -1152,5 +1152,105 @@ describe("solar setup context and lifecycle", () => {
     expect(events.failed).toHaveLength(1);
     expect(events.close).toHaveLength(0);
     expect(setUp(el).disabled).toBe(false);
+  });
+});
+
+describe("solar setup bug fixes", () => {
+  it("picking one of two solars asks for its preview once", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+    const { el } = await mount(mock, { solars: ["sensor.solar", "sensor.balcony"] });
+    expect(previews(mock)).toHaveLength(0);
+    el.querySelector<HTMLInputElement>('input[name="solar-source"][value="sensor.balcony"]')!.click();
+    await settle(el);
+    expect(previews(mock)).toHaveLength(1);
+    expect(previews(mock)[0]).toMatchObject({ solar: "sensor.balcony" });
+    // Another pick asks once more, for that solar.
+    el.querySelector<HTMLInputElement>('input[name="solar-source"][value="sensor.solar"]')!.click();
+    await settle(el);
+    expect(previews(mock)).toHaveLength(2);
+    expect(previews(mock)[1]).toMatchObject({ solar: "sensor.solar" });
+  });
+
+  it("every choice is disabled while Set up runs", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      drawn_candidates: [
+        { entity: "sensor.server", disabled: false },
+        { entity: "sensor.server_consumed", disabled: true },
+      ],
+      evidence: { "sensor.server": evidence(), "sensor.server_returned": evidence({ periodic: null, series: [] }) },
+    });
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => new Promise((r) => (resolve = r));
+    const { el, events } = await mount(mock, { solars: ["sensor.solar", "sensor.balcony"], solar: "sensor.solar" });
+    const controls = () => [
+      ...el.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLButtonElement>(
+        "input, select, button:not(.solar-create)",
+      ),
+    ];
+    const choices = () => controls().filter((c) => !(c instanceof HTMLButtonElement && c.textContent!.includes("Cancel")));
+    // Radios of solar and method, the pickers, the daily switches, invert, the names, open settings.
+    for (const selector of [
+      'input[name="solar-source"]',
+      'input[name="solar-method"]',
+      "select.solar-drawn",
+      "select.solar-returned",
+      "input.solar-daily",
+      "input.solar-daily-choice",
+      "input.solar-invert",
+      "input.solar-name",
+      ".solar-disabled button",
+    ]) {
+      expect(el.querySelector(selector), selector).not.toBeNull();
+    }
+    const enabled = new Set(choices().filter((c) => !c.disabled));
+    setUp(el).click();
+    await settle(el);
+    expect(setUp(el).textContent).toContain("Creating");
+    expect(choices().filter((c) => !c.disabled)).toEqual([]);
+    // Cancel stays: the result is still applied by the panel.
+    expect(button(el, "Cancel")!.disabled).toBe(false);
+    const calls = previews(mock).length;
+    method(el, "net").click();
+    await settle(el);
+    expect(previews(mock)).toHaveLength(calls);
+    resolve({ entity_id: "sensor.server_gross", stat_rate: null });
+    await settle(el);
+    expect(events.created).toHaveLength(1);
+    expect(last(mock, "energy_flow_mapper/create_solar_setup")).toMatchObject({ method: "em" });
+    // Afterwards (a dialog kept open) the choices are back.
+    expect(new Set(choices().filter((c) => !c.disabled))).toEqual(enabled);
+  });
+
+  it("an unreadable solar power and a circuit power with the solar offer a fix", async () => {
+    const mock = mockHass();
+    let blocked: Partial<SolarPreview> = { blocked: "unsupported_input", blocked_entity: "sensor.solar_power" };
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = () => preview(blocked);
+    const { el, events } = await mount(mock);
+    expect(setUp(el).disabled).toBe(true);
+    let action = el.querySelector<HTMLButtonElement>(".solar-blocked-action")!;
+    expect(action.textContent).toContain("Set power sensor of the solar");
+    action.click();
+    expect(events["set-solar-power"]).toMatchObject([{ solar: "sensor.solar" }]);
+
+    blocked = { blocked: "solar_already_in_meter", blocked_entity: "sensor.server_power" };
+    method(el, "net").click();
+    await settle(el);
+    action = el.querySelector<HTMLButtonElement>(".solar-blocked-action")!;
+    expect(action.textContent).toContain("Set power sensor of Server & co");
+    action.click();
+    expect(events["set-circuit-power"]).toMatchObject([{ stat: "sensor.server" }]);
+
+    // The meter itself holding the solar is used as it is: no power button.
+    blocked = { blocked: "solar_already_in_meter", blocked_entity: "sensor.server" };
+    method(el, "em").click();
+    await settle(el);
+    expect(el.querySelector(".solar-blocked-action")).toBeNull();
+    // An unreadable input that is no power sensor has no power button either.
+    blocked = { blocked: "unsupported_input", blocked_entity: "sensor.server" };
+    method(el, "plug").click();
+    await settle(el);
+    expect(el.querySelector(".solar-blocked-action")).toBeNull();
   });
 });

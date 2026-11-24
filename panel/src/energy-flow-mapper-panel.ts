@@ -550,6 +550,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _energyRequest = 0;
   /** Counts sum dialogs opened and dialogs closed; a late answer for an earlier one is dropped. */
   private _sumSession = 0;
+  /** The setup left for a sensor's settings, to open again as it was. */
+  private _setupResume: SolarDialog | null = null;
   /** Counts sum dialogs checked; an answer for an earlier dialog is dropped. */
   private _sumCheckSession = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
@@ -619,6 +621,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   override connectedCallback(): void {
     super.connectedCallback();
     window.addEventListener("keydown", this._onKeyDown);
+    window.addEventListener("dialog-closed", this._onHaDialogClosed);
   }
 
   private _t(key: StringKey, placeholders: Record<string, string> = {}): string {
@@ -1431,6 +1434,7 @@ export class EnergyFlowMapperPanel extends LitElement {
    */
   private _openEntitySettings(entityId: string): void {
     this._close();
+    this._setupResume = null;
     this.dispatchEvent(
       new CustomEvent("hass-more-info", { detail: { entityId, view: "settings" }, bubbles: true, composed: true }),
     );
@@ -1439,6 +1443,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Show an entity in Home Assistant's more-info dialog: its value and history. */
   private _openMoreInfo(entityId: string): void {
     this._close();
+    this._setupResume = null;
     this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
   }
 
@@ -1739,6 +1744,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   override disconnectedCallback(): void {
     super.disconnectedCallback();
     window.removeEventListener("keydown", this._onKeyDown);
+    window.removeEventListener("dialog-closed", this._onHaDialogClosed);
     clearTimeout(this._toastTimer);
     this._resizeObserver?.disconnect();
     this._observed = null;
@@ -2705,6 +2711,13 @@ export class EnergyFlowMapperPanel extends LitElement {
    */
   _openSolarSetup(stat: string, solar?: string): void {
     this._sumSession++;
+    // Left for a sensor's settings: as the user left it, once.
+    const resume = this._setupResume;
+    this._setupResume = null;
+    if (resume !== null && resume.stat === stat) {
+      this._dialog = { ...resume };
+      return;
+    }
     this._dialog = solar ? { kind: "solar", stat, solar } : { kind: "solar", stat };
   }
 
@@ -5144,7 +5157,8 @@ export class EnergyFlowMapperPanel extends LitElement {
           this._powerFromSetup(dialog, { kind: "source", stat: e.detail.solar, role: "production" }, e.detail.state)}
         @set-circuit-power=${(e: CustomEvent<{ stat: string; state: SolarSetupState }>) =>
           this._powerFromSetup(dialog, { kind: "device", stat: e.detail.stat }, e.detail.state)}
-        @open-settings=${(e: CustomEvent<{ entity_id: string }>) => this._openEntitySettings(e.detail.entity_id)}
+        @open-settings=${(e: CustomEvent<{ entity_id: string; state: SolarSetupState }>) =>
+          this._settingsFromSetup(dialog, e.detail.entity_id, e.detail.state)}
       ></efm-solar-setup>`,
     )}`;
   }
@@ -5159,6 +5173,29 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._dialog = { ...this._dialog, back: { ...dialog, resume: state } };
     }
   }
+
+  /**
+   * A sensor's settings, opened from the setup: Home Assistant's more-info
+   * dialog replaces the setup, which is kept as the user left it. When that
+   * dialog closes (`dialog-closed`), the setup opens again; if that event
+   * does not come, the next *Solar feeds in here…* of the device resumes it.
+   */
+  private _settingsFromSetup(dialog: SolarDialog, entityId: string, state: SolarSetupState): void {
+    this._openEntitySettings(entityId);
+    this._setupResume = { ...dialog, resume: state };
+  }
+
+  /** Home Assistant closed a dialog: the more-info dialog the setup opened brings it back. */
+  private _onHaDialogClosed = (e: Event): void => {
+    const resume = this._setupResume;
+    if (resume === null || (e as CustomEvent<{ dialog?: string }>).detail?.dialog !== "ha-more-info-dialog") {
+      return;
+    }
+    this._setupResume = null;
+    if (this._dialog === null) {
+      this._dialog = resume;
+    }
+  };
 
   /**
    * The power (flow) sensor dialog: a picker with None; a grid or battery
