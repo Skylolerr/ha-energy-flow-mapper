@@ -128,10 +128,6 @@ const DRAFT_KEY = "energy_flow_mapper.draft";
 /** The README on GitHub; hints link to its sections. */
 const README_URL = "https://github.com/Skylolerr/ha-energy-flow-mapper";
 /**
- * The README section each safety-net hint links to. The README must keep
- * headings that give exactly these anchors.
- */
-/**
  * The safety-net hints: a dismissal names the event of its hint (this field
  * of `data`) and hides only that one, like the backend's `EVENT_KEYS`.
  */
@@ -141,6 +137,10 @@ const EVENT_KEYS: Record<string, "hour" | "day"> = {
   solar_term_short: "day",
   solar_term_high: "day",
 };
+/**
+ * The README section each safety-net hint links to. The README must keep
+ * headings that give exactly these anchors.
+ */
 export const README_ANCHORS = {
   gross_off: "if-a-gross-meter-falls-or-jumps",
   gross_off_input: "if-an-input-was-reset-or-replaced",
@@ -1178,6 +1178,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     return typeof role === "string" ? role : null;
   }
 
+  /**
+   * Whether a hint can be dismissed: a safety-net hint only with its event,
+   * which the backend needs to keep the dismissal.
+   */
+  private _canDismiss(hint: Hint): boolean {
+    return EVENT_KEYS[hint.code] === undefined || Object.keys(this._hintEvent(hint)).length > 0;
+  }
+
   /** The event a safety-net hint is about (`{hour}` or `{day}`), or nothing for other hints. */
   private _hintEvent(hint: Hint): { hour?: string; day?: string } {
     const key = EVENT_KEYS[hint.code];
@@ -1398,7 +1406,7 @@ export class EnergyFlowMapperPanel extends LitElement {
    * safety-net hint its event (it is hidden for that event only).
    */
   async _dismissHint(hint: Hint): Promise<void> {
-    if (!this.hass) {
+    if (!this.hass || !this._canDismiss(hint)) {
       return;
     }
     const role = this._hintRole(hint);
@@ -4574,12 +4582,14 @@ export class EnergyFlowMapperPanel extends LitElement {
           </p>
           <div class="dialog-actions">
             ${this._hintAction(hint)}
-            <button
-              title=${this._t(EVENT_KEYS[hint.code] ? "hint_dismiss_event_title" : "hint_dismiss_title")}
-              @click=${() => void this._dismissHint(hint)}
-            >
-              ${this._t("hint_dismiss")}
-            </button>
+            ${this._canDismiss(hint)
+              ? html`<button
+                  title=${this._t(EVENT_KEYS[hint.code] ? "hint_dismiss_event_title" : "hint_dismiss_title")}
+                  @click=${() => void this._dismissHint(hint)}
+                >
+                  ${this._t("hint_dismiss")}
+                </button>`
+              : nothing}
           </div>
         </div>`,
       )}`;

@@ -6399,4 +6399,23 @@ describe("safety-net hints and list polish", () => {
     await settle(el);
     expect(root(el).querySelector('.block.source[data-role="production"] .hint-mark')).not.toBeNull();
   });
+
+  it("offers no dismiss for a safety-net hint without its event, and sends none", async () => {
+    // Without its hour the backend would not keep the dismissal: the click would do nothing.
+    const hint = grossOff({ cause: "input", input: "sensor.plug_energy" });
+    delete hint.data.hour;
+    const mock = grossMock([hint]);
+    const el = await mount(mock);
+    const line = hintLine(await openServer(el), "gross_off");
+    expect(buttons(line)).not.toContain("Dismiss");
+    await el._dismissHint(hint);
+    expect(lastCall(mock, "energy_flow_mapper/dismiss_hint")).toBeUndefined();
+  });
+
+  it("gives a battery's way forward when a counter-built gross meter goes below 0", async () => {
+    const el = await mount(grossMock([]));
+    const text = el._hintText(grossOff({ method: "em", change_kwh: -1, power_kwh: 1 }));
+    expect(text).toContain("A gross meter cannot count a battery that feeds in");
+    expect(text).toContain("put the circuit’s own meter back with ⋮ → “Replace with …”");
+  });
 });
