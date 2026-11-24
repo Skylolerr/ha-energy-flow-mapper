@@ -28,26 +28,28 @@ and Home Assistant show when they offer the update.
   - *From power*, the integral of circuit power + solar power, an estimate for any circuit
     whose power has a sign.
 
-  A method is suggested from known Shelly devices or from the statistics (a meter or power
-  that went below 0). An offered method that these do not confirm is marked *not verified*
-  with the reason and can still be chosen; a method whose meters cannot work (a meter that
-  starts again at 0 every day, no returned sensor, a `total_increasing` net meter, no power
-  sensors) is not offered. The dialog shows each meter's statistics of the last 3 days with a switch for
-  meters that start again at 0 every day, the circuit's and the solar's power with a live
-  check and *Turn the circuit's power around*, and the helpers it creates, with names you
-  can change. *Set up* creates ordinary template and integral helpers right away and puts
-  the gross meter in the device's place in the draft.
+  A method is suggested from known Shelly devices or a meter that went below 0 (*Net*);
+  when no rule fits, *From power* is suggested, and it counts as verified once the
+  circuit's power went below 0. An offered method that is not confirmed is marked *not
+  verified* with the reason and can still be chosen; a method whose meters cannot work (a
+  meter that starts again at 0 every day, no returned sensor, a `total_increasing` net
+  meter, no power sensors) is not offered. The dialog shows each meter's statistics of the
+  last 3 days with a switch for meters that start again at 0 every day, the circuit's and
+  the solar's power with a live check and *Turn the circuit's power around*, and the
+  helpers it creates, with names you can change. *Set up* creates ordinary template and
+  integral helpers right away and puts the gross meter in the device's place in the draft.
   - It works on the draft: a device, a solar or a power sensor that is only in the draft
     works too.
   - The solar's energy comes from its power sensor: an integral of a template that holds
     the solar's last power for about 10 minutes while it is `unavailable`, then counts 0.
-    The pair is made once per solar and reused. Without a power sensor, the solar's own
-    counter is used when its statistics show that it never resets; the gross meter then
-    pauses while the inverter is offline at night.
+    *From power* and every gross power read the same held value. The pair is made once per
+    solar and reused, and its integrals update every minute. Without a power sensor, the
+    solar's own counter is used when its statistics show that it never resets; the gross
+    meter then pauses while the inverter is offline at night.
   - Units are converted when the templates render, so a unit that changes later still
     works. The gross energy has the state class `total` and starts at 100 kWh or more.
   - *EM*, *Plug* and *Net* get a live gross power only when the circuit's power is known to
-    have a sign.
+    have a sign; a live power cannot be added to a gross meter later.
   - It stops with the reason and the way on when the meter already holds the solar, the
     solar's counter may reset, a sensor is disabled, or a check could not run.
 - **Safety net for gross meters:** hints at a gross meter of the setup when an hour of the
@@ -86,16 +88,16 @@ and Home Assistant show when they offer the update.
 
 ### 📦 Changed
 
-- **Create sum meter:** a sum with a solar is no longer created: the dialog explains why and
-  offers *Solar feeds in here…* for the devices in it instead. The setup's gross meters can be
-  summed like any meter; another member that holds a solar needs the mark *is already a
-  gross meter*. Members that start again at 0 now and then are checked when they are
-  added and refused (a member whose check could not run is marked *Not checked* and can
-  still be summed), and members with different state classes are refused with each one's
-  class. With a source and exactly one device, *Replace* with the device's name is
-  preselected, because the device is already part of the sum; unticked, it moves below
-  the new meter as before. The dialog names the members without a power sensor and says
-  why a source keeps a power or flow sum from being created.
+- **Create sum meter:** a sum with a solar is no longer created: the dialog explains why
+  and offers *Solar feeds in here…* for the devices in it instead. The setup's gross
+  meters can be summed like any meter; another member that holds a solar needs the mark
+  *is already a gross meter*. Members that start again at 0 now and then are checked when
+  they are added and refused (a member whose check could not run is marked *Not checked*
+  and can still be summed), and members with different state classes are refused with each
+  one's class. With a source and exactly one device, *Replace* with the device's name is
+  preselected, because the device is already part of the sum; unticked, it moves below the
+  new meter as before. The dialog names the members without a power sensor and says why a
+  source keeps a power or flow sum from being created.
 - **Category in the Marketplace:** Home Assistant's Marketplace (HACS) lists Energy Flow Mapper
   under *Energy → Meters & monitoring*. Nothing changes in how the integration works.
 - **Backup summaries** say «power or flow sensor» for a changed rate sensor.
@@ -104,8 +106,8 @@ and Home Assistant show when they offer the update.
 
 ### 🐛 Fixed
 
-- **Create meter with a kW power sensor:** the new meter counts in kWh with three decimals
-  instead of whole kWh.
+- **Create meter with a kW power sensor:** the new meter got the unit «kkWh» (thousands of
+  kWh) and so moved only in steps of 1 kWh; it now counts in kWh with three decimals.
 - **Create meter and Create sum meter** no longer leave a half-made helper behind when its
   setup fails in an unexpected way or the request is cancelled; a sum meter is also removed
   again when its power sum then fails in such a way, so a retry does not make a second one.
@@ -115,14 +117,14 @@ and Home Assistant show when they offer the update.
 - 0.10.x still loads the stores of this release – the created helpers (1.2) and the
   suggestions with the dismissed hints (1.3) – and keeps their content. The next time
   0.10.x saves one of them itself (*Create meter*, *Create sum meter*, ignoring a
-  suggestion), it drops what it does not know: the records of what the setup made each
-  helper for, and the dismissed hints. The gross meters and their helpers stay and keep
-  counting.
+  suggestion, *Show ignored suggestions again*), it drops what it does not know: the
+  records of what the setup made each helper for, and the dismissed hints. The gross
+  meters and their helpers stay and keep counting.
 - Back on 0.11 after such a save, the safety net no longer finds those gross meters, the
   sum dialog asks to mark them as gross meters, a new setup makes a new helper for the
   solar's energy instead of reusing it, and dismissed hints show again.
-- A backup made by this release that changed a source's power sensor shows «source_rate:
-  1» in its summary on 0.10.x.
+- A backup made by this release that changed a source's power sensor shows «source_rate: N»
+  (N changed sources) in its summary on 0.10.x.
 - Dismissed safety-net hints from a test build of 0.11 are removed once on the update:
   they hid every later event. The same happens to dismissed safety-net hints after going
   back to 0.10.x and up again.

@@ -6017,7 +6017,8 @@ describe("safety-net hints and list polish", () => {
     expect(text).toContain("leaves the hint by itself after 7 days");
     expect(text).toContain("set the device’s power sensor to “None”");
     expect(text).toContain("After saving, the hint goes away.");
-    expect(text).toContain("open the gross power template");
+    // Editing the template by hand would break its guard, which reads the circuit too.
+    expect(text).not.toContain("template");
     expect(text).not.toContain("battery");
     expect(text).not.toContain("dismiss");
     expect(readme(details(el), "gross_off")!.href).toBe(`${README}#if-a-gross-meter-falls-or-jumps`);
@@ -6052,7 +6053,7 @@ describe("safety-net hints and list polish", () => {
     }
   });
 
-  it("offers a rebuild or a template edit for a wrong sign of From power", async () => {
+  it("offers only a rebuild for a wrong sign of From power", async () => {
     // From power counts its gross power: setting the power to none would not fix the meter.
     const power = grossOff({ method: "power", change_kwh: -0.8, power_kwh: -0.9, cause: "sign" });
     const el = await mount(grossMock([power]));
@@ -6062,7 +6063,7 @@ describe("safety-net hints and list polish", () => {
     expect(text).toContain("its gross power gave -900 Wh.");
     expect(text).toContain("If the circuit’s power has the wrong sign");
     expect(text).toContain("build the gross meter again with the circuit’s power turned around");
-    expect(text).toContain("edit the gross power template");
+    expect(text).not.toContain("template");
     expect(text).toContain("If a battery or something else feeds into the circuit, there is no fix");
     expect(text).not.toContain("“None”");
     expect(buttons(line)).toEqual(["Dismiss"]);

@@ -298,15 +298,15 @@ the sensors live.
   [Sum meters and solar](#sum-meters-and-solar).
 - **Meters that start again at 0 every day** (the daily energy of many micro inverters,
   utility meters with a cycle, meters whose `last_reset` changes) are recognised: a meter
-  that fell towards 0 – to less than half of the value before, from above or from below
-  0 – on at least 2 of the last 3 days. A fall that the meter's own power sensor explains
-  (a circuit exporting near 0) is no reset; without a power sensor, the fall must be more
+  that fell towards 0 – to less than half of the value before, from above or from
+  below 0 – on at least 2 of the last 3 days. A fall that the meter's own power sensor
+  explains (a circuit exporting near 0) is no reset; without a power sensor, the fall must be more
   than twice the meter's usual fall. In a sum, such a meter would make the sum drop at
   each of its resets, and Home Assistant would count the whole sum again, so the sum
-  dialog checks every member when you add it and refuses the ones that reset; a member
-  it could not check (too few statistics, a busy recorder) is marked *Not checked* and
-  can still be summed. A hint points out such a sum made elsewhere. *Solar feeds in here…* uses the
-  same check for its inputs.
+  dialog checks every member when you add it and refuses the ones that reset; a member it
+  could not check (too few statistics, a busy recorder) is marked *Not checked* and can
+  still be summed. A hint points out such a sum made elsewhere. *Solar feeds in here…*
+  uses the same check for its inputs.
 - **Replace with …** is one step of the draft: *Undo change* takes it back as a whole.
   Without a free sensor to take the place, it is disabled and says so.
   The new meter keeps its own name unless you had set one for the old meter, and it does
@@ -369,16 +369,18 @@ that over time.
 - *From power* needs a power sensor for the circuit and one for the solar; the circuit's
   must be enabled and in a power unit.
 
-**Which method is suggested:** the one a known device rule gives, else *From power*,
-else none (then you choose). The rules:
+**Which method is suggested:** the one a known device rule gives, if it is offered. The
+rules:
 
 - an energy meter channel of a Shelly Gen2 or newer (Pro EM, Pro 3EM, …): *EM meter*;
 - a Shelly plug or switch (Gen2 or newer) with a returned energy sensor of its own: *Plug
   or switch* for its *Energy*, *EM meter* for its *Energy consumed* (which counts only
   what it draws);
-- a meter that went below 0 in the last 3 days: *Net meter*;
-- *From power* counts as checked once the circuit's power went below 0 in the last 3
-  days, so it has a sign.
+- a meter that went below 0 in the last 3 days: *Net meter*.
+
+When no rule fits (or its method is not offered), *From power* is suggested if it is
+offered; otherwise none is, and you choose. *From power* counts as verified only once the
+circuit's power went below 0 in the last 3 days, so it is known to have a sign.
 
 **Not verified** (German *nicht geprüft*): a method that is offered but not checked is
 marked so, with the reason. It can still be set up – pick it only if you know your meter
@@ -386,8 +388,9 @@ counts this way. The reasons:
 
 - your device has a rule, but you chose another method, or another returned sensor than
   the one the rule trusts;
-- no rule fits your device (another integration, a Shelly Gen1 or `pm1` device): its
-  counter may start again at 0 after a power cut;
+- *EM* or *Plug* without an EM or plug rule for your device (another integration, a
+  Shelly Gen1 or `pm1` device, or a meter whose only rule is *Net meter*): its counter may
+  start again at 0 after a power cut;
 - *Net meter*: the meter never went below 0 in the last 3 days;
 - one of its meters has no statistics in the last days; say below whether it starts again
   at 0 every day;
@@ -400,7 +403,10 @@ counts nothing while its power has no value (that energy is lost, see
 [Gaps in a gross meter](#gaps-in-a-gross-meter)). The other methods add up energy counters
 and catch up after a gap.
 
-### The setup, step by step
+### The setup
+
+<details>
+<summary><b>Step by step</b></summary>
 
 1. **Solar:** pick the solar source; if there is only one, it is preselected.
 2. **Method:** each of the four with its formula, one sentence and its status (suggested,
@@ -430,6 +436,7 @@ and catch up after a gap.
 When a check could not run (a busy recorder) the dialog offers *Try again*; when something
 blocks the setup, it says what and offers the way on (set a power sensor, open a sensor's
 settings, *Check again*). *Set up* stays disabled with the reason until it can be done.
+</details>
 
 **It works on your draft.** The setup plans on the settings with your unsaved changes, so a
 device, a solar source or a power sensor that is only in the draft works too. A power
@@ -442,9 +449,11 @@ changed elsewhere meanwhile, the panel reloads them, keeps your draft and checks
 
 - the circuit's meter, its returned sensor or its power already holds the solar (a sum or
   template with the solar in it, at any level): a gross meter would count the solar twice;
-- the solar has no power sensor and its own counter may start again at 0, or its
-  statistics do not show yet that it never does (it has to rise on two days): set the
-  solar's power sensor, or wait a day or two;
+- the solar has no power sensor and its own counter may start again at 0: set the
+  solar's power sensor;
+- the solar has no power sensor and its statistics do not show yet that its counter never
+  starts again at 0 (it has to rise on two days): set the solar's power sensor, or wait a
+  day or two;
 - no method fits, for example a meter that starts again at 0 every day without the two
   power sensors that *From power* needs;
 - a sensor it needs is disabled, or a meter whose value sets the start has none right now
@@ -454,7 +463,10 @@ changed elsewhere meanwhile, the panel reloads them, keeps your draft and checks
 
 The helpers are ordinary Home Assistant template and integral helpers under Settings →
 Helpers. They keep working without Energy Flow Mapper, and they stay if you undo the
-change in the draft (delete them there if you no longer need them).
+change in the draft. A gross meter's own helpers, its gross energy and gross power, can be
+deleted there when you no longer need them. The solar's helpers, «… (0 when offline)» and
+«… energy», are shared by every gross meter with that solar: keep them while another one
+uses it.
 
 - **The gross energy** (*EM*, *Plug*, *Net*): a template helper in kWh with the state class
   `total`, so Home Assistant books every change as it is and a small dip cancels out in
@@ -472,9 +484,10 @@ change in the draft (delete them there if you no longer need them).
   input in Wh, MWh or kW works, also when its unit changes later. While an input has no
   value or a unit that cannot be read, the template has no value.
 - **The gross meter starts at 100 kWh or more** (*EM*, *Plug*, *Net*). A circuit that has
-  returned more than it drew so far would start it below 0, and Home Assistant ignores a
-  meter while it is below 0. The template then adds a fixed number of kWh, a whole number
-  of 100 kWh shown in the preview; it does not change what the meter counts.
+  returned more than it drew so far would start it below 0, and Home Assistant's energy
+  settings flag a meter whose state is below 0 (*Entity has a negative state*). The
+  template then adds a fixed number of kWh, a multiple of 100 kWh shown in the preview; it
+  does not change what the meter counts.
 
 **The solar's short dropouts.** While the solar's power is `unavailable` (a radio dropout,
 an inverter that goes offline), the «(0 when offline)» template holds its last value for
@@ -484,8 +497,8 @@ dropout of a few minutes costs nothing; a longer one, and the time Home Assistan
 running, still lose the solar's energy of that time in the gross meter (the solar term
 counts nothing then; the circuit's meter goes on counting in the device).
 
-**Without a solar power sensor** the gross meter reads the solar's counter as it is. When
-the inverter goes offline at night, its counter has no value, so the gross meter has none
+**Without a solar power sensor** the gross meter reads the solar's counter as it is. If
+that counter has no value while the inverter is offline at night, the gross meter has none
 either – it pauses – until the inverter reports again in the morning. Nothing is lost: the
 morning's first hour gets the night's consumption. The totals stay right, but in the
 energy dashboard the night shows nothing, and when the inverter goes offline before
@@ -506,8 +519,9 @@ built when the circuit and the solar have a power sensor whose unit can be read.
   dialog says why, and the device's current power sensor is not kept, because it is net.
   The setup cannot add the gross power later: run on the gross meter, it stops, because
   the gross meter already holds the solar. If you want a live power, set the circuit up
-  once it has fed in (or put the circuit's meter back with ⋮ → *Replace with …* and run
-  the setup again then).
+  once it has fed in, or put the circuit's meter back with ⋮ → *Replace with …* and run
+  the setup again then. That makes a new gross meter with a new history; the old one's
+  statistics stay under its old entity.
 - While the solar's power has no value and circuit + held solar would be below 0, the
   gross power has no value either: the true value is unknown, and *From power* counts
   nothing for that time instead of counting less than 0.
@@ -532,16 +546,22 @@ built when the circuit and the solar have a power sensor whose unit can be read.
   `configuration.yaml` it sees nothing, so it cannot tell whether such a meter already
   holds the solar. Check that yourself.
 - **Don't delete the «… (0 when offline)» helper.** The solar term and every gross power
-  read it; without it the gross power has no value for good and the solar term stops
-  counting the solar. If you did, build the gross meter again: ⋮ → *Replace with …* the
-  circuit's meter, then *Solar feeds in here…*.
+  read it. Without it the solar term stops counting the solar, and the gross power has no
+  value while the solar reports a number and shows the circuit alone while it does not –
+  so *From power* loses the daytime. If you did, build each gross meter of that solar
+  again: ⋮ → *Replace with …* the circuit's meter, then *Solar feeds in here…*. The old
+  «… energy» integral then counts nothing any more; delete it once no gross meter reads
+  it.
 - **A small negative hour** can show when a meter reports only every few minutes: the
   hour ends before its last report, so the gross meter is a little short, and the next
-  hour is a little more. Together they are right; such a dip stays far below the hints'
-  thresholds.
+  hour is a little more. Together they are right, and because the hints compare two-hour
+  windows, such a dip does not raise one.
+- **The setup's integrals update every minute** (the solar term and *From power*), so a
+  gross meter has caught up at every hour's end even while a power stays constant. Each
+  of them writes about one state a minute to the recorder.
 - A gross meter is an ordinary meter: it can be a member of a sum meter (see below), and
-  its helpers can be edited under Settings → Helpers. A solar term you changed by hand is
-  no longer reused by the setup.
+  its helpers are ordinary helpers under Settings → Helpers. A solar term you changed by
+  hand is no longer reused by the setup.
 
 ### Sum meters and solar
 
@@ -578,38 +598,39 @@ below that fits.
 
 The hint compares each hour of the last 7 days: how much the gross meter counted, and how
 much its gross power gave in that hour (while the device still uses that gross power as
-its power sensor). It shows when they differ by more than 0.5 kWh or 30 %, whichever is
-larger, and the two-hour windows around the hour show the same. A gross meter that falls
-by more than 0.5 kWh counts as off even when its gross power went down too. Without the
-gross power only such falls are watched, and only when the next hour does not make them
-up. Hours around a time of 10 minutes or more when Home Assistant was not running are
-left out, unless one of the gross meter's meters fell then.
+its power sensor). It shows when they differ by more than 0.5 kWh or 30 % of what the
+gross power gave, whichever is larger, and the two-hour windows around the hour show the
+same. A gross meter that falls by more than 0.5 kWh counts as off even when its gross
+power went down too. Without the gross power only such falls are watched, and only when
+the next hour does not make them up. Hours around a time of 10 minutes or more when Home
+Assistant was not running are left out, unless one of the gross meter's meters fell then.
 
 What the hint says, and what to do:
 
 - **The solar's helper counted less than the solar:** the solar's power had no value
   (unknown, or unavailable for more than about 10 minutes), or Home Assistant was not
   running. That solar energy is missing from the gross meter; there is nothing to fix.
-- **EM, Plug or Net, off but not below 0:** the meter adds up energy counters, so it is
-  probably right; its gross power is what differs.
+- **EM, Plug or Net, the meter did not go down in that hour:** it adds up energy
+  counters, so it is probably right; its gross power is what differs.
   - If the gross power shows the wrong sign, set the device's power sensor to *None*
     (⋮ → *Power sensor …* → *None*) and save: the meter keeps counting, only its live
-    value goes, and the hint goes away. Or open the gross power template under Settings →
-    Helpers and turn its circuit term around; the hours already recorded keep the hint
-    until they are older than 7 days.
+    value goes, and the hint goes away. Do not edit the gross power template by hand: it
+    reads the circuit's power twice (in the sum and in a check), and turning only one
+    around makes it wrong.
   - If the meter stood still for a while and then caught up, the step is a one-off; the
     hint leaves by itself after 7 days.
-- **EM, Plug or Net, below 0:** a gross consumption meter must not go below 0. Either
-  something other than the solar feeds into the circuit (a battery, a second inverter), or
-  the inputs are mixed up (drawn and returned swapped, or a net meter that counts the
-  other way). Build the gross meter again with the right method: ⋮ → *Replace with …* the
-  circuit's meter, then ⋮ → *Solar feeds in here…*. A gross meter cannot count a battery
-  that feeds in: then put the circuit's own meter back with ⋮ → *Replace with …*; the
-  gross meter's helpers stay under Settings → Helpers and can be deleted there.
-- **From power, below 0:** the meter counts its gross power, so if the circuit's power has
-  the wrong sign, the meter counts wrong too. Build it again as above with *Turn the
-  circuit's power around*, or edit the gross power template and turn its circuit term
-  around. A battery that feeds in has no fix.
+- **EM, Plug or Net, the meter went down in that hour:** a gross consumption meter must
+  not go below 0. Either something other than the solar feeds into the circuit (a battery,
+  a second inverter), or the inputs are mixed up (drawn and returned swapped, or a net
+  meter that counts the other way). Build the gross meter again with the right method: ⋮ →
+  *Replace with …* the circuit's meter, then ⋮ → *Solar feeds in here…*. A gross meter
+  cannot count a battery that feeds in: then put the circuit's own meter back with ⋮ →
+  *Replace with …*; the gross meter's own helpers (its gross energy and gross power) stay
+  under Settings → Helpers and can be deleted there; keep «… (0 when offline)» and
+  «… energy» while another gross meter uses that solar.
+- **From power, its gross power went below 0:** the meter counts its gross power, so if
+  the circuit's power has the wrong sign, the meter counts wrong too. Build it again as
+  above with *Turn the circuit's power around*. A battery that feeds in has no fix.
 - **No clear cause:** the statistics do not show why.
 
 #### If an input was reset or replaced
@@ -625,14 +646,14 @@ To take the step out of the statistics:
 2. Click the adjust icon at the end of its row.
 3. Set the start time to the hour from the hint. Within the recorder's short-term
    retention (10 days by default) 5-minute rows are listed; older ones are hourly.
-4. Click the row with the big change and enter the value it should have had (about the
-   usual consumption, or 0).
+4. Click the row with the big change and enter the value it should have had: about what
+   the meter usually counts in that time (for a 5-minute row, in 5 minutes), or 0.
 5. Click *Adjust*.
 
-This changes only the recorded statistics, and only another adjustment undoes it. The
-hint goes away within about 5 minutes. An input replaced by a device with a new entity ID
-leaves the template without a value: build the gross meter again (⋮ → *Replace with …*
-the new meter, then *Solar feeds in here…*).
+This changes only the recorded statistics, and only another adjustment undoes it. Reload
+the panel after about 5 minutes: the hint is then gone. An input replaced by a device with
+a new entity ID leaves the template without a value: build the gross meter again (⋮ →
+*Replace with …* the new meter, then *Solar feeds in here…*).
 
 #### Gaps in a gross meter
 

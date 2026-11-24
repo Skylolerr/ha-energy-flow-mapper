@@ -484,6 +484,7 @@ describe("solar setup power and offset", () => {
     const { el } = await mount(mock);
     expect(content(el)).toContain("Server energy − Server returned + Solar power energy + 300 kWh");
     expect(content(el)).toContain("The 300 kWh are added so the gross meter starts above 0");
+    expect(content(el)).toContain("energy settings flag a meter whose state is below 0");
     expect(content(el)).toContain("held for up to 10 minutes");
     method(el, "net").click();
     await settle(el);

@@ -23,7 +23,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups; helpers the panel created, with a record of what the solar setup made each one for; ignored suggestions and dismissed hints |
 | `_flow.py` | `async_run_helper_flow`: the one place that drives a helper's config flow (and options flow). Refused input and lost flows end in the caller's error, no flow is left open; once the entry exists, any failure or a cancel removes it again (shielded) |
-| `integral.py` | Create integral helpers ("Create meter"; the setup's solar term and From power). `INTEGRAL_OPTIONS`: left Riemann sum, 3 decimals, `unit_prefix` `k` only for a W source, `max_sub_interval` 5 min; `GROSS_INTEGRAL_OPTIONS` the same with 1 min |
+| `integral.py` | Create integral helpers ("Create meter"; the setup's solar term and From power). `INTEGRAL_OPTIONS`: left Riemann sum, 3 decimals, `unit_prefix` `k` only for a source in W or without a unit, `max_sub_interval` 5 min; `GROSS_INTEGRAL_OPTIONS` the same with 1 min |
 | `template_meter.py` | Create template sensor helpers: energy in kWh with `state_class: total`, power in W with `measurement` |
 | `sum_meter.py` | "Create sum meter": member checks (`check_sum_members`: device class, one meter state class), `SolarHolds` and `check_no_solar`, `async_create_sums` (meter sum and rate sum; a failure or cancel removes every sum of the request) |
 | `solar_setup.py` | The guided setup "Solar feeds in here", see [The solar setup](#the-solar-setup) |
