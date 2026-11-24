@@ -4752,6 +4752,18 @@ describe("robustness and phone fixes", () => {
       expect(rules(".viewport")).toContain("height: calc(100vh - 365px)");
     });
 
+    it("wraps long entity IDs in the solar setup, so it never scrolls sideways", () => {
+      // A disabled sensor has no name and is shown by its entity ID.
+      for (const selector of [".solar-input-name", ".solar-helpers label", ".solar-picker", ".solar-why"]) {
+        expect(rules(selector), selector).toContain("overflow-wrap: anywhere");
+        expect(rules(selector), selector).toContain("min-width: 0");
+      }
+      for (const selector of [".solar-picker select", ".solar-helpers input"]) {
+        expect(rules(selector), selector).toContain("max-width: 100%");
+      }
+      expect(rules(".dialog-actions")).toContain("flex-wrap: wrap");
+    });
+
     it("reflects narrow as an attribute", async () => {
       const el = await mount(mockHass(), true);
       expect(el.hasAttribute("narrow")).toBe(true);

@@ -6391,6 +6391,24 @@ export class EnergyFlowMapperPanel extends LitElement {
       gap: 4px;
       margin: 8px 0;
     }
+    /*
+     * A sensor without a name (disabled, so without a state) shows its entity
+     * ID, which has no spaces: it wraps, so the setup never scrolls sideways
+     * on a phone.
+     */
+    .solar-input-name,
+    .solar-helpers label,
+    .solar-picker,
+    .solar-why {
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+    .solar-picker select,
+    .solar-helpers input {
+      max-width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+    }
     .solar-live {
       font-weight: 500;
     }
@@ -6744,6 +6762,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .dialog-actions {
       display: flex;
+      flex-wrap: wrap;
       justify-content: flex-end;
       gap: 8px;
       margin-top: 16px;
