@@ -7,7 +7,7 @@ dashboard shows every user anyway.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from time import monotonic
 from typing import Any
@@ -114,6 +114,7 @@ from .meter_inputs import Cache, counted_inputs
 from .models import EnergyFlowMapperData
 from .solar_setup import Choices, Role, async_create, async_plan
 from .stats_probe import async_probe
+from .suggestions import event_day, event_hour
 from .sum_meter import (
     SolarHolds,
     async_create_sums,
@@ -142,6 +143,19 @@ _KIND = vol.Optional("kind")
 _KINDS = vol.In([kind.value for kind in DEVICE_KEYS])
 # Hints are on sources too, so their tab may be gas.
 _TABS = vol.In([kind.value for kind in DeviceKind])
+
+
+def _event(parse: Callable[[str], object | None]) -> Callable[[str], str]:
+    """Return a validator that keeps a safety-net event `parse` can read."""
+
+    def validate(value: str) -> str:
+        if parse(value) is None:
+            raise vol.Invalid("not a valid event time")
+        return value
+
+    return validate
+
+
 # Every card asks every minute; HA's check of the energy dashboard runs at most
 # once a minute for all of them.
 CARD_VALIDATION_SECONDS = 60
@@ -1404,9 +1418,9 @@ async def websocket_clear_suggestions(
         vol.Required(ATTR_KIND): _TABS,
         vol.Required("stat"): str,
         vol.Optional("role"): str,
-        # The event of a safety-net hint: its hour or its day.
-        vol.Optional("hour"): str,
-        vol.Optional("day"): str,
+        # The event of a safety-net hint: its hour (with time zone) or its day.
+        vol.Optional("hour"): vol.All(str, _event(event_hour)),
+        vol.Optional("day"): vol.All(str, _event(event_day)),
     }
 )
 @require_admin

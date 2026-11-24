@@ -7,9 +7,10 @@ from typing import Any
 from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.util import dt as dt_util
 
 from custom_components.energy_flow_mapper.const import SUGGESTIONS_STORAGE_KEY
-from custom_components.energy_flow_mapper.suggestions import SuggestionStore
+from custom_components.energy_flow_mapper.suggestions import SuggestionStore, _recent
 
 PAIR = {"kind": "electricity", "stat": "sensor.o1", "parent": "sensor.strip"}
 KNOWN = {("electricity", "sensor.o1"), ("electricity", "sensor.strip")}
@@ -331,3 +332,43 @@ async def test_event_dismissals_are_pruned_after_the_watch_window(
     freezer.move_to("2026-12-01 12:00:00+00:00")
     await store.async_clear("water")
     assert store.dismissed() == [HINT]
+
+
+async def test_naive_event_time_never_breaks_the_store(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """An hour without a time zone, or a bad day, is no dismissal.
+
+    It is dropped when given and when loaded, so later dismissals and ignores
+    still save.
+    """
+    freezer.move_to(NOW)
+    naive = {**GROSS, "hour": "2026-11-24T10:00:00"}
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 3,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {
+            "ignored": [],
+            "dismissed": [naive, {**TERM, "day": "2026-11-24T10:00:00+00:00"}],
+        },
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.dismissed() == []
+    await store.async_dismiss(naive, HINT_KNOWN)
+    assert store.dismissed() == []
+    await store.async_dismiss(HINT, HINT_KNOWN)
+    await store.async_ignore(PAIR, KNOWN)
+    assert store.dismissed() == [HINT]
+    assert store.ignored() == [PAIR]
+
+
+def test_recent_skips_a_naive_or_broken_event() -> None:
+    """A stored event that cannot be compared is not recent; nothing raises."""
+    since = dt_util.utcnow()
+    assert _recent({**GROSS, "hour": "2026-11-24T10:00:00"}, since) is False
+    assert _recent({**GROSS, "hour": "soon"}, since) is False
+    assert _recent({**TERM, "day": "soon"}, since) is False

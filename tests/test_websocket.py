@@ -2104,6 +2104,47 @@ async def test_dismiss_hint_and_clear(
 
 
 @pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    "event",
+    [
+        {"hour": "2026-11-24T10:00:00"},
+        {"hour": "soon"},
+        {"day": "2026-11-24T10:00:00+00:00"},
+        {"day": "soon"},
+    ],
+)
+async def test_dismiss_hint_refuses_a_bad_event(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, event: dict[str, str]
+) -> None:
+    """An hour needs its time zone and a day is a date; later calls still work."""
+    bad = {
+        "code": "gross_off",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+        **event,
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **bad)
+    assert not response["success"]
+    assert response["error"]["code"] == "invalid_format"
+    good = {
+        "code": "power_available",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **good)
+    assert response["result"] == {"dismissed": [good]}
+    response = await send(
+        hass_ws_client,
+        hass,
+        type=f"{DOMAIN}/ignore_suggestion",
+        kind="electricity",
+        stat="sensor.garage_energy",
+        parent="sensor.main_energy",
+    )
+    assert response["success"], response
+
+
+@pytest.mark.usefixtures("loaded_entry")
 async def test_dismiss_hint_of_gas_source_and_clear_gas(
     hass: HomeAssistant, hass_ws_client: WebSocketGenerator
 ) -> None:

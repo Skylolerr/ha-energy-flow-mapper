@@ -68,10 +68,32 @@ class _SuggestionsStore(Store[SuggestionsData]):
         return data
 
 
+def event_hour(value: str) -> datetime | None:
+    """Return the hour of a safety-net event, or None.
+
+    It is an ISO time with its time zone, as the hint gives it: one without
+    cannot be compared with the watch window.
+    """
+    when = dt_util.parse_datetime(value)
+    return when if when is not None and when.tzinfo is not None else None
+
+
+def event_day(value: str) -> date | None:
+    """Return the day of a safety-net event (an ISO date), or None."""
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+_EVENT_PARSERS: Final = {"hour": event_hour, "day": event_day}
+
+
 def _hint_entry(raw: Any) -> dict[str, str] | None:
     """Return a valid dismissal `{code, kind, stat[, role][, hour | day]}`, or None.
 
-    A safety-net hint needs its event (`EVENT_KEYS`); other hints keep none.
+    A safety-net hint needs its event (`EVENT_KEYS`), an aware hour or a date;
+    other hints keep none.
     """
     if not isinstance(raw, dict) or not all(
         isinstance(raw.get(key), str) for key in _HINT_KEYS
@@ -84,23 +106,24 @@ def _hint_entry(raw: Any) -> dict[str, str] | None:
             return None
         entry["role"] = role
     if (event := EVENT_KEYS.get(entry["code"])) is not None:
-        if not isinstance(raw.get(event), str):
+        value = raw.get(event)
+        if not isinstance(value, str) or _EVENT_PARSERS[event](value) is None:
             return None
-        entry[event] = raw[event]
+        entry[event] = value
     return entry
 
 
 def _recent(entry: dict[str, str], since: datetime) -> bool:
-    """Return whether a dismissal can still match a hint; one without event can."""
+    """Return whether a dismissal can still match a hint; one without event can.
+
+    An event that cannot be read (no time zone, no date) is not recent.
+    """
     if "hour" in entry:
-        when = dt_util.parse_datetime(entry["hour"])
+        when = event_hour(entry["hour"])
         return when is not None and when >= since
     if "day" in entry:
-        try:
-            day = date.fromisoformat(entry["day"])
-        except ValueError:
-            return False
-        return day >= dt_util.as_local(since).date()
+        day = event_day(entry["day"])
+        return day is not None and day >= dt_util.as_local(since).date()
     return True
 
 
