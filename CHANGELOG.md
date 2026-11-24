@@ -52,8 +52,10 @@ and Home Assistant show when they offer the update.
     works. The gross energy has the state class `total` and starts at 100 kWh or more.
   - *EM*, *Plug* and *Net* get a live gross power only when the circuit's power is known to
     have a sign; a live power cannot be added to a gross meter later.
-  - It stops with the reason and the way on when the meter already holds the solar, the
-    solar's counter may reset, a sensor is disabled, or a check could not run.
+  - It stops with the reason and the way on when the meter already holds the solar (also
+    through a template, sum, *Combine the state of several sensors*, integral, utility
+    meter or derivative helper), the solar's counter may reset, a sensor is disabled, or a
+    check could not run.
 - **Safety net for gross meters:** hints at a gross meter of the setup when an hour of the
   last 7 days is clearly off its gross power or falls, when it had no value for more than 1
   hour, and at the solar when the solar's helper counted clearly less or more than the

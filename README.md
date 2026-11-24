@@ -546,8 +546,9 @@ built when the circuit and the solar have a power sensor whose unit can be read.
 - **The power sign** matters for the live power and for *From power* (see
   [Live power](#live-power)). A sensor that shows only the size of the power (always ≥ 0)
   cannot be fixed by turning it around.
-- **Helpers set up in YAML are not seen.** The setup reads what a template, sum, integral
-  or utility meter helper is made of from its config entry. Inside a helper from
+- **Helpers set up in YAML are not seen.** The setup reads what a template, sum (a sensor
+  group or *Combine the state of several sensors*), integral, utility meter or derivative
+  helper is made of from its config entry. Inside a helper from
   `configuration.yaml` it sees nothing, so it cannot tell whether such a meter already
   holds the solar. Check that yourself.
 - **Don't delete the «… (0 when offline)» helper.** The solar term and every gross power

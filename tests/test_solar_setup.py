@@ -1149,6 +1149,47 @@ async def test_setup_blocked_when_circuit_power_holds_solar(
     assert result["blocked_entity"] == "sensor.sum_power"
 
 
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("loaded_entry", "evidence")
+@pytest.mark.parametrize(
+    ("domain", "options"),
+    [
+        # "Combine the state of several sensors", its sum.
+        (
+            "min_max",
+            {
+                "entity_ids": [MAIN_POWER, SOLAR_POWER],
+                "type": "sum",
+                "round_digits": 1,
+            },
+        ),
+        # A power derived from a meter that holds the solar.
+        ("derivative", {"source": "sensor.circuit_and_solar"}),
+    ],
+)
+async def test_setup_blocked_when_circuit_power_combines_solar(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    domain: str,
+    options: dict[str, Any],
+) -> None:
+    """A circuit power made with a Combine sum or a derivative is followed."""
+    _group_sum(hass, "sensor.circuit_and_solar", [MAIN, SOLAR])
+    _helper(hass, domain, "sensor.balcony_total", options)
+    hass.states.async_set(
+        "sensor.balcony_total",
+        "10",
+        {"unit_of_measurement": "W", "device_class": "power"},
+    )
+    result = await result_of(
+        hass_ws_client,
+        hass,
+        **await draft(hass_ws_client, hass, set_rate(MAIN, "sensor.balcony_total")),
+    )
+    assert result["blocked"] == "solar_already_in_meter"
+    assert result["blocked_entity"] == "sensor.balcony_total"
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_HELPER_DEVICES])
 @pytest.mark.usefixtures("loaded_entry", "evidence")
 @pytest.mark.parametrize("solar_input", [SOLAR_INTEGRAL, SOLAR, SOLAR_POWER])

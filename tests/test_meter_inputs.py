@@ -268,12 +268,45 @@ async def test_inputs_recursive_sum_of_template(hass: HomeAssistant) -> None:
     }
 
 
+@pytest.mark.parametrize(("kind", "signed_known"), [("sum", True), ("max", False)])
+async def test_inputs_of_a_combine_helper(
+    hass: HomeAssistant, kind: str, signed_known: bool
+) -> None:
+    """A "Combine the state of several sensors" helper holds its sensors.
+
+    Only its sum adds them; any other kind makes the signs unknown.
+    """
+    _template(hass, "sensor.t", "{{ states('sensor.a') | float }}")
+    _helper(
+        hass,
+        "min_max",
+        "sensor.m",
+        {"entity_ids": ["sensor.t", B], "type": kind, "round_digits": 1},
+    )
+    assert meter_inputs(hass, "sensor.m") == {
+        "entities": {"sensor.t", A, B},
+        "signed_known": signed_known,
+        "subtracted": set(),
+    }
+
+
+async def test_inputs_of_a_derivative(hass: HomeAssistant) -> None:
+    """A derivative holds its source, and what the source holds."""
+    _group(hass, "sensor.s", [A, B])
+    _helper(hass, "derivative", "sensor.d", {"source": "sensor.s"})
+    assert meter_inputs(hass, "sensor.d") == {
+        "entities": {"sensor.s", A, B},
+        "signed_known": True,
+        "subtracted": set(),
+    }
+
+
 async def test_inputs_of_other_entities_are_empty(hass: HomeAssistant) -> None:
     """Plain sensors, external statistics and helpers without inputs hold nothing."""
     _helper(hass, "integration", "sensor.broken", {"source": ""})
     _helper(hass, "template", "sensor.no_state", {"template_type": "sensor"})
     _helper(hass, "group", "sensor.lights", {"group_type": "light", "entities": [A]})
-    _helper(hass, "derivative", "sensor.d", {"source": A})
+    _helper(hass, "statistics", "sensor.d", {"entity_id": A})
     empty = {"entities": set(), "signed_known": True, "subtracted": set()}
     for entity_id in (
         A,

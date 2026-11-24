@@ -5,7 +5,9 @@ in its config entry:
 
 - a template sensor in the text of its `state` template,
 - a sensor group in `entities` (only a `sum` adds them up),
-- an integral and a utility meter in `source`.
+- a "Combine the state of several sensors" helper (`min_max`) in
+  `entity_ids` (only a `sum` adds them up),
+- an integral, a utility meter and a derivative in `source`.
 
 Inputs are followed into helpers they are made of, up to `MAX_DEPTH` levels,
 and each helper once per path. A sensor that is no helper, an external
@@ -277,12 +279,17 @@ def _direct(hass: HomeAssistant, entity_id: str) -> _Direct:
     if config_entry.domain == "template":
         state = options.get("state")
         return _template_inputs(hass, state) if isinstance(state, str) else _NOTHING
-    if config_entry.domain == "group" and options.get("group_type") == "sensor":
+    members_key = {"group": "entities", "min_max": "entity_ids"}.get(
+        config_entry.domain
+    )
+    if members_key is not None and (
+        config_entry.domain != "group" or options.get("group_type") == "sensor"
+    ):
         members = frozenset(
-            str(member) for member in options.get("entities", []) if member
+            str(member) for member in options.get(members_key, []) if member
         )
         return _Direct(members, signed_known=options.get("type") == "sum")
-    if config_entry.domain in ("integration", "utility_meter") and (
+    if config_entry.domain in ("integration", "utility_meter", "derivative") and (
         source := options.get("source")
     ):
         return _Direct(frozenset({str(source)}))
