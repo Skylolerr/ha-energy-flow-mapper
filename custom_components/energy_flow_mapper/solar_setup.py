@@ -181,6 +181,8 @@ class Reason(StrEnum):
     UNSUPPORTED_INPUT = "unsupported_input"
     NO_POWER = "no_power"
     UNUSABLE_POWER = "unusable_power"
+    # No live gross power for EM, Plug and Net: its sign is not checked.
+    GROSS_POWER_NEEDS_SIGNED = "gross_power_needs_signed"
 
 
 class Role(StrEnum):
@@ -476,8 +478,16 @@ def _find(
     return device, source
 
 
-def _not_offered(entity_id: str) -> ServiceValidationError:
-    return _error(Blocked.NOT_OFFERED, entity_id=entity_id)
+def _not_offered(entity_id: str, **why: str) -> ServiceValidationError:
+    """Refuse an input; a draft power also names its `power` and `why`."""
+    return _error(Blocked.NOT_OFFERED, entity_id=entity_id, **why)
+
+
+# Why a draft power is refused: used by something else (or the meter or
+# solar itself), not a power sensor, or one of the setup's gross helpers.
+WHY_USED: Final = "used"
+WHY_NOT_POWER: Final = "not_power"
+WHY_OURS: Final = "ours"
 
 
 def _state_class(hass: HomeAssistant, entity_id: str) -> str | None:
@@ -632,6 +642,8 @@ class Plan:
     offset: int = 0
     blocked: Blocked | None = None
     blocked_entity: str | None = None
+    # Why EM, Plug or Net build no gross power although both powers exist.
+    power_reason: Reason | None = None
 
     def block(self, reason: Blocked, entity_id: str) -> None:
         """Keep the first reason found."""
@@ -705,6 +717,7 @@ class Plan:
                 for role in self.roles()
             ],
             "offset": self.offset,
+            "power_reason": self.power_reason,
             "blocked": self.blocked,
             "blocked_entity": self.blocked_entity,
         }
@@ -727,9 +740,12 @@ class _Powers:
     refused: set[str]
 
     def read(
-        self, key: str, entry: Mapping[str, Any], saved: Mapping[str, Any] | None
+        self, role: str, entry: Mapping[str, Any], saved: Mapping[str, Any] | None
     ) -> tuple[str | None, str | None]:
-        """Return (power, where it is from) of a device or source."""
+        """Return (power, where it is from) of the `role` "circuit" or "solar".
+
+        A refused draft power names the role and why, so the panel can say so.
+        """
         power = entry.get(RATE)
         saved_power = saved.get(RATE) if saved is not None else None
         if power is None:
@@ -737,14 +753,16 @@ class _Powers:
             return None, "removed" if saved_power is not None else None
         if power == saved_power:
             return power, "saved"
-        if (
-            power in self.refused
-            or power in self.used
-            or not _rate_sensor(self.hass, power)
-            or _ours(self.hass, self.helpers, power)
-        ):
-            raise _not_offered(power)
-        return power, key
+        why: str | None = None
+        if power in self.refused or power in self.used:
+            why = WHY_USED
+        elif not _rate_sensor(self.hass, power):
+            why = WHY_NOT_POWER
+        elif _ours(self.hass, self.helpers, power):
+            why = WHY_OURS
+        if why is not None:
+            raise _not_offered(power, power=role, why=why)
+        return power, "draft"
 
     def pair(
         self, found: tuple[str | None, str | None], energy: str, skip: set[str]
@@ -1085,10 +1103,10 @@ async def async_plan(
     )
     used = _used_by_others(prefs, device, source)
     powers = _Powers(hass, helpers, used, {stat, solar})
-    circuit = powers.read("draft", device, saved_device)
-    solar_power = powers.read("draft", source, saved_source)
+    circuit = powers.read("circuit", device, saved_device)
+    solar_power = powers.read("solar", source, saved_source)
     if circuit[0] is not None and circuit[0] == solar_power[0]:
-        raise _not_offered(circuit[0])
+        raise _not_offered(circuit[0], power="circuit", why=WHY_USED)
     circuit = powers.pair(circuit, stat, {solar_power[0] or ""})
     solar_power = powers.pair(solar_power, solar, {circuit[0] or ""})
     if (
@@ -1169,6 +1187,11 @@ async def async_plan(
         else None,
         live=_live(hass, circuit[0], solar_power[0], invert=invert),
     )
+    if plan.method in ENERGY_METHODS and plan.gross_power is not None and not signed:
+        # The live gross power of EM, Plug and Net has the circuit power's
+        # sign, which nobody checked: better none than a wrong one.
+        plan.gross_power = None
+        plan.power_reason = Reason.GROSS_POWER_NEEDS_SIGNED
     if found is None:
         # Before anything the statistics decide: a retry may help.
         plan.block(Blocked.DAILY_CHECK_FAILED, stat)

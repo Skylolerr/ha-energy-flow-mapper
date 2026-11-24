@@ -242,6 +242,8 @@ export interface SolarPreview {
   helpers: { role: SolarRole; name_default: string }[];
   /** kWh added to the gross energy so it starts above 0 (0: none). */
   offset: number;
+  /** Why EM, Plug or Net create no gross power although both powers exist (a reason key). */
+  power_reason?: string | null;
   /** Why the setup cannot be done (an error key), or null. */
   blocked: string | null;
   blocked_entity: string | null;

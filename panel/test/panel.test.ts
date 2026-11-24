@@ -5603,7 +5603,7 @@ describe("hints and solar setup", () => {
     await openSetup(el);
     expect(textInputs(el).map((i) => i.value)).toEqual([
       "Solar power (0 when offline)",
-      "Solar power Energy",
+      "Solar power energy",
       "Server & co gross power",
       "Server & co gross",
     ]);
@@ -5636,7 +5636,7 @@ describe("hints and solar setup", () => {
       offset: 0,
       names: {
         solar_power: "Solar power (0 when offline)",
-        solar_energy: "Solar power Energy",
+        solar_energy: "Solar power energy",
         power: "Server & co gross power",
         energy: "Circuit F11 gross",
       },
@@ -5782,6 +5782,62 @@ describe("hints and solar setup", () => {
     const content = dialogEl(el).textContent!.replace(/\s+/g, " ");
     expect(content).not.toContain("300 kWh");
     expect(dialogButton(el, "Set up")!.disabled).toBe(false);
+  });
+
+  it("setup comes back after the power dialog it opened, as the user left it", async () => {
+    const snap = solarSnapshot();
+    delete snap.prefs.energy_sources.at(-1)!.stat_rate;
+    const mock = hintMock(snap);
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) =>
+      preview({
+        method: msg.method ?? "em",
+        power: { circuit: "sensor.server_power", solar: null, signed: true, circuit_from: "saved", solar_from: null },
+      });
+    const el = await mount(mock);
+    await openSetup(el);
+    methodRadio(el, "net").click();
+    await settle(el);
+    const name = textInputs(el).find((i) => i.dataset.role === "energy")!;
+    name.value = "Kept gross";
+    name.dispatchEvent(new Event("input"));
+    await settle(el);
+    dialogButton(el, "Set power sensor of the solar")!.click();
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "power", target: { kind: "source", stat: "sensor.solar" } });
+    const select = dialogEl(el).querySelector<HTMLSelectElement>("select")!;
+    select.value = "sensor.solar_power";
+    select.dispatchEvent(new Event("change"));
+    await settle(el);
+    dialogButton(el, "OK")!.click();
+    await settle(el);
+    // Back in the setup, on the new draft, with the method and the name kept.
+    expect(el._dialog).toMatchObject({ kind: "solar", stat: "sensor.server" });
+    expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({
+      method: "net",
+      changes: [{ type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.solar_power" }],
+    });
+    expect(methodRadio(el, "net").checked).toBe(true);
+    expect(textInputs(el).find((i) => i.dataset.role === "energy")!.value).toBe("Kept gross");
+    // Cancel in the power dialog just closes it.
+    dialogButton(el, "Set power sensor of the solar")!.click();
+    await settle(el);
+    dialogButton(el, "Cancel")!.click();
+    await settle(el);
+    expect(el._dialog).toBeNull();
+  });
+
+  it("setup opens the circuit's power dialog for a refused draft power", async () => {
+    const mock = hintMock();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.solar_power", power: "circuit", why: "used" },
+    };
+    const el = await mount(mock);
+    await openSetup(el);
+    expect(dialogEl(el).textContent).toContain("Solar power, the power sensor of Server & co in your draft");
+    dialogButton(el, "Set power sensor of Server & co")!.click();
+    await settle(el);
+    expect(el._dialog).toMatchObject({ kind: "power", target: { kind: "device", stat: "sensor.server" } });
   });
 
   it("offers the setup only for electricity devices with a solar source", async () => {

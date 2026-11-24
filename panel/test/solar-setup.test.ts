@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { hasKey, localize } from "../src/localize";
+import { hasKey, LANGUAGES, localize } from "../src/localize";
 import "../src/solar-setup";
 import type { EfmSolarSetup, SolarSetupContext } from "../src/solar-setup";
 import type { Change, HassEntity, HomeAssistant, SolarPreview, StatsEvidence } from "../src/types";
@@ -141,7 +141,7 @@ async function mount(
 ): Promise<{ el: EfmSolarSetup; events: Events }> {
   const el = document.createElement("efm-solar-setup") as EfmSolarSetup;
   const events: Events = {};
-  for (const type of ["close", "created", "failed", "set-solar-power", "open-settings"]) {
+  for (const type of ["close", "created", "failed", "set-solar-power", "set-circuit-power", "open-settings"]) {
     events[type] = [];
     el.addEventListener(type, (e) => events[type].push((e as CustomEvent).detail));
   }
@@ -374,7 +374,7 @@ describe("solar setup inputs", () => {
     expect(content(el)).toContain("At night the gross meter may pause");
     expect(content(el)).toContain("the totals stay right");
     button(el, "Set power sensor of the solar")!.click();
-    expect(events["set-solar-power"]).toEqual([{ solar: "sensor.solar" }]);
+    expect(events["set-solar-power"]).toMatchObject([{ solar: "sensor.solar" }]);
   });
 });
 
@@ -444,12 +444,37 @@ describe("solar setup power and offset", () => {
     await settle(el);
   });
 
-  it("invert switch only for From power", async () => {
-    const mock = mockHass();
-    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+  it("invert switch shown for EM when power is in helpers, hidden when not", async () => {
+    const mock = mockHass("de");
+    let signed = true;
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { invert?: boolean }) =>
+      signed
+        ? preview({ invert: msg.invert ?? false })
+        : preview({
+            power_reason: "gross_power_needs_signed",
+            helpers: [
+              { role: "solar_power", name_default: "x" },
+              { role: "solar_energy", name_default: "x" },
+              { role: "energy", name_default: "x" },
+            ],
+          });
     const { el } = await mount(mock);
+    // EM with a gross power: the same live check and switch as From power.
+    expect(content(el)).toContain("Jetzt: Kreis -150 W + Solar 600 W = 450 W");
+    el.querySelector<HTMLInputElement>("input.solar-invert")!.click();
+    await settle(el);
+    expect(last(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({ invert: true });
+    expect(last(mock, "energy_flow_mapper/solar_setup_preview")).not.toHaveProperty("method");
+    expect(content(el)).not.toContain("keine Vorgeschichte");
+    // Without a signed circuit power there is no gross power, and it says why.
+    signed = false;
+    method(el, "plug").click();
+    await settle(el);
     expect(el.querySelector("input.solar-invert")).toBeNull();
-    expect(content(el)).not.toContain("Now: circuit");
+    expect(content(el)).not.toContain("Jetzt: Kreis");
+    expect(content(el)).toContain(
+      "Ohne Live-Leistung: die Leistung des Kreises war in den letzten Tagen nie negativ, darum ist ihr Vorzeichen unklar",
+    );
   });
 
   it("offset line shown when offset > 0", async () => {
@@ -457,14 +482,14 @@ describe("solar setup power and offset", () => {
     mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) =>
       msg.method === "net" ? preview({ method: "net", offset: 0 }) : preview({ offset: 300 });
     const { el } = await mount(mock);
-    expect(content(el)).toContain("Server energy − Server returned + Solar power Energy + 300 kWh");
+    expect(content(el)).toContain("Server energy − Server returned + Solar power energy + 300 kWh");
     expect(content(el)).toContain("The 300 kWh are added so the gross meter starts above 0");
     expect(content(el)).toContain("held for up to 10 minutes");
     method(el, "net").click();
     await settle(el);
     expect(content(el)).not.toContain("kWh are added");
     expect(content(el)).not.toContain("+ 0 kWh");
-    expect(content(el)).toContain("Server energy + Solar power Energy");
+    expect(content(el)).toContain("Server energy + Solar power energy");
   });
 
   it("names per helper role, kept across previews and sent on create", async () => {
@@ -484,7 +509,7 @@ describe("solar setup power and offset", () => {
     const names = () => [...el.querySelectorAll<HTMLInputElement>("input.solar-name")];
     expect(names().map((i) => [i.dataset.role, i.value])).toEqual([
       ["solar_power", "Solar power (0 when offline)"],
-      ["solar_energy", "Solar power Energy"],
+      ["solar_energy", "Solar power energy"],
       ["power", "Server & co gross power"],
       ["energy", "Server & co gross"],
     ]);
@@ -693,7 +718,7 @@ describe("solar setup without dead ends", () => {
     const { el, events } = await mount(mock);
     expect(content(el)).toContain("This solar needs a power sensor");
     el.querySelector<HTMLButtonElement>(".solar-blocked-action")!.click();
-    expect(events["set-solar-power"]).toEqual([{ solar: "sensor.solar" }]);
+    expect(events["set-solar-power"]).toMatchObject([{ solar: "sensor.solar" }]);
 
     blocked = { blocked: "solar_needs_data", blocked_entity: "sensor.solar" };
     method(el, "plug").click();
@@ -813,6 +838,225 @@ describe("solar setup context and lifecycle", () => {
     await settle(el);
     // The helpers exist: the panel must still put the meter into the draft.
     expect(events.created).toHaveLength(1);
+  });
+
+  it("any failed create checks again, so a block shows in the dialog", async () => {
+    const mock = mockHass();
+    let blocked: Partial<SolarPreview> = {};
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = () => preview(blocked);
+    mock.responses["energy_flow_mapper/create_solar_setup"] = () => {
+      blocked = { blocked: "input_not_ready", blocked_entity: "sensor.server_returned" };
+      return { translation_key: "input_not_ready", translation_placeholders: { entity_id: "sensor.server_returned" } };
+    };
+    const { el, events } = await mount(mock);
+    setUp(el).click();
+    await settle(el);
+    expect(events.failed).toHaveLength(1);
+    expect(previews(mock)).toHaveLength(2);
+    expect(content(el)).toContain("Server returned has no value right now");
+    expect(button(el, "Check again")).toBeDefined();
+  });
+
+  it("a chosen method no longer offered is dropped, with a note", async () => {
+    const mock = mockHass();
+    let plugGone = false;
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) => {
+      const methods = preview().methods.map((m) =>
+        m.method === "plug" && plugGone ? { ...m, offered: false, verified: false, reason: "daily_input" } : m,
+      );
+      return preview({
+        methods,
+        method: (msg.method as SolarPreview["method"]) ?? "em",
+        ...(msg.method === "plug" && plugGone ? { blocked: "not_offered", blocked_entity: "sensor.server" } : {}),
+      });
+    };
+    mock.responses["energy_flow_mapper/create_solar_setup"] = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.server" },
+    };
+    const { el, events } = await mount(mock);
+    method(el, "plug").click();
+    await settle(el);
+    plugGone = true;
+    input(el, "sensor.server").querySelector<HTMLInputElement>("input.solar-daily")!.click();
+    await settle(el);
+    expect(last(mock, "energy_flow_mapper/solar_setup_preview")).not.toHaveProperty("method");
+    expect(method(el, "em").checked).toBe(true);
+    expect(content(el)).toContain("The chosen way is no longer possible – choose another one above.");
+    // The same when create finds it gone.
+    plugGone = false;
+    input(el, "sensor.server").querySelector<HTMLInputElement>("input.solar-daily")!.click();
+    await settle(el);
+    method(el, "plug").click();
+    await settle(el);
+    setUp(el).click();
+    await settle(el);
+    expect(events.failed).toEqual([]);
+    expect(last(mock, "energy_flow_mapper/solar_setup_preview")).not.toHaveProperty("method");
+    expect(content(el)).toContain("The chosen way is no longer possible");
+  });
+
+  it("a refused draft power says why and leads to its power dialog", async () => {
+    const mock = mockHass();
+    let refused = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.server_energy_x", power: "solar", why: "not_power" },
+    };
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = () => refused;
+    const { el, events } = await mount(mock);
+    expect(content(el)).toContain(
+      "sensor.server_energy_x, the power sensor of Roof solar in your draft, is not a power sensor",
+    );
+    expect(button(el, "Try again")).toBeUndefined();
+    expect(setUp(el).disabled).toBe(true);
+    expect(content(el)).toContain("Choose another power sensor first.");
+    button(el, "Set power sensor of the solar")!.click();
+    expect(events["set-solar-power"]).toHaveLength(1);
+    expect(events["set-solar-power"][0]).toMatchObject({ solar: "sensor.solar" });
+
+    refused = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.solar_power", power: "circuit", why: "used" },
+    };
+    void el._loadPreview();
+    await settle(el);
+    expect(content(el)).toContain("Solar power, the power sensor of Server & co in your draft, is already used");
+    el.querySelector<HTMLButtonElement>(".solar-refused-action")!.click();
+    expect(events["set-circuit-power"]).toHaveLength(1);
+    expect(events["set-circuit-power"][0]).toMatchObject({ stat: "sensor.server" });
+    refused = {
+      translation_key: "not_offered",
+      translation_placeholders: { entity_id: "sensor.gp", power: "circuit", why: "ours" },
+    };
+    void el._loadPreview();
+    await settle(el);
+    expect(content(el)).toContain("is a gross power this setup made");
+  });
+
+  it("names which power is missing for a daily meter, with a way to set it", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      method: null,
+      suggested: null,
+      power: { circuit: null, solar: null, signed: false, circuit_from: null, solar_from: null },
+      blocked: "daily_without_power",
+      blocked_entity: "sensor.server",
+    });
+    const { el, events } = await mount(mock);
+    expect(content(el)).toContain("Server & co has no power sensor.");
+    expect(content(el)).toContain("Roof solar has no power sensor.");
+    const actions = [...el.querySelectorAll<HTMLButtonElement>(".solar-blocked-action")];
+    expect(actions.map((b) => b.textContent!.trim())).toEqual([
+      "Set power sensor of Server & co",
+      "Set power sensor of the solar",
+    ]);
+    actions[0].click();
+    actions[1].click();
+    expect(events["set-circuit-power"]).toHaveLength(1);
+    expect(events["set-solar-power"]).toHaveLength(1);
+  });
+
+  it("no_safe_method names the missing power too", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      method: null,
+      suggested: null,
+      power: { circuit: "sensor.server_power", solar: null, signed: false, circuit_from: "saved", solar_from: null },
+      solar_term: { kind: "counter", reuse: null },
+      blocked: "no_safe_method",
+      blocked_entity: "sensor.server",
+    });
+    const { el } = await mount(mock);
+    expect(content(el)).toContain("Roof solar has no power sensor.");
+    expect(content(el)).not.toContain("Server & co has no power sensor.");
+    expect(el.querySelectorAll(".solar-blocked-action")).toHaveLength(1);
+  });
+
+  it("the daily check failed: inputs are not checked and have no switch", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      evidence: {},
+      blocked: "daily_check_failed",
+      blocked_entity: "sensor.server",
+    });
+    const { el } = await mount(mock);
+    const drawn = input(el, "sensor.server");
+    expect(drawn.textContent).toContain("not checked – the statistics could not be read");
+    expect(drawn.textContent).not.toContain("no statistics");
+    expect(drawn.querySelector("input")).toBeNull();
+  });
+
+  it("the solar counter without statistics has no radios", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      power: { circuit: "sensor.server_power", solar: null, signed: true, circuit_from: "saved", solar_from: null },
+      solar_term: { kind: null, reuse: null },
+      evidence: {
+        "sensor.server": evidence(),
+        "sensor.server_returned": evidence(),
+        "sensor.solar": evidence({ periodic: null, reason: "no_data", series: [] }),
+      },
+      blocked: "solar_needs_data",
+      blocked_entity: "sensor.solar",
+    });
+    const { el } = await mount(mock);
+    expect(input(el, "sensor.solar").querySelector("input")).toBeNull();
+    expect(input(el, "sensor.solar").textContent).toContain("no statistics in the last days");
+  });
+
+  it("resumes its choices and names, and hands them out with the power buttons", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = (msg: { method?: string }) =>
+      preview({
+        method: (msg.method as SolarPreview["method"]) ?? "em",
+        power: { circuit: "sensor.server_power", solar: null, signed: true, circuit_from: "saved", solar_from: null },
+      });
+    const state = {
+      solar: "sensor.solar",
+      choices: { method: "net" as const, drawn: null, returned: null, invert: null, periodic: { "sensor.server": false } },
+      names: { energy: "Kept gross" },
+    };
+    const { el, events } = await mount(mock, { resume: state });
+    expect(previews(mock)[0]).toMatchObject({ method: "net", periodic: { "sensor.server": false } });
+    expect(el.querySelector<HTMLInputElement>('input.solar-name[data-role="energy"]')!.value).toBe("Kept gross");
+    button(el, "Set power sensor of the solar")!.click();
+    expect(events["set-solar-power"]).toEqual([{ solar: "sensor.solar", state }]);
+  });
+
+  it("names its groups and points Set up to its reason", async () => {
+    const mock = mockHass();
+    mock.responses["energy_flow_mapper/solar_setup_preview"] = preview({
+      blocked: "solar_already_in_meter",
+      blocked_entity: "sensor.server",
+      evidence: {
+        "sensor.server": evidence({ periodic: null, reason: "no_data", series: [] }),
+        "sensor.server_returned": evidence(),
+      },
+    });
+    const { el } = await mount(mock, { solars: ["sensor.solar", "sensor.balcony"], solar: "sensor.solar" });
+    const legends = [...el.querySelectorAll("fieldset > legend")].map((l) => l.textContent!.trim());
+    expect(legends).toContain("Solar");
+    expect(legends).toContain("How should the gross meter be built?");
+    const group = input(el, "sensor.server").querySelector('[role="radiogroup"]')!;
+    expect(group.getAttribute("aria-label")).toBe("Server & co: does it start again at 0 every day?");
+    for (const radio of group.querySelectorAll("input")) {
+      expect(radio.getAttribute("aria-label")).toMatch(/^Server & co: /);
+    }
+    expect(input(el, "sensor.server_returned").querySelector("input.solar-daily")!.getAttribute("aria-label")).toBe(
+      "Server returned: Starts again at 0 every day (periodic)",
+    );
+    const why = el.querySelector(".solar-why")!;
+    expect(why.id).not.toBe("");
+    expect(setUp(el).getAttribute("aria-describedby")).toBe(why.id);
+    expect(el.querySelector(".solar-status")!.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("texts say what the hold keeps and what the rule trusts", () => {
+    const hass = mockHass().hass;
+    expect(localize(hass, "solar_setup_hold")).toContain("unknown");
+    expect(localize(hass, "reason_unverified_against_rule")).toContain("returned sensor");
+    expect(localize(mockHass("de").hass, "solar_setup_disabled_sensor", { entity: "X" })).toContain("deaktiviert");
+    expect(Object.values(LANGUAGES.de).join(" ")).not.toContain("ausgeschaltet");
   });
 
   it("a failed create keeps the dialog and says so", async () => {

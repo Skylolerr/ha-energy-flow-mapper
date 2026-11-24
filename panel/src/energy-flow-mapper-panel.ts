@@ -38,7 +38,7 @@ import {
 import { icon, typeIcon, typePath } from "./icons";
 import { evidenceText } from "./evidence";
 import "./solar-setup";
-import type { SolarCreatedDetail, SolarSetupContext } from "./solar-setup";
+import type { SolarCreatedDetail, SolarSetupContext, SolarSetupState } from "./solar-setup";
 import {
   arrowHead,
   arrowSize,
@@ -195,14 +195,24 @@ type Dialog =
    * `second` are the picked sensors ("" is none); `second` is only used by the
    * two-sensor variant of a grid or battery. `initial` is the change the
    * dialog would write unchanged, so OK without a change adds nothing.
+   * `back` is the setup that opened it, opened again after OK.
    */
-  | { kind: "power"; target: PowerTarget; variant: PowerVariant; first: string; second: string; initial: string }
+  | {
+      kind: "power";
+      target: PowerTarget;
+      variant: PowerVariant;
+      first: string;
+      second: string;
+      initial: string;
+      back?: SolarDialog;
+    }
   /**
    * "Solar feeds in here" for the electricity device `stat`; its own state
    * (solar, method, choices, preview, names) lives in `<efm-solar-setup>`.
-   * `solar` is the solar source the user came with (from a sum), if any.
+   * `solar` is the solar source the user came with (from a sum), if any;
+   * `resume` the setup's state when it comes back from a power dialog.
    */
-  | { kind: "solar"; stat: string; solar?: string };
+  | { kind: "solar"; stat: string; solar?: string; resume?: SolarSetupState };
 
 type SolarDialog = Extract<Dialog, { kind: "solar" }>;
 
@@ -4776,6 +4786,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const context: SolarSetupContext = {
       stat: dialog.stat,
       solar: dialog.solar ?? null,
+      ...(dialog.resume ? { resume: dialog.resume } : {}),
       deviceName: this._name(dialog.stat, this.draft),
       solars: this._setupSolars(),
       busy: this._busy,
@@ -4796,11 +4807,24 @@ export class EnergyFlowMapperPanel extends LitElement {
         @close=${() => this._close()}
         @created=${(e: CustomEvent<SolarCreatedDetail>) => void this._onSolarCreated(e.detail)}
         @failed=${(e: CustomEvent<{ error: unknown }>) => void this._onSolarFailed(e.detail.error)}
-        @set-solar-power=${(e: CustomEvent<{ solar: string }>) =>
-          this._openPowerDialog({ kind: "source", stat: e.detail.solar, role: "production" })}
+        @set-solar-power=${(e: CustomEvent<{ solar: string; state: SolarSetupState }>) =>
+          this._powerFromSetup(dialog, { kind: "source", stat: e.detail.solar, role: "production" }, e.detail.state)}
+        @set-circuit-power=${(e: CustomEvent<{ stat: string; state: SolarSetupState }>) =>
+          this._powerFromSetup(dialog, { kind: "device", stat: e.detail.stat }, e.detail.state)}
         @open-settings=${(e: CustomEvent<{ entity_id: string }>) => this._openEntitySettings(e.detail.entity_id)}
       ></efm-solar-setup>`,
     )}`;
+  }
+
+  /**
+   * The power dialog of the solar's or the circuit's power, opened from the
+   * setup; after OK the setup opens again with the user's choices and names.
+   */
+  private _powerFromSetup(dialog: SolarDialog, target: PowerTarget, state: SolarSetupState): void {
+    this._openPowerDialog(target);
+    if (this._dialog?.kind === "power") {
+      this._dialog = { ...this._dialog, back: { ...dialog, resume: state } };
+    }
   }
 
   /**
@@ -4857,6 +4881,10 @@ export class EnergyFlowMapperPanel extends LitElement {
             this._close();
             if (change !== null && JSON.stringify(change) !== dialog.initial) {
               this._change(change);
+            }
+            // Opened from the setup: back to it, as the user left it.
+            if (dialog.back) {
+              this._dialog = dialog.back;
             }
           }}
         >
@@ -5952,6 +5980,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .power-variant-hint {
       margin: 0 0 8px 24px;
+    }
+    fieldset.solar-methods,
+    fieldset.solar-sources {
+      border: none;
+      margin: 0;
+      padding: 0;
+      min-width: 0;
+    }
+    fieldset.solar-methods > legend,
+    fieldset.solar-sources > legend {
+      font-weight: 500;
+      font-size: 1.17em;
+      margin: 16px 0 8px;
+      padding: 0;
     }
     .solar-method,
     .solar-input {

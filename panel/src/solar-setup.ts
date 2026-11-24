@@ -17,6 +17,23 @@ import type {
 const SOLAR_SETUP_TAG = "efm-solar-setup";
 const DOMAIN = "energy_flow_mapper";
 
+/** The user's choices. Only what the user picked is sent; the rest is the backend's. */
+export interface SolarChoices {
+  method: SolarMethod | null;
+  drawn: string | null;
+  returned: string | null;
+  invert: boolean | null;
+  /** The daily switch, only for the inputs the user touched. */
+  periodic: Record<string, boolean>;
+}
+
+/** What the setup hands out when it leads to a power dialog, to come back to. */
+export interface SolarSetupState {
+  solar: string | null;
+  choices: SolarChoices;
+  names: Partial<Record<SolarRole, string>>;
+}
+
 /** What the panel tells the setup about the device and the draft. */
 export interface SolarSetupContext {
   /** The electricity device the solar feeds into (saved or only in the draft). */
@@ -27,6 +44,8 @@ export interface SolarSetupContext {
   solars: string[];
   /** The solar source the user came with (from a sum meter dialog), if any. */
   solar?: string | null;
+  /** The state to come back to (after a power dialog the setup opened). */
+  resume?: SolarSetupState;
   /** Whether the panel is still busy with the result of *Set up*. */
   busy: boolean;
   /** The display name of a statistic (a source or a device). */
@@ -53,18 +72,14 @@ export interface SolarCreatedDetail {
 
 type Translate = (key: StringKey, placeholders?: Record<string, string>) => string;
 
-/** The user's choices. Only what the user picked is sent; the rest is the backend's. */
-interface Choices {
-  method: SolarMethod | null;
-  drawn: string | null;
-  returned: string | null;
-  invert: boolean | null;
-  /** The daily switch, only for the inputs the user touched. */
-  periodic: Record<string, boolean>;
+/** A power sensor of the draft the backend refuses: which one and why. */
+interface Refused {
+  entity: string;
+  power: "circuit" | "solar";
+  why: string;
 }
 
-/** Errors after which the setup checks again instead of giving up. */
-const RECHECK = new Set(["conflict", "values_changed", "not_offered"]);
+const REFUSED_WHY = new Set(["used", "not_power", "ours"]);
 
 const NO_EVIDENCE: StatsEvidence = {
   periodic: null,
@@ -74,6 +89,9 @@ const NO_EVIDENCE: StatsEvidence = {
   went_negative: false,
   series: [],
 };
+
+/** Ids are unique per panel: one setup is open at a time. */
+const WHY_ID = "solar-setup-why";
 
 const SPARK_WIDTH = 120;
 const SPARK_HEIGHT = 28;
@@ -124,14 +142,17 @@ function sparkline(evidence: StatsEvidence): TemplateResult | typeof nothing {
  *
  * It asks the backend for the preview on the panel's draft and creates the
  * helpers itself; the panel applies `created` to the draft. It never leaves a
- * dead end: a failed check offers «Try again», a block names the way on, and
- * a disabled *Set up* says why. Only what the user chose is sent; above all
- * the daily switch only for the inputs the user touched.
+ * dead end: a failed check offers «Try again», a block or a refused power
+ * sensor names the way on, and a disabled *Set up* says why. Only what the
+ * user chose is sent; above all the daily switch only for the inputs the user
+ * touched.
  *
  * Events (none bubble): `close`, `created` (`SolarCreatedDetail`), `failed`
- * (`{ error }`), `set-solar-power` (`{ solar }`) and `open-settings`
- * (`{ entity_id }`). It renders into the panel's shadow root (no own shadow
- * root), so the panel's dialog styles apply.
+ * (`{ error }`), `set-solar-power` (`{ solar, state }`), `set-circuit-power`
+ * (`{ stat, state }`) and `open-settings` (`{ entity_id }`); `state`
+ * (`SolarSetupState`) lets the panel open the setup again as it was. It
+ * renders into the panel's shadow root (no own shadow root), so the panel's
+ * dialog styles apply.
  */
 export class EfmSolarSetup extends LitElement {
   static override properties = {
@@ -143,6 +164,7 @@ export class EfmSolarSetup extends LitElement {
     _preview: { state: true },
     _loading: { state: true },
     _error: { state: true },
+    _refused: { state: true },
     _notice: { state: true },
     _names: { state: true },
     _busy: { state: true },
@@ -154,12 +176,14 @@ export class EfmSolarSetup extends LitElement {
   declare context: SolarSetupContext;
   /** The chosen solar source. */
   declare _solar: string | null;
-  declare _choices: Choices;
+  declare _choices: SolarChoices;
   /** The backend's last preview; kept while a new one loads or fails. */
   declare _preview: SolarPreview | null;
   declare _loading: boolean;
   /** Why the last preview failed, or null. */
   declare _error: string | null;
+  /** A power sensor of the draft the backend refused, or null. */
+  declare _refused: Refused | null;
   /** Why the setup checked again (values changed meanwhile), or null. */
   declare _notice: string | null;
   /** The names the user typed, per helper role; the others are the defaults. */
@@ -181,6 +205,7 @@ export class EfmSolarSetup extends LitElement {
     this._preview = null;
     this._loading = false;
     this._error = null;
+    this._refused = null;
     this._notice = null;
     this._names = {};
     this._busy = false;
@@ -213,9 +238,15 @@ export class EfmSolarSetup extends LitElement {
   protected override willUpdate(): void {
     if (!this._started) {
       this._started = true;
-      // The solar of the sum, else the only one.
-      const { solar, solars } = this.context;
-      this._solar = solar && solars.includes(solar) ? solar : solars.length === 1 ? solars[0] : null;
+      const { solar, solars, resume } = this.context;
+      if (resume) {
+        // Back from a power dialog: as the user left it.
+        this._choices = { ...resume.choices, periodic: { ...resume.choices.periodic } };
+        this._names = { ...resume.names };
+      }
+      // The solar the user had or came with, else the only one.
+      const wanted = resume?.solar ?? solar;
+      this._solar = wanted && solars.includes(wanted) ? wanted : solars.length === 1 ? solars[0] : null;
     }
     // Also when Home Assistant arrives after the first update.
     if (!this._asked && this.hass && this._solar) {
@@ -226,6 +257,23 @@ export class EfmSolarSetup extends LitElement {
 
   private _emit(type: string, detail?: unknown): void {
     this.dispatchEvent(new CustomEvent(type, { detail }));
+  }
+
+  /** What the panel keeps to open the setup again as it is. */
+  private _state(): SolarSetupState {
+    return {
+      solar: this._solar,
+      choices: { ...this._choices, periodic: { ...this._choices.periodic } },
+      names: { ...this._names },
+    };
+  }
+
+  private _setSolarPower(): void {
+    this._emit("set-solar-power", { solar: this._solar, state: this._state() });
+  }
+
+  private _setCircuitPower(): void {
+    this._emit("set-circuit-power", { stat: this.context.stat, state: this._state() });
   }
 
   /** A device, solar or sensor by the name the user knows. */
@@ -266,6 +314,22 @@ export class EfmSolarSetup extends LitElement {
     };
   }
 
+  /** A refused power sensor of the draft, if the error is one. */
+  private _refusedPower(error: WSError): Refused | null {
+    const placeholders = error.translation_placeholders ?? {};
+    const { entity_id: entity, power, why } = placeholders;
+    if (
+      error.translation_key !== "not_offered" ||
+      typeof entity !== "string" ||
+      (power !== "circuit" && power !== "solar") ||
+      typeof why !== "string" ||
+      !REFUSED_WHY.has(why)
+    ) {
+      return null;
+    }
+    return { entity, power, why };
+  }
+
   /** Drop the user's pick the backend no longer offers; whether there was one. */
   private _dropPick(error: WSError): boolean {
     const entity = error.translation_placeholders?.entity_id;
@@ -281,10 +345,17 @@ export class EfmSolarSetup extends LitElement {
     return true;
   }
 
+  /** Drop the user's method the backend no longer offers, with a note. */
+  private _dropMethod(): void {
+    this._choices = { ...this._choices, method: null };
+    this._notice = this.localize("solar_setup_method_gone");
+  }
+
   /**
    * Ask the backend what the setup would create with the current choices, on
    * the panel's draft. A stale draft (`conflict`) is loaded again, and a pick
-   * the backend no longer offers is dropped, each once; any other failure
+   * or a method the backend no longer offers is dropped, each once. A refused
+   * power sensor of the draft is named with the way on; any other failure
    * keeps the choices and the last preview and offers «Try again». Outdated
    * answers are ignored.
    */
@@ -298,15 +369,25 @@ export class EfmSolarSetup extends LitElement {
     const stale = () => request !== this._request || this._solar !== solar;
     this._loading = true;
     this._error = null;
+    this._refused = null;
     let reloaded = false;
     let dropped = false;
+    let methodDropped = false;
     for (;;) {
       try {
         const preview = await hass.callWS<SolarPreview>(this._message("solar_setup_preview"));
-        if (!stale()) {
-          this._preview = preview;
-          this._loading = false;
+        if (stale()) {
+          return;
         }
+        const chosen = this._choices.method;
+        if (chosen && !methodDropped && !preview.methods.some((m) => m.method === chosen && m.offered)) {
+          // Something else changed (a daily switch): the method went.
+          methodDropped = true;
+          this._dropMethod();
+          continue;
+        }
+        this._preview = preview;
+        this._loading = false;
         return;
       } catch (err) {
         if (stale()) {
@@ -325,6 +406,13 @@ export class EfmSolarSetup extends LitElement {
           }
           continue;
         }
+        const refused = this._refusedPower(error);
+        if (refused !== null) {
+          // A retry cannot help: another power sensor can.
+          this._refused = refused;
+          this._loading = false;
+          return;
+        }
         if (error.translation_key === "not_offered" && !dropped && this._dropPick(error)) {
           dropped = true;
           this._notice = this._errorText(err);
@@ -338,7 +426,7 @@ export class EfmSolarSetup extends LitElement {
   }
 
   /** Take a choice and check again; a note of the last check goes. */
-  private _choose(patch: Partial<Choices>): void {
+  private _choose(patch: Partial<SolarChoices>): void {
     this._choices = { ...this._choices, ...patch };
     this._notice = null;
     void this._loadPreview();
@@ -369,7 +457,7 @@ export class EfmSolarSetup extends LitElement {
       case "solar_power":
         return t("solar_term_power_name", { name: power });
       default:
-        return `${power} ${t("energy_suffix")}`;
+        return t("solar_term_energy_name", { name: power });
     }
   }
 
@@ -379,6 +467,9 @@ export class EfmSolarSetup extends LitElement {
     const preview = this._preview;
     if (!this._solar) {
       return t("solar_setup_why_solar");
+    }
+    if (this._refused !== null) {
+      return t("solar_setup_why_power");
     }
     if (this._error !== null) {
       return t("solar_setup_why_failed");
@@ -402,9 +493,9 @@ export class EfmSolarSetup extends LitElement {
    * Create the helpers right away; the panel then puts the gross meter in the
    * device's place in the draft (`created`), also when the dialog was closed
    * meanwhile. What the preview showed is sent. When the values or the
-   * settings changed meanwhile, or a sensor is no longer offered, the setup
-   * checks again and says so; any other failure goes to the panel (`failed`)
-   * and the dialog stays.
+   * settings changed meanwhile, a sensor or the method is no longer offered,
+   * the setup checks again and says so; any other failure also goes to the
+   * panel (`failed`), the dialog stays and checks again, so a block shows.
    */
   async _create(): Promise<void> {
     const hass = this.hass;
@@ -437,20 +528,27 @@ export class EfmSolarSetup extends LitElement {
       this._emit("created", detail);
     } catch (err) {
       const error = (err ?? {}) as WSError;
-      if (!RECHECK.has(error.translation_key ?? "")) {
-        this._emit("failed", { error: err });
-        return;
-      }
-      if (error.translation_key === "conflict") {
+      const key = error.translation_key ?? "";
+      if (key === "conflict") {
         try {
           await this.context.reload();
         } catch {
           // The preview says what is wrong.
         }
-      } else if (error.translation_key === "not_offered") {
-        this._dropPick(error);
+        this._notice = this.localize("solar_setup_conflict");
+      } else if (key === "not_offered" && this._refusedPower(error) === null) {
+        if (error.translation_placeholders?.entity_id === stat && this._choices.method) {
+          this._dropMethod();
+        } else {
+          this._dropPick(error);
+          this._notice = this._errorText(err);
+        }
+      } else if (key === "values_changed") {
+        this._notice = this._errorText(err);
+      } else if (key !== "not_offered") {
+        this._emit("failed", { error: err });
       }
-      this._notice = error.translation_key === "conflict" ? this.localize("solar_setup_conflict") : this._errorText(err);
+      // Check again: what changed, or which block it is, shows in the dialog.
       void this._loadPreview();
     } finally {
       this._busy = false;
@@ -484,10 +582,11 @@ export class EfmSolarSetup extends LitElement {
     const preview = this._preview;
     const why = this._busy ? null : this._why();
     return html`${head}
-      <h3>${t("solar_setup_source")}</h3>
       ${solars.length === 1
-        ? html`<p class="solar-source">${this.context.name(solars[0])}</p>`
-        : html`<div class="solar-sources">
+        ? html`<h3>${t("solar_setup_source")}</h3>
+            <p class="solar-source">${this.context.name(solars[0])}</p>`
+        : html`<fieldset class="solar-sources">
+            <legend>${t("solar_setup_source")}</legend>
             ${solars.map(
               (solar) => html`<label class="check">
                 <input
@@ -500,19 +599,31 @@ export class EfmSolarSetup extends LitElement {
                 ${this.context.name(solar)}
               </label>`,
             )}
-          </div>`}
-      ${this._loading ? html`<p class="hint solar-checking">${t("checking")}</p>` : nothing}
+          </fieldset>`}
+      <div class="solar-status" aria-live="polite">
+        ${this._loading ? html`<p class="hint solar-checking">${t("checking")}</p>` : nothing}
+        ${this._error !== null ? html`<p class="warning solar-error">${this._error}</p>` : nothing}
+        ${this._refused !== null ? this._renderRefused(this._refused) : nothing}
+        ${this._notice !== null ? html`<p class="warning solar-notice">${this._notice}</p>` : nothing}
+      </div>
       ${this._error !== null
-        ? html`<p class="warning solar-error">${this._error}</p>
-            <button class="solar-retry" @click=${() => void this._loadPreview()}>${t("solar_setup_retry")}</button>`
+        ? html`<button class="solar-retry" @click=${() => void this._loadPreview()}>${t("solar_setup_retry")}</button>`
         : nothing}
-      ${this._notice !== null ? html`<p class="warning solar-notice">${this._notice}</p>` : nothing}
+      ${this._refused !== null
+        ? html`<button class="solar-refused-action" @click=${() =>
+            this._refused?.power === "solar" ? this._setSolarPower() : this._setCircuitPower()}>
+            ${this._refused.power === "solar"
+              ? t("solar_setup_set_solar_power")
+              : t("solar_setup_set_circuit_power", { name })}
+          </button>`
+        : nothing}
       ${preview !== null ? this._renderPreview(preview) : nothing}
       <div class="dialog-actions">
-        ${why !== null ? html`<span class="hint solar-why">${why}</span>` : nothing}
+        ${why !== null ? html`<span class="hint solar-why" id=${WHY_ID}>${why}</span>` : nothing}
         <button @click=${() => this._emit("close")}>${t("cancel")}</button>
         <button
           class="primary solar-create"
+          aria-describedby=${why !== null ? WHY_ID : nothing}
           ?disabled=${why !== null || this._busy}
           @click=${() => void this._create()}
         >
@@ -521,13 +632,26 @@ export class EfmSolarSetup extends LitElement {
       </div>`;
   }
 
+  /** A refused power sensor of the draft: which, whose and why. */
+  private _renderRefused(refused: Refused): TemplateResult {
+    const owner = refused.power === "solar" ? this._display(this._solar ?? "") : this.context.deviceName;
+    return html`<p class="warning solar-refused">
+      ${this._t(`solar_setup_power_refused_${refused.why}`, {
+        entity: this.context.sensorName(refused.entity),
+        owner,
+      })}
+    </p>`;
+  }
+
   private _renderPreview(preview: SolarPreview): TemplateResult {
     const t = this.localize;
     const method = preview.method;
     const energy = method !== null && method !== "power";
     const blocked = preview.blocked;
-    return html`<h3>${t("solar_setup_method")}</h3>
-      <div class="solar-methods">${preview.methods.map((status) => this._renderMethod(preview, status))}</div>
+    return html`<fieldset class="solar-methods">
+        <legend>${t("solar_setup_method")}</legend>
+        ${preview.methods.map((status) => this._renderMethod(preview, status))}
+      </fieldset>
       ${energy && (preview.drawn_candidates.length > 1 || preview.drawn_candidates.some((c) => c.disabled))
         ? this._renderPicker(preview, "drawn", preview.drawn_candidates, preview.drawn)
         : nothing}
@@ -627,67 +751,94 @@ export class EfmSolarSetup extends LitElement {
   }
 
   private _renderInput(preview: SolarPreview, entity: string): TemplateResult {
-    const t = this.localize;
+    const meter = this._display(entity);
+    const head = (sentence: string, evidence: StatsEvidence) => html`<div class="solar-input-head">
+        <span class="solar-input-name">${meter}</span>
+        ${sparkline(evidence)}
+      </div>
+      <p class="hint solar-evidence">${sentence}</p>`;
+    if (preview.blocked === "daily_check_failed") {
+      // The statistics were not read: nothing to judge, «Check again» below.
+      return html`<div class="solar-input" data-entity=${entity}>
+        ${head(this.localize("evidence_unchecked"), NO_EVIDENCE)}
+      </div>`;
+    }
     const evidence = preview.evidence[entity] ?? NO_EVIDENCE;
     const unit = this.hass?.states[entity]?.attributes.unit_of_measurement;
     const sentence = inputEvidenceText(this.hass, evidence, typeof unit === "string" ? unit : null);
+    return html`<div class="solar-input" data-entity=${entity}>
+      ${head(sentence, evidence)} ${this._renderDaily(entity, meter, evidence)}
+    </div>`;
+  }
+
+  /** The daily switch of an input: fixed when certain, a choice without statistics. */
+  private _renderDaily(entity: string, meter: string, evidence: StatsEvidence): TemplateResult | typeof nothing {
+    const t = this.localize;
     const touched = this._choices.periodic[entity];
     const set = (value: boolean) => this._choose({ periodic: { ...this._choices.periodic, [entity]: value } });
-    let daily: TemplateResult;
+    const daily = t("solar_setup_daily");
     if (evidence.certain) {
-      daily = html`<label class="check">
-          <input type="checkbox" class="solar-daily" .checked=${true} disabled />
-          ${t("solar_setup_daily")}
+      return html`<label class="check">
+          <input type="checkbox" class="solar-daily" .checked=${true} disabled aria-label=${`${meter}: ${daily}`} />
+          ${daily}
         </label>
         <p class="hint solar-daily-locked">
           ${t("solar_setup_daily_locked", { evidence: evidenceText(this.hass, evidence, null) })}
         </p>`;
-    } else if (evidence.periodic === null) {
-      const choice = (value: "daily" | "lifetime") => html`<label class="check">
-        <input
-          type="radio"
-          class="solar-daily-choice"
-          name="solar-daily-${entity}"
-          value=${value}
-          .checked=${touched === (value === "daily")}
-          @change=${() => set(value === "daily")}
-        />
-        ${t(value === "daily" ? "solar_setup_daily" : "solar_setup_lifetime")}
-      </label>`;
-      daily = html`${choice("daily")} ${choice("lifetime")}`;
-    } else {
-      daily = html`<label class="check">
-          <input
-            type="checkbox"
-            class="solar-daily"
-            .checked=${touched ?? evidence.periodic}
-            @change=${(e: Event) => set((e.target as HTMLInputElement).checked)}
-          />
-          ${t("solar_setup_daily")}
-        </label>
-        ${touched === undefined ? html`<p class="hint">${t("solar_setup_daily_hint")}</p>` : nothing}`;
     }
-    return html`<div class="solar-input" data-entity=${entity}>
-      <div class="solar-input-head">
-        <span class="solar-input-name">${this._display(entity)}</span>
-        ${sparkline(evidence)}
-      </div>
-      <p class="hint solar-evidence">${sentence}</p>
-      ${daily}
-    </div>`;
+    if (evidence.periodic === null) {
+      if (entity === this._solar) {
+        // Without statistics the solar's counter is never read as lifetime:
+        // either answer leaves it blocked, so none is asked for.
+        return nothing;
+      }
+      const choice = (value: "daily" | "lifetime") => {
+        const label = t(value === "daily" ? "solar_setup_daily" : "solar_setup_lifetime");
+        return html`<label class="check">
+          <input
+            type="radio"
+            class="solar-daily-choice"
+            name="solar-daily-${entity}"
+            value=${value}
+            aria-label=${`${meter}: ${label}`}
+            .checked=${touched === (value === "daily")}
+            @change=${() => set(value === "daily")}
+          />
+          ${label}
+        </label>`;
+      };
+      return html`<div role="radiogroup" aria-label=${t("solar_setup_daily_question", { name: meter })}>
+        ${choice("daily")} ${choice("lifetime")}
+      </div>`;
+    }
+    return html`<label class="check">
+        <input
+          type="checkbox"
+          class="solar-daily"
+          aria-label=${`${meter}: ${daily}`}
+          .checked=${touched ?? evidence.periodic}
+          @change=${(e: Event) => set((e.target as HTMLInputElement).checked)}
+        />
+        ${daily}
+      </label>
+      ${touched === undefined ? html`<p class="hint">${t("solar_setup_daily_hint")}</p>` : nothing}`;
   }
 
   /**
-   * The power sensors and where they come from; for "From power" the live
-   * check and the switch that turns the circuit's power around.
+   * The power sensors and where they come from. Whenever a gross power is
+   * created (any method) the live check and the switch that turns the
+   * circuit's power around; EM, Plug and Net without one say why.
    */
   private _renderPower(preview: SolarPreview): TemplateResult {
     const t = this.localize;
     const { power, live } = preview;
     const from = (source: string | null) => t(`solar_setup_from_${source ?? "saved"}` as StringKey);
     const watts = (value: number | null) => (value === null ? "–" : formatPower(this.hass, value));
-    // A block that needs the solar's power has the button already.
-    const askPower = preview.blocked !== "solar_needs_power" && preview.blocked !== "solar_needs_data";
+    // A block that needs a power has the buttons already.
+    const askPower = !["solar_needs_power", "solar_needs_data", "daily_without_power", "no_safe_method"].includes(
+      preview.blocked ?? "",
+    );
+    const grossPower = preview.helpers.some(({ role }) => role === "power");
     return html`<h3>${t("solar_setup_power_title")}</h3>
       <p class="hint solar-circuit-power">
         ${power.circuit
@@ -699,12 +850,15 @@ export class EfmSolarSetup extends LitElement {
           ? t("solar_setup_solar_power", { entity: this.context.sensorName(power.solar), from: from(power.solar_from) })
           : t("solar_setup_solar_none")}
         ${power.solar === null && askPower
-          ? html`<button class="link solar-set-power" @click=${() => this._emit("set-solar-power", { solar: this._solar })}>
+          ? html`<button class="link solar-set-power" @click=${() => this._setSolarPower()}>
               ${t("solar_setup_set_solar_power")}
             </button>`
           : nothing}
       </p>
-      ${preview.method === "power"
+      ${preview.power_reason
+        ? html`<p class="hint solar-power-reason">${this._t(`reason_${preview.power_reason}`)}</p>`
+        : nothing}
+      ${grossPower
         ? html`<p class="solar-live">
               ${t("solar_setup_live", {
                 circuit: watts(live.circuit_w),
@@ -722,8 +876,10 @@ export class EfmSolarSetup extends LitElement {
               />
               ${t("solar_setup_invert")}
             </label>
-            <p class="hint">${t("solar_setup_invert_hint")}</p>
-            <p class="hint solar-power-history">${t("solar_setup_power_history")}</p>`
+            <p class="hint">${t("solar_setup_invert_hint")}</p>`
+        : nothing}
+      ${preview.method === "power"
+        ? html`<p class="hint solar-power-history">${t("solar_setup_power_history")}</p>`
         : nothing}`;
   }
 
@@ -745,7 +901,10 @@ export class EfmSolarSetup extends LitElement {
       <p class="hint solar-hold">${t("solar_setup_hold")}</p>`;
   }
 
-  /** The way on from a block: set the solar's power, check again, or open a sensor's settings. */
+  /**
+   * The way on from a block: set a missing power sensor, check again, or open
+   * a sensor's settings.
+   */
   private _renderBlockedAction(preview: SolarPreview, blocked: string): TemplateResult | typeof nothing {
     const t = this.localize;
     const action = (label: string, run: () => void) =>
@@ -753,7 +912,23 @@ export class EfmSolarSetup extends LitElement {
     switch (blocked) {
       case "solar_needs_power":
       case "solar_needs_data":
-        return action(t("solar_setup_set_solar_power"), () => this._emit("set-solar-power", { solar: this._solar }));
+        return action(t("solar_setup_set_solar_power"), () => this._setSolarPower());
+      case "daily_without_power":
+      case "no_safe_method": {
+        // "From power" needs both: name the missing ones, each with its dialog.
+        const name = this.context.deviceName;
+        const solar = this._display(this._solar ?? "");
+        return html`${preview.power.circuit === null
+          ? html`<p class="hint solar-missing-power">${t("solar_setup_missing_power", { name })}</p>`
+          : nothing}
+        ${preview.power.solar === null
+          ? html`<p class="hint solar-missing-power">${t("solar_setup_missing_power", { name: solar })}</p>`
+          : nothing}
+        ${preview.power.circuit === null
+          ? action(t("solar_setup_set_circuit_power", { name }), () => this._setCircuitPower())
+          : nothing}
+        ${preview.power.solar === null ? action(t("solar_setup_set_solar_power"), () => this._setSolarPower()) : nothing}`;
+      }
       case "daily_check_failed":
       case "input_not_ready":
       case "not_offered":

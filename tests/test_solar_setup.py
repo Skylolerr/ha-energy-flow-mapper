@@ -342,6 +342,14 @@ def evidence(monkeypatch: pytest.MonkeyPatch) -> Evidence:
     return found
 
 
+@pytest.fixture
+def signed(evidence: Evidence) -> Evidence:
+    """Return the evidence with circuit powers that went below 0 (they have a sign)."""
+    for power in (MAIN_POWER, PRO_EM_POWER, PLUG_POWER):
+        evidence[power] = lifetime(went_negative=True)
+    return evidence
+
+
 # --- Templates -------------------------------------------------------------
 
 
@@ -569,13 +577,14 @@ async def test_preview_methods_for_shelly_pro_em(
     }
     assert result["live"] == {"circuit_w": -50.0, "solar_w": 300.0, "gross_w": 250.0}
     assert result["solar_term"] == {"kind": "integral", "reuse": None}
+    # The circuit power never went below 0: no live gross power, and why.
     assert [h["role"] for h in result["helpers"]] == [
         "solar_power",
         "solar_energy",
-        "power",
         "energy",
     ]
-    assert result["helpers"][3]["name_default"] == "Pro EM gross"
+    assert result["power_reason"] == "gross_power_needs_signed"
+    assert result["helpers"][2]["name_default"] == "Pro EM gross"
     assert result["blocked"] is None
     # 500 - 20 + 0 (a new solar integral) is enough.
     assert result["offset"] == 0
@@ -830,12 +839,13 @@ async def test_preview_draft_values(
     # The draft removed the solar's power: the counter (lifetime) is used.
     assert result["power"]["solar"] is None
     assert result["solar_term"] == {"kind": "counter", "reuse": None}
-    for change in (
-        set_rate(PRO_EM, "sensor.nope"),
-        set_rate(PRO_EM, "switch.x"),
-        set_rate(PRO_EM, "sensor.solar_energy"),
-        set_solar_rate(PRO_EM),
-        set_rate(PRO_EM, SOLAR_POWER),
+    # Refused, with which power it is and why, so the panel can say so.
+    for change, power, why in (
+        (set_rate(PRO_EM, "sensor.nope"), "circuit", "not_power"),
+        (set_rate(PRO_EM, "switch.x"), "circuit", "not_power"),
+        (set_rate(PRO_EM, "sensor.solar_energy"), "circuit", "used"),
+        (set_solar_rate(PRO_EM), "solar", "used"),
+        (set_rate(PRO_EM, SOLAR_POWER), "circuit", "used"),
     ):
         response = await preview(
             hass_ws_client,
@@ -844,6 +854,9 @@ async def test_preview_draft_values(
             **await draft(hass_ws_client, hass, change),
         )
         assert response["error"]["translation_key"] == "not_offered", change
+        placeholders = response["error"]["translation_placeholders"]
+        assert placeholders["power"] == power, change
+        assert placeholders["why"] == why, change
 
 
 @pytest.mark.usefixtures("loaded_entry", "evidence")
@@ -1475,7 +1488,7 @@ def _solar_integral(hass: HomeAssistant) -> str:
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
-@pytest.mark.usefixtures("evidence")
+@pytest.mark.usefixtures("signed")
 async def test_create_em_template_state_class_total(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -1728,7 +1741,7 @@ async def test_create_refuses_not_offered_returned(
     assert loaded_entry.runtime_data.helpers.entries() == []
 
 
-@pytest.mark.usefixtures("evidence")
+@pytest.mark.usefixtures("signed")
 async def test_create_with_draft_solar_rate(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -1820,7 +1833,7 @@ async def test_create_refused_when_blocked(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("evidence")
+@pytest.mark.usefixtures("signed")
 @pytest.mark.parametrize("failing", [1, 2, 3])
 async def test_solar_setup_rolls_back_on_failure(
     hass: HomeAssistant,
@@ -1871,7 +1884,7 @@ async def test_rollback_keeps_a_reused_solar_term(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("evidence")
+@pytest.mark.usefixtures("signed")
 async def test_rollback_goes_on_when_a_removal_fails(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,
@@ -1945,7 +1958,7 @@ async def test_solar_setup_rolls_back_a_failed_integral(
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
-@pytest.mark.usefixtures("evidence")
+@pytest.mark.usefixtures("signed")
 async def test_create_cancelled_cleans_up(
     hass: HomeAssistant,
     loaded_entry: MockConfigEntry,
@@ -2358,6 +2371,7 @@ async def test_draft_power_used_elsewhere_or_ours_is_refused(
         **await draft(hass_ws_client, hass, set_rate(MAIN, "sensor.ups_power")),
     )
     assert response["error"]["translation_key"] == "not_offered"
+    assert response["error"]["translation_placeholders"]["why"] == "used"
     # Saved like that it is the user's own setting and stays.
     response = await preview(hass_ws_client, hass, stat="sensor.garage_energy")
     assert response["success"], response
@@ -2380,9 +2394,9 @@ async def test_draft_power_used_elsewhere_or_ours_is_refused(
     await loaded_entry.runtime_data.helpers.async_add(
         entry.entry_id, {"kind": "gross_power", "stat": "x", "method": "em"}
     )
-    for change in (
-        set_rate("sensor.kitchen_energy", "sensor.gross_power_ours"),
-        set_solar_rate("sensor.gross_power_ours"),
+    for change, power in (
+        (set_rate("sensor.kitchen_energy", "sensor.gross_power_ours"), "circuit"),
+        (set_solar_rate("sensor.gross_power_ours"), "solar"),
     ):
         response = await preview(
             hass_ws_client,
@@ -2391,6 +2405,11 @@ async def test_draft_power_used_elsewhere_or_ours_is_refused(
             **await draft(hass_ws_client, hass, change),
         )
         assert response["error"]["translation_key"] == "not_offered", change
+        assert response["error"]["translation_placeholders"] == {
+            "entity_id": "sensor.gross_power_ours",
+            "power": power,
+            "why": "ours",
+        }
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
@@ -2852,3 +2871,55 @@ async def test_solar_counter_must_rise_on_two_days(
     )
     result = await result_of(hass_ws_client, hass, method="net")
     assert result["blocked"] == "solar_needs_data"
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("evidence")
+async def test_em_gross_power_needs_a_signed_circuit_power(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """EM/Plug/Net build the live gross power only on a circuit power with a sign.
+
+    Without one nobody checks its sign: no gross power, and the preview says why.
+    """
+    _shelly_pro_em(hass)
+    result = await result_of(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert result["power"]["signed"] is False
+    assert [helper["role"] for helper in result["helpers"]] == [
+        "solar_power",
+        "solar_energy",
+        "energy",
+    ]
+    assert result["power_reason"] == "gross_power_needs_signed"
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert response["success"], response
+    assert response["result"]["stat_rate"] is None
+    assert "Pro EM gross power" not in _template_entries(hass)
+    # From power keeps its rules: built unverified.
+    result = await result_of(hass_ws_client, hass, stat=PRO_EM, method="power")
+    assert result["power_reason"] is None
+    assert [helper["role"] for helper in result["helpers"]] == ["power", "energy"]
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+async def test_em_gross_power_with_a_signed_circuit_power_respects_invert(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+    evidence: Evidence,
+) -> None:
+    """A signed circuit power gives EM its gross power, turned around if asked."""
+    _shelly_pro_em(hass)
+    evidence[PRO_EM_POWER] = lifetime(went_negative=True)
+    result = await result_of(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert result["power_reason"] is None
+    assert "power" in [helper["role"] for helper in result["helpers"]]
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em", invert=True)
+    assert response["success"], response
+    power = _template_entries(hass)["Pro EM gross power"]
+    assert power.options["state"] == gross_power_template(
+        PRO_EM_POWER, SOLAR_POWER, invert=True
+    )
+    assert response["result"]["stat_rate"] == _entity_of(hass, power.entry_id)
