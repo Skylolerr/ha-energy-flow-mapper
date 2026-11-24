@@ -131,6 +131,16 @@ const README_URL = "https://github.com/Skylolerr/ha-energy-flow-mapper";
  * The README section each safety-net hint links to. The README must keep
  * headings that give exactly these anchors.
  */
+/**
+ * The safety-net hints: a dismissal names the event of its hint (this field
+ * of `data`) and hides only that one, like the backend's `EVENT_KEYS`.
+ */
+const EVENT_KEYS: Record<string, "hour" | "day"> = {
+  gross_off: "hour",
+  gross_unknown: "hour",
+  solar_term_short: "day",
+  solar_term_high: "day",
+};
 export const README_ANCHORS = {
   gross_off: "if-a-gross-meter-falls-or-jumps",
   gross_off_input: "if-an-input-was-reset-or-replaced",
@@ -1168,14 +1178,29 @@ export class EnergyFlowMapperPanel extends LitElement {
     return typeof role === "string" ? role : null;
   }
 
+  /** The event a safety-net hint is about (`{hour}` or `{day}`), or nothing for other hints. */
+  private _hintEvent(hint: Hint): { hour?: string; day?: string } {
+    const key = EVENT_KEYS[hint.code];
+    const value = key === undefined ? undefined : hint.data?.[key];
+    return key !== undefined && typeof value === "string" ? { [key]: value } : {};
+  }
+
   /**
-   * Whether an admin dismissed the hint: same code, tab and statistic, and
-   * the same role (a dismissal without role only hides hints without one).
+   * Whether an admin dismissed the hint: same code, tab and statistic, the
+   * same role (a dismissal without role only hides hints without one), and
+   * for a safety-net hint the same event: a new step, gap or day shows again.
    */
-  private _isDismissed(hint: Hint): boolean {
+  _isDismissed(hint: Hint): boolean {
     const role = this._hintRole(hint);
+    const key = EVENT_KEYS[hint.code];
+    const event = key === undefined ? undefined : this._hintEvent(hint)[key];
     return this._dismissed.some(
-      (d) => d.code === hint.code && d.kind === hint.kind && d.stat === hint.stat && (d.role ?? null) === role,
+      (d) =>
+        d.code === hint.code &&
+        d.kind === hint.kind &&
+        d.stat === hint.stat &&
+        (d.role ?? null) === role &&
+        (key === undefined || (event !== undefined && d[key] === event)),
     );
   }
 
@@ -1368,7 +1393,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
   }
 
-  /** Hide a hint for good, for every admin; a source's hint names its role. */
+  /**
+   * Hide a hint for every admin; a source's hint names its role, a
+   * safety-net hint its event (it is hidden for that event only).
+   */
   async _dismissHint(hint: Hint): Promise<void> {
     if (!this.hass) {
       return;
@@ -1381,6 +1409,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         kind: hint.kind,
         stat: hint.stat,
         ...(role !== null ? { role } : {}),
+        ...this._hintEvent(hint),
       });
       this._dismissed = result.dismissed;
     } catch (err) {
@@ -4545,7 +4574,10 @@ export class EnergyFlowMapperPanel extends LitElement {
           </p>
           <div class="dialog-actions">
             ${this._hintAction(hint)}
-            <button title=${this._t("hint_dismiss_title")} @click=${() => void this._dismissHint(hint)}>
+            <button
+              title=${this._t(EVENT_KEYS[hint.code] ? "hint_dismiss_event_title" : "hint_dismiss_title")}
+              @click=${() => void this._dismissHint(hint)}
+            >
               ${this._t("hint_dismiss")}
             </button>
           </div>

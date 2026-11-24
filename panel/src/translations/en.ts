@@ -393,6 +393,7 @@ export const en = {
   hint_open_helper: "Open helper settings",
   hint_dismiss: "Dismiss",
   hint_dismiss_title: "Hide this hint for good. “Show ignored suggestions again” brings it back.",
+  hint_dismiss_event_title: "Hide this hint for this event only. A new one shows again.",
   hint_children_solar: "Maybe a solar feeds into this circuit: its meter then misses what the solar produces in it, so the children seem to use more.",
   hint_readme: "More in the README",
   hint_show_sensor: "Show sensor",

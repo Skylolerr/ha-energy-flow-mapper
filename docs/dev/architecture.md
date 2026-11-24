@@ -40,11 +40,14 @@ All in `.storage/`, each with its own version:
   adds empty records; only the minor version grew, so an older release can still load it.
 - `energy_flow_mapper.groups`
 - `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
-  `SUGGESTIONS_STORAGE_MINOR_VERSION` 2): ignored suggestions and dismissed hints
-  (code, kind, stat, optional source role). The migration from 1.1 keeps the ignored
-  suggestions and adds an empty list of dismissed hints. Only the minor version grew, so
-  an older release still loads the file after a downgrade. Entries of meters no longer in
-  the settings are dropped on the next write. `clear_suggestions` clears both. Not part
+  `SUGGESTIONS_STORAGE_MINOR_VERSION` 3): ignored suggestions and dismissed hints
+  (code, kind, stat, optional source role; a safety-net hint also its event, `hour` or
+  `day`, and hides only that event). The migration from 1.1 keeps the ignored
+  suggestions and adds an empty list of dismissed hints; the one from 1.2 drops
+  safety-net dismissals without an event. Only the minor version grew, so an older
+  release still loads the file after a downgrade. Entries of meters no longer in the
+  settings, and dismissed events older than the 7-day watch window, are dropped on the
+  next write. `clear_suggestions` clears both. Not part
   of backups, export or import.
 
 Any change of a store format bumps its version and adds a migration, with a test.

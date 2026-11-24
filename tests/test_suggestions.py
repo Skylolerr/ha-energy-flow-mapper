@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from freezegun.api import FrozenDateTimeFactory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
@@ -122,11 +123,11 @@ async def test_store_migrates_v1_1(
     assert store.dismissed() == []
     await store.async_dismiss(HINT, HINT_KNOWN | KNOWN)
     saved = hass_storage[SUGGESTIONS_STORAGE_KEY]
-    assert (saved["version"], saved["minor_version"]) == (1, 2)
+    assert (saved["version"], saved["minor_version"]) == (1, 3)
     assert saved["data"] == {"ignored": [PAIR], "dismissed": [HINT]}
 
 
-async def test_store_1_2_loads_in_older_releases(
+async def test_store_1_3_loads_in_older_releases(
     hass: HomeAssistant, hass_storage: dict[str, Any]
 ) -> None:
     """Only the minor version grew, so 0.10.x (a plain version 1 store) still loads."""
@@ -230,11 +231,103 @@ async def test_store_keeps_newer_minor_data(
     """A file from a newer minor version is loaded as it is."""
     hass_storage[SUGGESTIONS_STORAGE_KEY] = {
         "version": 1,
-        "minor_version": 3,
+        "minor_version": 4,
         "key": SUGGESTIONS_STORAGE_KEY,
         "data": {"ignored": [PAIR], "dismissed": [HINT]},
     }
     store = SuggestionStore(hass)
     await store.async_load()
     assert store.ignored() == [PAIR]
+    assert store.dismissed() == [HINT]
+
+
+GROSS = {"code": "gross_off", "kind": "electricity", "stat": "sensor.o1"}
+TERM = {
+    "code": "solar_term_short",
+    "kind": "electricity",
+    "stat": "sensor.o1",
+    "role": "production",
+}
+NOW = "2026-11-24 12:00:00+00:00"
+
+
+async def test_store_migrates_v1_2_drops_eventless_safety_net(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    """Safety-net dismissals of 1.2 had no event and hid every later one: dropped."""
+    others = [HINT, {**HINT, "code": "power_available", "role": "home"}]
+    hass_storage[SUGGESTIONS_STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 2,
+        "key": SUGGESTIONS_STORAGE_KEY,
+        "data": {
+            "ignored": [PAIR],
+            "dismissed": [
+                others[0],
+                GROSS,
+                {**GROSS, "code": "gross_unknown"},
+                TERM,
+                {**TERM, "code": "solar_term_high"},
+                others[1],
+            ],
+        },
+    }
+    store = SuggestionStore(hass)
+    await store.async_load()
+    assert store.ignored() == [PAIR]
+    assert store.dismissed() == others
+    saved = hass_storage[SUGGESTIONS_STORAGE_KEY]
+    assert (saved["version"], saved["minor_version"]) == (1, 3)
+    assert saved["data"] == {"ignored": [PAIR], "dismissed": others}
+
+
+async def test_dismiss_safety_net_hint_for_its_event(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    freezer: FrozenDateTimeFactory,
+) -> None:
+    """A safety-net dismissal names its hour or day; one without is not kept."""
+    freezer.move_to(NOW)
+    store = SuggestionStore(hass)
+    await store.async_load()
+    at_h = {**GROSS, "hour": "2026-11-24T08:00:00+01:00"}
+    at_h3 = {**GROSS, "hour": "2026-11-24T11:00:00+01:00"}
+    gap = {**GROSS, "code": "gross_unknown", "hour": "2026-11-24T08:00:00+01:00"}
+    day = {**TERM, "day": "2026-11-23"}
+    # A field of another event code is not kept on other codes.
+    plain = {**HINT, "hour": "2026-11-24T08:00:00+01:00"}
+    for hint in (at_h, at_h3, gap, day, plain, GROSS, {**TERM, "hour": "x"}):
+        await store.async_dismiss(hint, HINT_KNOWN)
+    assert store.dismissed() == [at_h, at_h3, gap, day, HINT]
+    assert hass_storage[SUGGESTIONS_STORAGE_KEY]["data"]["dismissed"] == [
+        at_h,
+        at_h3,
+        gap,
+        day,
+        HINT,
+    ]
+    reloaded = SuggestionStore(hass)
+    await reloaded.async_load()
+    assert reloaded.dismissed() == [at_h, at_h3, gap, day, HINT]
+
+
+async def test_event_dismissals_are_pruned_after_the_watch_window(
+    hass: HomeAssistant, freezer: FrozenDateTimeFactory
+) -> None:
+    """Events older than 7 days left the safety net; so do their dismissals."""
+    freezer.move_to(NOW)
+    store = SuggestionStore(hass)
+    await store.async_load()
+    old_hour = {**GROSS, "hour": "2026-11-17T11:00:00+00:00"}
+    kept_hour = {**GROSS, "hour": "2026-11-17T13:00:00+01:00"}
+    old_day = {**TERM, "day": "2026-11-16"}
+    kept_day = {**TERM, "day": "2026-11-17"}
+    broken = {**GROSS, "hour": "yesterday"}
+    broken_day = {**TERM, "day": "soon"}
+    for hint in (old_hour, kept_hour, old_day, kept_day, broken, broken_day, HINT):
+        await store.async_dismiss(hint, HINT_KNOWN)
+    assert store.dismissed() == [kept_hour, kept_day, HINT]
+    # Seven more days: only the dismissal without an event stays.
+    freezer.move_to("2026-12-01 12:00:00+00:00")
+    await store.async_clear("water")
     assert store.dismissed() == [HINT]

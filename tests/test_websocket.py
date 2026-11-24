@@ -2079,6 +2079,24 @@ async def test_dismiss_hint_and_clear(
     )
     assert response["result"] == {"dismissed": [hint, with_role, source_hint]}
 
+    # A safety-net hint is dismissed for its event (hour or day) only.
+    gross = {
+        "code": "gross_off",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+        "hour": dt_util.now().replace(minute=0, second=0, microsecond=0).isoformat(),
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **gross)
+    assert response["result"] == {"dismissed": [hint, with_role, source_hint, gross]}
+    day = {
+        "code": "solar_term_high",
+        "kind": "electricity",
+        "stat": "sensor.garage_energy",
+        "day": dt_util.now().date().isoformat(),
+    }
+    response = await send(hass_ws_client, hass, type=f"{DOMAIN}/dismiss_hint", **day)
+    assert response["result"]["dismissed"][-1] == day
+
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/clear_suggestions")
     assert response["result"] == {"ignored": []}
     response = await send(hass_ws_client, hass, type=f"{DOMAIN}/get")

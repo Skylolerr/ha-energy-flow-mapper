@@ -395,6 +395,7 @@ export const fr: Translations = {
   hint_open_helper: "Ouvrir les réglages de l’entrée d’aide",
   hint_dismiss: "Masquer",
   hint_dismiss_title: "Masquer cette remarque pour de bon. « Afficher à nouveau les suggestions ignorées » la ramène.",
+  hint_dismiss_event_title: "Masquer cette remarque pour cet événement seulement. Un nouvel événement s’affiche à nouveau.",
   hint_children_solar: "Peut-être qu’une installation solaire alimente ce circuit : son compteur ne voit alors pas ce qu’elle y produit, et les appareils enfants semblent consommer plus.",
   hint_readme: "Plus d’infos dans le README",
   hint_show_sensor: "Afficher le capteur",

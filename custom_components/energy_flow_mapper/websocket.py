@@ -1404,6 +1404,9 @@ async def websocket_clear_suggestions(
         vol.Required(ATTR_KIND): _TABS,
         vol.Required("stat"): str,
         vol.Optional("role"): str,
+        # The event of a safety-net hint: its hour or its day.
+        vol.Optional("hour"): str,
+        vol.Optional("day"): str,
     }
 )
 @require_admin
@@ -1411,10 +1414,17 @@ async def websocket_clear_suggestions(
 async def websocket_dismiss_hint(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Hide a hint for good, for every admin; returns the dismissed hints."""
+    """Hide a hint for every admin; returns the dismissed hints.
+
+    A safety-net hint is hidden for the event (`hour` or `day`) it names only.
+    """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
-    hint = {key: msg[key] for key in ("code", ATTR_KIND, "stat", "role") if key in msg}
+    hint = {
+        key: msg[key]
+        for key in ("code", ATTR_KIND, "stat", "role", "hour", "day")
+        if key in msg
+    }
     await runtime.suggestions.async_dismiss(
         hint, _known_stats(hass, prefs, with_sources=True)
     )

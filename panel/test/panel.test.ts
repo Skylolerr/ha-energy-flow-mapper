@@ -6330,4 +6330,73 @@ describe("safety-net hints and list polish", () => {
     expect(targets().map(([stat]) => stat)).toEqual(["sensor.printer", "sensor.attic", "portal:import"]);
     expect(targets()[0][1]).not.toContain("Part of");
   });
+
+  it("dismisses a safety-net hint for its hour or day only", async () => {
+    const at = (hour: string) => grossOff({ hour, cause: "input", input: "sensor.plug_energy" });
+    const h = at("2026-11-23T13:00:00+00:00");
+    const day = (d: string): Hint => ({
+      code: "solar_term_short",
+      stat: "sensor.solar",
+      kind: "electricity",
+      data: { role: "production", entity_id: "sensor.solar_energy", day: d, term_kwh: 3, source_kwh: 5 },
+    });
+    const mock = grossMock([h, day("2026-11-22")]);
+    mock.responses["energy_flow_mapper/dismiss_hint"] = (msg: Record<string, unknown>) => ({
+      dismissed: [Object.fromEntries(Object.entries(msg).filter(([key]) => key !== "type"))],
+    });
+    mock.responses["energy_flow_mapper/clear_suggestions"] = { ignored: [] };
+    const el = await mount(mock);
+    const line = hintLine(await openServer(el), "gross_off");
+    // Its button says it hides this event only.
+    const dismiss = [...line.querySelectorAll("button")].find((b) => b.textContent!.includes("Dismiss"))!;
+    expect(dismiss.title).toBe("Hide this hint for this event only. A new one shows again.");
+    dismiss.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/dismiss_hint")).toEqual({
+      type: "energy_flow_mapper/dismiss_hint",
+      code: "gross_off",
+      kind: "electricity",
+      stat: "sensor.server",
+      hour: "2026-11-23T13:00:00+00:00",
+    });
+    expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
+    // A new step three hours later shows again.
+    const h3 = at("2026-11-23T16:00:00+00:00");
+    expect(el._isDismissed(h)).toBe(true);
+    expect(el._isDismissed(h3)).toBe(false);
+    el._snapshot = { ...el._snapshot!, hints: [h3, day("2026-11-22")] };
+    await settle(el);
+    expect(node(el, "sensor.server").querySelector(".hint-mark")).not.toBeNull();
+
+    // A day of the solar term: D is hidden, D+1 shows.
+    el._dismissed = [
+      { code: "solar_term_short", kind: "electricity", stat: "sensor.solar", role: "production", day: "2026-11-22" },
+    ];
+    expect(el._isDismissed(day("2026-11-22"))).toBe(true);
+    expect(el._isDismissed(day("2026-11-23"))).toBe(false);
+    // Other hints keep their dismissal for good.
+    expect(
+      el._isDismissed({ code: "power_available", stat: "sensor.tv", kind: "electricity", data: { entity_id: "x" } }),
+    ).toBe(false);
+    el._dismissed = [];
+    await settle(el);
+    root(el).querySelector<HTMLButtonElement>('.block.source[data-role="production"]')!.click();
+    await settle(el);
+    dialogButton(el, "Dismiss")!.click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/dismiss_hint")).toEqual({
+      type: "energy_flow_mapper/dismiss_hint",
+      code: "solar_term_short",
+      kind: "electricity",
+      stat: "sensor.solar",
+      role: "production",
+      day: "2026-11-22",
+    });
+    // "Show ignored suggestions again" still brings them back.
+    el._dialog = null;
+    await settle(el);
+    buttonWith(el, "Show ignored suggestions again").click();
+    await settle(el);
+    expect(root(el).querySelector('.block.source[data-role="production"] .hint-mark')).not.toBeNull();
+  });
 });

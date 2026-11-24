@@ -395,6 +395,7 @@ export const de: Translations = {
   hint_open_helper: "Helfer-Einstellungen öffnen",
   hint_dismiss: "Ausblenden",
   hint_dismiss_title: "Diesen Hinweis dauerhaft ausblenden. «Ignorierte Vorschläge wieder zeigen» bringt ihn zurück.",
+  hint_dismiss_event_title: "Diesen Hinweis nur für dieses Ereignis ausblenden. Ein neues wird wieder gezeigt.",
   hint_children_solar: "Vielleicht speist eine Solaranlage in diesen Stromkreis ein: Dann fehlt seinem Zähler, was die Solaranlage darin produziert, und die untergeordneten Geräte scheinen mehr zu verbrauchen.",
   hint_readme: "Mehr dazu im README",
   hint_show_sensor: "Sensor anzeigen",

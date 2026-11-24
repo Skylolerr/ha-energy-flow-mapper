@@ -193,12 +193,18 @@ export interface Hint {
   data: Record<string, unknown>;
 }
 
-/** A hint dismissed for good; `role` only for a hint whose `data` names one. */
+/**
+ * A dismissed hint; `role` only for a hint whose `data` names one. A
+ * safety-net hint is dismissed for its event only: `hour` (`gross_off`,
+ * `gross_unknown`) or `day` (`solar_term_short` / `_high`).
+ */
 export interface DismissedHint {
   code: string;
   kind: Tab;
   stat: string;
   role?: string;
+  hour?: string;
+  day?: string;
 }
 
 /** The ways "Solar feeds in here" builds a gross meter. */

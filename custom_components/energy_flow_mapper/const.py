@@ -33,9 +33,10 @@ HELPERS_STORAGE_VERSION: Final = 1
 HELPERS_STORAGE_MINOR_VERSION: Final = 2
 HELPERS_STORAGE_KEY: Final = f"{DOMAIN}.helpers"
 SUGGESTIONS_STORAGE_VERSION: Final = 1
-# 2: dismissed hints next to the ignored suggestions. Only the minor version
-# grows, so an older release can still load the file after a downgrade.
-SUGGESTIONS_STORAGE_MINOR_VERSION: Final = 2
+# 2: dismissed hints next to the ignored suggestions. 3: a dismissal of a
+# safety-net hint names its event (hour or day). Only the minor version grows,
+# so an older release can still load the file after a downgrade.
+SUGGESTIONS_STORAGE_MINOR_VERSION: Final = 3
 SUGGESTIONS_STORAGE_KEY: Final = f"{DOMAIN}.suggestions"
 GROUPS_STORAGE_VERSION: Final = 1
 GROUPS_STORAGE_KEY: Final = f"{DOMAIN}.groups"

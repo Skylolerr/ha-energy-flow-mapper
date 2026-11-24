@@ -395,6 +395,7 @@ export const it: Translations = {
   hint_open_helper: "Apri impostazioni dell’aiutante",
   hint_dismiss: "Nascondi",
   hint_dismiss_title: "Nascondi questa indicazione per sempre. «Mostra di nuovo i suggerimenti ignorati» la riporta.",
+  hint_dismiss_event_title: "Nascondi questa indicazione solo per questo evento. Uno nuovo viene mostrato di nuovo.",
   hint_children_solar: "Forse un impianto solare immette in questo circuito: al suo contatore manca allora ciò che l’impianto vi produce, e i dispositivi figli sembrano consumare di più.",
   hint_readme: "Maggiori dettagli nel README",
   hint_show_sensor: "Mostra sensore",
