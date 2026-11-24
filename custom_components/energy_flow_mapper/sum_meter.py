@@ -173,16 +173,19 @@ class SolarHolds:
             for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
             if isinstance(stat, str) and stat
         }
-        # What the solar counts (not what it subtracts), but not the meters of
-        # the settings: a solar computed from the house and the grid does not
-        # make them solar.
+        # What the solar counts (not what it subtracts). A solar computed by
+        # subtracting (house - grid import + grid export) does not make the
+        # meters of the settings solar; a copy or a sum of meters does.
         others = _settings_stats(prefs) - own
-        made_of = {
-            entity
-            for stat in own
-            for entity in _counted(meter_inputs(hass, stat, self._cache))
-            if entity not in others and energy_or_power(hass, entity)
-        }
+        made_of: set[str] = set()
+        for stat in own:
+            inputs = meter_inputs(hass, stat, self._cache)
+            computed = inputs["signed_known"] and bool(inputs["subtracted"])
+            made_of |= {
+                entity
+                for entity in _counted(inputs)
+                if energy_or_power(hass, entity) and not (computed and entity in others)
+            }
         terms = _recorded(hass, helpers, (KIND_SOLAR_ENERGY, KIND_SOLAR_POWER))
         self.solar = own | made_of | terms
         self._gross = {

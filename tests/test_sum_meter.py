@@ -986,3 +986,53 @@ async def test_ws_sum_solar_built_from_other_meters_leaves_them_alone(
         "solar_holds"
     ]
     assert holds == {"sensor.solar_calc": "solar"}
+
+
+SOLAR_COPY_OF_A_DEVICE = {
+    **ENERGY_PREFS,
+    "energy_sources": [
+        {**source, "stat_energy_from": "sensor.solar_copy_of_plug"}
+        if source["type"] == "solar"
+        else source
+        for source in ENERGY_PREFS["energy_sources"]
+    ],
+    "device_consumption": [
+        *ENERGY_PREFS["device_consumption"],
+        {"stat_consumption": "sensor.plug"},
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [SOLAR_COPY_OF_A_DEVICE])
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_sum_solar_copying_a_device_keeps_it_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar that only copies a meter of the settings keeps that meter solar.
+
+    Only a computed solar (one that subtracts) leaves the settings' meters out.
+    """
+    _meter(hass, "sensor.plug")
+    _template(hass, "sensor.solar_copy_of_plug", "{{ states('sensor.plug') | float }}")
+    _template(hass, "sensor.plug_copy", "{{ states('sensor.plug') | float }}")
+    _template(
+        hass,
+        "sensor.garage_plus_plug",
+        "{{ states('sensor.garage_energy') | float + states('sensor.plug') | float }}",
+    )
+    _refused(
+        await _sum(
+            hass,
+            hass_ws_client,
+            ["sensor.kitchen_energy", "sensor.plug_copy"],
+            ["sensor.plug_copy"],
+        ),
+        "sensor.plug_copy",
+    )
+    members = ["sensor.kitchen_energy", "sensor.garage_plus_plug"]
+    _refused(await _sum(hass, hass_ws_client, members), "sensor.garage_plus_plug")
+    holds = (await send(hass_ws_client, hass, type=f"{DOMAIN}/get"))["result"][
+        "solar_holds"
+    ]
+    assert holds["sensor.plug_copy"] == "solar"
+    assert holds["sensor.garage_plus_plug"] == "holder"
