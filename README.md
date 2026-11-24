@@ -524,7 +524,9 @@ built when the circuit and the solar have a power sensor whose unit can be read.
   statistics stay under its old entity.
 - While the solar's power has no value and circuit + held solar would be below 0, the
   gross power has no value either: the true value is unknown, and *From power* counts
-  nothing for that time instead of counting less than 0.
+  nothing for that time instead of counting less than 0. Up to 20 W below 0 is the
+  current transformer's noise at night (the inverter offline, the circuit reading −2 W):
+  the gross power is then 0.
 
 ### Good to know
 

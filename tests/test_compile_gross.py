@@ -1366,3 +1366,45 @@ async def test_compile_from_power_sun_rises_in_the_hold(
     steps = await short_term(hass, gross, start, start + 2 * HOUR)
     assert len(steps) == 24
     assert min(steps) >= 0
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_night_noise_has_no_gap(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power at night: the inverter unavailable, the circuit's CT at -3 W.
+
+    The solar reports 0 W after sunset, then goes unavailable at 0:00 for
+    8 hours. The held solar is 0, so circuit + held is -3 W: noise, not a
+    feed-in (`GROSS_NOISE_W`). The gross power is 0 all night: it has a
+    value in every 5 minutes, the gross energy stays flat, and the safety
+    net finds no gap to blame on the solar's power.
+    """
+    circuit = Circuit("power", load=-3, solar=0)
+    clock, gross, power = await begin(
+        hass, client, freezer, circuit, start, until=start - 10 * MINUTE
+    )
+    assert power is not None
+    await clock.run(
+        circuit, start + 8 * HOUR, {start: change(solar_state="unavailable")}
+    )
+    hints = await safety_net(hass, client, gross, power)
+    assert not [hint for hint in hints if hint["code"] == "gross_unknown"]
+    assert await hourly(hass, gross, start, 8) == approx([0.0] * 8)
+    assert await short_term(hass, gross, start, start + 8 * HOUR) == approx(
+        [0.0] * 8 * 12
+    )
+    found = await get_instance(hass).async_add_executor_job(
+        statistics_during_period,
+        hass,
+        start,
+        start + 8 * HOUR,
+        {power},
+        "5minute",
+        None,
+        {"mean"},
+    )
+    assert [row["mean"] for row in found.get(power, [])] == approx([0.0] * 8 * 12)

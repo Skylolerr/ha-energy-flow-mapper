@@ -122,6 +122,9 @@ ENERGY_METHODS: Final = (Method.EM, Method.PLUG, Method.NET)
 MIN_DAYS: Final = 2
 # How long the solar term holds the solar's last power while it has none.
 SOLAR_HOLD_SECONDS: Final = 600
+# While the solar has no number, a gross power this little below 0 (W) is a
+# current transformer's noise at night, so it is 0; further below it is unknown.
+GROSS_NOISE_W: Final = 20
 
 # Kinds of the records of created helpers (`CreatedHelpers.async_add`).
 KIND_SOLAR_POWER: Final = "solar_power"
@@ -263,11 +266,17 @@ def _table(name: str, factors: Mapping[str, float]) -> str:
 
 
 def _template(
-    terms: list[_Term], *, energy: bool, offset: int = 0, guard: str = ""
+    terms: list[_Term],
+    *,
+    energy: bool,
+    offset: int = 0,
+    guard: str = "",
+    floor: str = "",
 ) -> str:
     """Return a template of the signed `terms` (+ offset), in kWh or W.
 
-    `guard` is one more condition for a number (else `none`).
+    `guard` is one more condition for a number (else `none`); while `floor`
+    holds, a value below 0 is 0.
     """
     read, table, decimals = (
         (_kwh, _table("kwh", KWH), ENERGY_DECIMALS)
@@ -287,6 +296,8 @@ def _template(
         expression += f" + {offset}"
     sets = table + "".join(part[0] for part in parts)
     check = " and ".join([part[1] for part in parts] + ([guard] if guard else []))
+    if floor:
+        expression = f"[{expression}, 0] | max if {floor} else {expression}"
     return (
         f"{sets}{{% if {check} %}}{{{{ ({expression}) | round({decimals}) }}}}"
         "{% else %}{{ none }}{% endif %}"
@@ -329,12 +340,15 @@ def gross_power_template(
     term reads it): through a short dropout of `solar` it keeps the solar's
     last power, then 0; without a number it counts 0, unless `solar` has
     one (a unit the held template cannot read): `none`. While `solar` has no
-    number, a sum below 0 is `none` (H6a): during the hold the real solar may
-    have risen above the held value, after it (`held` 0) the circuit feeds
-    in; either way the true value is unknown. Home Assistant's integral
-    counts no energy for an unknown source and stays available, so the gross
-    energy never falls for a dropout of the solar. With the solar's own
-    number there is no floor at 0: a wrong sign must stay visible. Right
+    number, a sum below 0 is `none`: during the hold the real solar may have
+    risen above the held value, after it (`held` 0) the circuit feeds in;
+    either way the true value is unknown. Home Assistant's integral counts
+    no energy for an unknown source and stays available, so the gross
+    energy never falls for a dropout of the solar. A sum at most
+    GROSS_NOISE_W below 0 is 0 instead: at night, with the inverter offline,
+    a current transformer reads a few W below 0, and `none` all night would
+    look like a broken input. With the solar's own number there is no floor
+    at 0: a wrong sign must stay visible. Right
     after a start the two templates render in either order; for that moment
     the gross power may be `none` or lack the solar, a negligible transient
     (until the next render, at the next change of an input).
@@ -351,8 +365,9 @@ def gross_power_template(
         energy=False,
         guard=(
             f"(held | is_number or not {raw})"
-            f" and ({raw} or ({circuit_w} + {held_w}) >= 0)"
+            f" and ({raw} or ({circuit_w} + {held_w}) >= -{GROSS_NOISE_W})"
         ),
+        floor=f"not {raw}",
     )
 
 
@@ -1046,7 +1061,7 @@ def _live(
 
     The solar without a number is what its held template `held` (ours, to
     be reused) holds, else 0: a new one starts without a value of its own;
-    then a sum below 0 is unknown.
+    then a sum below 0 is unknown, up to GROSS_NOISE_W below 0 it is 0.
     """
     circuit_w = _value(hass, circuit, "power") if circuit is not None else None
     if circuit_w is not None and invert:
@@ -1059,13 +1074,13 @@ def _live(
         solar_w = _value(hass, solar_power, "power")
         if offline:
             solar_w = (_value(hass, held, "power") if held is not None else None) or 0.0
-    gross_w = (
-        round(circuit_w + solar_w, POWER_DECIMALS)
-        if circuit_w is not None
-        and solar_w is not None
-        and not (offline and circuit_w + solar_w < 0)
-        else None
-    )
+    gross_w: float | None = None
+    if circuit_w is not None and solar_w is not None:
+        total = circuit_w + solar_w
+        if not offline or total >= 0:
+            gross_w = round(total, POWER_DECIMALS)
+        elif total >= -GROSS_NOISE_W:
+            gross_w = 0.0
     return {"circuit_w": circuit_w, "solar_w": solar_w, "gross_w": gross_w}
 
 

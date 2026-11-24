@@ -588,6 +588,35 @@ async def test_held_template_subtracts_nothing(hass: HomeAssistant) -> None:
         }
 
 
+@pytest.mark.parametrize("invert", [False, True])
+async def test_gross_power_template_noise_at_night_is_zero(
+    hass: HomeAssistant, invert: bool
+) -> None:
+    """The inverter offline, held 0: a CT's noise just below 0 W gives 0.
+
+    Up to GROSS_NOISE_W below 0 is noise, 0; further below it stays unknown,
+    since the circuit feeds in for real. With the solar's own number there
+    is no floor, so a wrong sign stays visible.
+    """
+    template = gross_power_template("sensor.c", "sensor.p", "sensor.h", invert=invert)
+    sign = -1 if invert else 1
+    _set(hass, "sensor.p", "unavailable", None)
+    _set(hass, "sensor.h", "0", "W")
+    for circuit, gross in ((-2, 0.0), (-20, 0.0), (-50, None), (100, 100.0)):
+        _set(hass, "sensor.c", str(sign * circuit), "W")
+        assert render(hass, template) == gross, circuit
+    # During a hold the same: held 300 W, circuit -310 W.
+    _set(hass, "sensor.h", "300", "W")
+    _set(hass, "sensor.c", str(sign * -310), "W")
+    assert render(hass, template) == 0.0
+    # The solar's own number: no floor.
+    _set(hass, "sensor.p", "0", "W")
+    _set(hass, "sensor.h", "0", "W")
+    _set(hass, "sensor.c", str(sign * -2), "W")
+    assert render(hass, template) == -2.0
+    assert solar_setup.GROSS_NOISE_W == 20
+
+
 @pytest.mark.parametrize(
     ("unit", "kind", "factor"),
     [
@@ -3203,3 +3232,7 @@ async def test_live_gross_power_follows_the_hold(
     hass.states.async_set(MAIN_POWER, "-400", {"unit_of_measurement": "W"})
     result = await result_of(hass_ws_client, hass, method="power")
     assert result["live"] == {"circuit_w": -400.0, "solar_w": 300.0, "gross_w": None}
+    # Up to GROSS_NOISE_W below 0 is noise: 0, as in the template.
+    hass.states.async_set(MAIN_POWER, "-315", {"unit_of_measurement": "W"})
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert result["live"] == {"circuit_w": -315.0, "solar_w": 300.0, "gross_w": 0.0}

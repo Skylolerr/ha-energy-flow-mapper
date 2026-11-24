@@ -153,10 +153,13 @@ helpers. The setup never writes the energy settings.
   `MIN_DAYS` local days, no reset signal, no drop); else the plan is blocked
   (`solar_needs_power` / `solar_needs_data`).
 - **Gross power** (`gross_power_template`, record `gross_power`): circuit (× −1 with
-  `invert`) + held solar. `none` when the raw solar has no number and the sum is below 0:
-  the true value is unknown, and From power must not fall; also `none` when the raw solar
-  has a number the held template cannot read. Built when both powers are usable and the
-  circuit's is enabled; for EM/Plug/Net only when the circuit's power went below 0, else
+  `invert`) + held solar. `none` when the raw solar has no number and the sum is below
+  −`GROSS_NOISE_W` (20 W): the true value is unknown, and From power must not fall; 0 when
+  it is from −20 W to 0 (a current transformer's noise at night, else the safety net would
+  report `gross_unknown` every morning). With a numeric solar there is no floor, so a wrong
+  sign stays visible. Also `none` when the raw solar has a number the held template
+  cannot read. Built when both powers are usable and the circuit's is enabled; for
+  EM/Plug/Net only when the circuit's power went below 0, else
   `power_reason` `gross_power_needs_signed`. `live` is the circuit, solar and gross power
   now, by the same rule.
 - **Offset** (`_set_offset`, EM/Plug/Net): the values the template will read now (a new
