@@ -115,7 +115,12 @@ from .meter_inputs import Cache, counted_inputs
 from .models import EnergyFlowMapperData
 from .solar_setup import Choices, Role, async_create, async_plan
 from .stats_probe import async_probe
-from .sum_meter import async_create_sum, check_rate_members, check_sum_members
+from .sum_meter import (
+    async_create_sums,
+    check_no_solar,
+    check_rate_members,
+    check_sum_members,
+)
 from .transfer import InvalidImportError, build_export, parse_import
 
 ATTR_BASE_HASH = "base_hash"
@@ -765,28 +770,36 @@ async def websocket_create_sum_meter(
 
     The helpers are created at once, not on save; the panel then adds the
     meter to the draft. `name` is passed ready (translated) by the panel; the
-    rate sum is named `rate_name`, or `name` plus " power" / " flow".
+    rate sum is named `rate_name`, or `name` plus " power" / " flow". A saved
+    solar source, or a meter that holds one, is refused: its gross meter is
+    built by the guided setup.
     """
     runtime = _runtime(hass)
     kind = DeviceKind(msg[ATTR_KIND])
     name = msg[ATTR_NAME].strip()
     check_sum_members(hass, msg["entity_ids"], kind)
     check_rate_members(hass, msg.get("rate_entity_ids", []))
-    entry_id, entity_id = await async_create_sum(hass, name, msg["entity_ids"])
-    await runtime.helpers.async_add(entry_id)
-    stat_rate = None
-    if msg.get("rate_entity_ids"):
-        suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
-        try:
-            rate_entry_id, stat_rate = await async_create_sum(
-                hass, msg.get("rate_name", name + suffix), msg["rate_entity_ids"]
-            )
-        except HomeAssistantError:
-            # Do not leave the energy sum behind; a retry would create a second one.
-            await hass.config_entries.async_remove(entry_id)
-            await runtime.helpers.async_discard(entry_id)
-            raise
-        await runtime.helpers.async_add(rate_entry_id)
+    prefs = await energy_access.async_get_prefs(hass)
+    check_no_solar(
+        hass,
+        msg["entity_ids"],
+        {
+            stat
+            for source in prefs.get(KEY_SOURCES, [])
+            if source.get("type") == "solar"
+            for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
+            if stat
+        },
+    )
+    suffix = " power" if kind is DeviceKind.ELECTRICITY else " flow"
+    entity_id, stat_rate = await async_create_sums(
+        hass,
+        runtime.helpers,
+        name,
+        msg["entity_ids"],
+        rate_entity_ids=msg.get("rate_entity_ids", []),
+        rate_name=msg.get("rate_name", name + suffix),
+    )
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 

@@ -107,6 +107,7 @@ function mockHass(language = "en"): Mock {
       "energy_flow_mapper/save": { hash: "hash-2", backup_id: "b2" },
       "energy_flow_mapper/backups": { backups: [] },
       "energy_flow_mapper/restore": { hash: "hash-3", backup_id: "b3" },
+      "energy_flow_mapper/daily_check": { evidence: {}, unknown: false },
     },
     hass: undefined as unknown as HomeAssistant,
   };
@@ -3603,14 +3604,14 @@ describe("groups", () => {
     expect(el._changes).toEqual([]);
   });
 
-  it("creates a free sum meter from a device with a solar source added", async () => {
+  it("creates a free sum meter from a device with a source added", async () => {
     const mock = mockHass();
     const snap = snapshot();
     snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.solar" });
     snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar");
     mock.responses["energy_flow_mapper/get"] = snap;
     mock.hass.states["sensor.tv"] = meter("sensor.tv");
-    mock.hass.states["sensor.solar"] = meter("sensor.solar");
+    mock.hass.states["sensor.import"] = meter("sensor.import");
     mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.tv_sum", stat_rate: null };
     const el = await mount(mock);
     el._dialog = { kind: "actions", stat: "sensor.tv" };
@@ -3624,11 +3625,12 @@ describe("groups", () => {
     // Devices and sources of the tab; not the TV itself.
     const offered = [...dialogEl(el).querySelectorAll<HTMLElement>("button.target")].map((b) => b.dataset.target);
     expect(offered).toContain("sensor.solar");
+    expect(offered).toContain("sensor.import");
     expect(offered).toContain("sensor.server");
     expect(offered).not.toContain("sensor.tv");
-    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.solar"]')!.click();
+    dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.import"]')!.click();
     await settle(el);
-    expect(members(el)).toEqual(["sensor.tv", "sensor.solar"]);
+    expect(members(el)).toEqual(["sensor.tv", "sensor.import"]);
     // Freely chosen sensors can be removed again.
     expect(dialogEl(el).querySelectorAll(".sum-member button.remove")).toHaveLength(2);
     await typeName(el, "Sub panel");
@@ -3639,30 +3641,28 @@ describe("groups", () => {
       type: "energy_flow_mapper/create_sum_meter",
       kind: "electricity",
       name: "Sub panel",
-      entity_ids: ["sensor.tv", "sensor.solar"],
+      entity_ids: ["sensor.tv", "sensor.import"],
     });
-    // With a source and one device, the new meter replaces the TV (and takes its name).
+    // With a source and one device, the new meter replaces the TV, named as typed.
     expect(el._changes).toEqual([
-      { type: "add", stat: "sensor.tv_sum", parent: null, name: "TV" },
+      { type: "add", stat: "sensor.tv_sum", parent: null, name: "Sub panel" },
       { type: "remove", stat: "sensor.tv" },
     ]);
-    // The solar sensor stays a source.
-    expect(el.draftSources.some((s) => s.type === "solar" && s.stat_energy_from === "sensor.solar")).toBe(true);
-    expect(el.draft.some((d) => d.stat_consumption === "sensor.solar")).toBe(false);
+    // The grid sensor stays a source.
+    expect(el.draft.some((d) => d.stat_consumption === "sensor.import")).toBe(false);
   });
 
   /**
-   * The group setup plus a solar source with a power sensor (daily when
-   * `daily`), and meter states for the server, the TV and the solar.
+   * The group setup plus a solar source with a power sensor, and meter
+   * states for the server, the TV, the solar and the grid import.
    */
-  function solarMock(daily = false): Mock {
+  function solarMock(): Mock {
     const mock = groupMock();
     const snap = groupSnapshot();
     snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.solar", stat_rate: "sensor.solar_power" });
-    snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar", { daily_reset: daily });
-    snap.stats["sensor.server"] = info("sensor.server", "Server & co", { daily_reset: false });
+    snap.stats["sensor.solar"] = info("sensor.solar", "Roof solar");
     mock.responses["energy_flow_mapper/get"] = snap;
-    for (const stat of ["sensor.server", "sensor.tv", "sensor.solar"]) {
+    for (const stat of ["sensor.server", "sensor.tv", "sensor.solar", "sensor.import"]) {
       mock.hass.states[stat] = meter(stat);
     }
     mock.hass.states["sensor.solar_power"] = entity("sensor.solar_power", "300");
@@ -3684,28 +3684,248 @@ describe("groups", () => {
     return dialogEl(el).querySelector<HTMLInputElement>(".sum-replace input[type=checkbox]");
   }
 
-  it("sum with solar source adds its power to the power sum", async () => {
+  function dialogText(el: EnergyFlowMapperPanel): string {
+    return dialogEl(el).textContent!.replace(/\s+/g, " ");
+  }
+
+  function hasButton(el: EnergyFlowMapperPanel, label: string): boolean {
+    return [...dialogEl(el).querySelectorAll("button")].some((b) => b.textContent!.includes(label));
+  }
+
+  function checkCalls(mock: Mock): number {
+    return mock.calls.filter((c) => c.type === "energy_flow_mapper/daily_check").length;
+  }
+
+  it("sum with solar opens the setup instead of building", async () => {
     const mock = solarMock();
     const el = await mount(mock);
     await openSum(el, ["sensor.server", "sensor.solar"]);
-    expect(dialogEl(el).textContent).toContain("“Panel Power” adds up their power");
-    expect(dialogEl(el).textContent).not.toContain("Use an integral of its power");
+    expect(dialogText(el)).toContain("A sum meter with a solar needs the guided setup “Solar feeds in here…”");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // No power sum, no replace offer, no check of the members: it is never built.
+    expect(replaceBox(el)).toBeNull();
+    expect(dialogText(el)).not.toContain("adds up their power");
+    expect(checkCalls(mock)).toBe(0);
+    dialogButton(el, "Set up the solar for Server & co").click();
+    await settle(el);
+    expect(el._dialog).toEqual({ kind: "solar", stat: "sensor.server", solar: "sensor.solar" });
+    const setup = dialogEl(el).querySelector("efm-solar-setup") as unknown as { context: { stat: string; solar: string } };
+    expect(setup.context).toMatchObject({ stat: "sensor.server", solar: "sensor.solar" });
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toBeUndefined();
+    // With two devices the setup cannot take the place of one: build their sum first.
+    await openSum(el, ["sensor.tv", "sensor.server", "sensor.solar"]);
+    expect(dialogText(el)).toContain("needs the guided setup");
+    expect(dialogText(el)).toContain("first create the sum without the solar");
+    expect(hasButton(el, "Set up the solar")).toBe(false);
+    // A meter that already holds the solar counts as the solar too, and is named.
+    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
+    snap.prefs.device_consumption.push({ stat_consumption: "sensor.roof_total" });
+    snap.stats["sensor.roof_total"] = info("sensor.roof_total", "Roof total");
+    snap.inputs = { "sensor.roof_total": ["sensor.solar_power", "sensor.x"] };
+    mock.hass.states["sensor.roof_total"] = meter("sensor.roof_total");
+    await el._load();
+    await openSum(el, ["sensor.tv", "sensor.roof_total"]);
+    expect(dialogText(el)).toContain("needs the guided setup");
+    expect(dialogText(el)).toContain("These meters already hold the solar: Roof total.");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    expect(hasButton(el, "Set up the solar")).toBe(false);
+    expect(checkCalls(mock)).toBe(0);
+  });
+
+  it("sum blocks a periodic draft member", async () => {
+    const mock = solarMock();
+    mock.hass.config = { time_zone: "Europe/Zurich" };
+    mock.hass.states["sensor.printer"] = meter("sensor.printer");
+    mock.responses["energy_flow_mapper/daily_check"] = (msg: { stats: string[] }) => ({
+      unknown: false,
+      evidence: Object.fromEntries(
+        msg.stats.map((stat) => [
+          stat,
+          stat === "sensor.printer"
+            ? {
+                periodic: true,
+                certain: false,
+                reason: "drops",
+                drops: [
+                  { at: "2026-11-21T00:00:00+01:00", before: 1.5, after: 0 },
+                  { at: "2026-11-22T06:00:00+01:00", before: 2.1, after: 0 },
+                ],
+                went_negative: false,
+                series: [],
+              }
+            : { periodic: false, certain: false, reason: null, drops: [], went_negative: false, series: [] },
+        ]),
+      ),
+    });
+    const el = await mount(mock);
+    // The printer is only in the draft, with its power sensor.
+    el._change({ type: "add", stat: "sensor.printer", parent: null, stat_rate: "sensor.printer_power" });
+    await settle(el);
+    await openSum(el, ["sensor.server", "sensor.printer"]);
+    expect(lastCall(mock, "energy_flow_mapper/daily_check")).toEqual({
+      type: "energy_flow_mapper/daily_check",
+      stats: ["sensor.server", "sensor.printer"],
+      power: { "sensor.server": "sensor.server_power", "sensor.printer": "sensor.printer_power" },
+    });
+    expect(dialogText(el)).toContain("These meters start again at 0 now and then (daily, for example)");
+    // The latest fall is the evidence.
+    expect(dialogText(el)).toContain("3D printer: fell on 11/22 at 06:00 AM from 2.1 kWh to 0 kWh");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // Without the printer the sum can be built; the members are checked again.
+    const calls = checkCalls(mock);
+    dialogEl(el).querySelector<HTMLButtonElement>('.sum-member[data-stat="sensor.printer"] button.remove')!.click();
+    await settle(el);
+    expect(checkCalls(mock)).toBe(calls + 1);
+    expect(dialogText(el)).not.toContain("start again at 0");
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+    // A utility meter with a cycle says so.
+    mock.responses["energy_flow_mapper/daily_check"] = {
+      unknown: false,
+      evidence: {
+        "sensor.tv": { periodic: true, certain: true, reason: "utility_meter", drops: [], went_negative: false, series: [] },
+      },
+    };
+    await openSum(el, ["sensor.tv", "sensor.server"]);
+    expect(dialogText(el)).toContain("TV: a utility meter helper that resets in a cycle");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+  });
+
+  it("sum retry when daily check unknown", async () => {
+    const mock = solarMock();
+    let answer: unknown = { unknown: true, evidence: {} };
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/daily_check"] = () => answer;
+    const el = await mount(mock);
+    await openSum(el, ["sensor.server", "sensor.tv"]);
+    expect(dialogText(el)).toContain("Not checked");
+    // Not a dead end: the sum can still be built, and the check can run again.
+    expect(dialogButton(el, "Create").disabled).toBe(false);
+    answer = new Promise((r) => (resolve = r));
+    dialogButton(el, "Check again").click();
+    await settle(el);
+    // While it runs, Create waits and says why.
+    expect(dialogText(el)).toContain("Checking whether a meter starts again at 0");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    resolve({
+      unknown: false,
+      evidence: {
+        "sensor.tv": { periodic: true, certain: true, reason: "last_reset", drops: [], went_negative: false, series: [] },
+      },
+    });
+    await settle(el);
+    expect(dialogText(el)).not.toContain("Not checked");
+    expect(dialogText(el)).toContain("TV: its start time (last_reset) changes");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    // A failed request is unknown too.
+    answer = new Error("lost");
+    await openSum(el, ["sensor.server"]);
+    expect(dialogText(el)).toContain("Not checked");
+  });
+
+  it("sum says why Create is disabled", async () => {
+    const el = await mount(solarMock());
+    await openSum(el, ["sensor.server", "sensor.tv"]);
+    el._renameValue = " ";
+    await settle(el);
+    expect(dialogButton(el, "Create").disabled).toBe(true);
+    expect(dialogText(el)).toContain("Give the helper a name.");
+    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: [], picking: false };
+    el._renameValue = "Panel Energy";
+    await settle(el);
+    expect(dialogText(el)).toContain("Add at least one sensor.");
+  });
+
+  it("sum name prefilled with old user name and used for both", async () => {
+    const mock = solarMock();
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.tv_sum", stat_rate: null };
+    const el = await mount(mock);
+    const input = () => dialogEl(el).querySelector<HTMLInputElement>('input[type="text"]')!;
+    const addImport = async () => {
+      dialogButton(el, "Add sensor").click();
+      await settle(el);
+      dialogEl(el).querySelector<HTMLButtonElement>('button.target[data-target="sensor.import"]')!.click();
+      await settle(el);
+    };
+    el._dialog = { kind: "actions", stat: "sensor.tv" };
+    await settle(el);
+    dialogButton(el, "Create sum meter").click();
+    await settle(el);
+    expect(input().value).toBe("TV Energy");
+    await addImport();
+    // The sum takes the TV's place: the field holds the name the user gave the TV.
+    expect(replaceBox(el)!.checked).toBe(true);
+    expect(input().value).toBe("TV");
+    // Unticked, the sum is a meter of its own again.
+    replaceBox(el)!.click();
+    await settle(el);
+    expect(input().value).toBe("TV Energy");
+    replaceBox(el)!.click();
+    await settle(el);
+    expect(input().value).toBe("TV");
     dialogButton(el, "Create").click();
     await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toEqual({
-      type: "energy_flow_mapper/create_sum_meter",
-      kind: "electricity",
-      name: "Panel Energy",
-      entity_ids: ["sensor.server", "sensor.solar"],
-      rate_entity_ids: ["sensor.server_power", "sensor.solar_power"],
-      rate_name: "Panel Power",
-    });
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toMatchObject({ name: "TV" });
+    expect(el._changes[0]).toEqual({ type: "add", stat: "sensor.tv_sum", parent: null, name: "TV" });
+    expect(el._toast).toBe("Sum meter “TV” created and added to the draft.");
+    // A typed name names the helper and the device, and is kept when members change.
+    el._undoChange();
+    await settle(el);
+    el._openSum({ origin: "sensor.tv" });
+    await settle(el);
+    await typeName(el, "Telly");
+    await addImport();
+    expect(input().value).toBe("Telly");
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toMatchObject({ name: "Telly" });
+    expect(el._changes[0]).toEqual({ type: "add", stat: "sensor.tv_sum", parent: null, name: "Telly" });
+    expect(el._toast).toBe("Sum meter “Telly” created and added to the draft.");
+    // A device without a name of its own keeps the default; the helper's name shows.
+    el._undoChange();
+    await settle(el);
+    el._openSum({ origin: "sensor.server" });
+    await settle(el);
+    await addImport();
+    expect(input().value).toBe("Server & co Energy");
+    dialogButton(el, "Create").click();
+    await settle(el);
+    expect(el._changes[0]).toEqual({ type: "add", stat: "sensor.tv_sum", parent: null });
+  });
+
+  it("sum tab switch during create keeps the tab", async () => {
+    const mock = mockHass();
+    const snap = snapshot();
+    snap.prefs.device_consumption_water = [{ stat_consumption: "sensor.tap", stat_rate: "sensor.tap_flow" }];
+    snap.stats["sensor.tap"] = info("sensor.tap", "Garden tap", { unit: "L", device_class: "water" });
+    mock.responses["energy_flow_mapper/get"] = snap;
+    mock.hass.states["sensor.tap"] = meter("sensor.tap", "total_increasing", "water");
+    let resolve: (value: unknown) => void = () => {};
+    mock.responses["energy_flow_mapper/create_sum_meter"] = () => new Promise((r) => (resolve = r));
+    const el = await mount(mock);
+    el.setTab("water");
+    el._openSum({ origin: "sensor.tap" });
+    await settle(el);
+    dialogButton(el, "Create").click();
+    await settle(el);
+    // The user goes to the electricity tab before the answer comes.
+    el.setTab("electricity");
+    resolve({ entity_id: "sensor.garden", stat_rate: "sensor.garden_flow" });
+    await settle(el);
+    expect(el._changes).toEqual([
+      { type: "add", stat: "sensor.garden", parent: null, stat_rate: "sensor.garden_flow", kind: "water" },
+      { type: "move", stat: "sensor.tap", parent: "sensor.garden", kind: "water" },
+    ]);
+    expect(el.draftOf("water").map((d) => d.stat_consumption)).toEqual(["sensor.tap", "sensor.garden"]);
+    expect(el.draftOf("electricity").some((d) => d.stat_consumption === "sensor.garden")).toBe(false);
+    // The user stays where they went.
+    expect(el._tab).toBe("electricity");
   });
 
   it("sum with source preselects replace and replaces the device", async () => {
     const mock = solarMock();
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.panel_energy", stat_rate: null };
     const el = await mount(mock);
-    await openSum(el, ["sensor.server", "sensor.solar"]);
+    await openSum(el, ["sensor.server", "sensor.import"]);
     expect(replaceBox(el)!.checked).toBe(true);
     expect(dialogEl(el).querySelector(".sum-replace")!.textContent).toContain("Replace Server & co");
     expect(dialogEl(el).textContent).toContain(
@@ -3717,7 +3937,7 @@ describe("groups", () => {
     await settle(el);
     // One step: the new meter takes the server's place, its children and their group.
     expect(el._changes).toEqual([
-      { type: "add", stat: "sensor.panel_energy", parent: null, stat_rate: "sensor.panel_power" },
+      { type: "add", stat: "sensor.panel_energy", parent: null },
       { type: "move_group", id: "g1", parent: "sensor.panel_energy" },
       { type: "move", stat: "sensor.sonos", parent: "sensor.panel_energy" },
       { type: "move", stat: "sensor.nas", parent: "sensor.panel_energy" },
@@ -3725,10 +3945,6 @@ describe("groups", () => {
     ]);
     expect(el.draft.some((d) => d.stat_consumption === "sensor.server")).toBe(false);
     expect(el._groups.map((g) => [g.id, g.parent, g.members])).toEqual([["g1", "sensor.panel_energy", ["sensor.sonos"]]]);
-    // The solar stays a source, with its power sensor.
-    expect(el.draftSources).toContainEqual(
-      expect.objectContaining({ type: "solar", stat_energy_from: "sensor.solar", stat_rate: "sensor.solar_power" }),
-    );
     expect(el._selected).toBe("sensor.panel_energy");
     el._undoChange();
     await settle(el);
@@ -3738,15 +3954,16 @@ describe("groups", () => {
   it("sum of a group with a source replaces its device in the group's place", async () => {
     const mock = solarMock();
     mock.hass.states["sensor.sonos"] = meter("sensor.sonos");
+    mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.panel_energy", stat_rate: null };
     const el = await mount(mock);
     el._openSum({ group: "g1" });
-    el._dialog = { ...(el._dialog as Extract<typeof el._dialog, { kind: "sum" }>), added: ["sensor.solar"] };
+    el._dialog = { ...(el._dialog as Extract<typeof el._dialog, { kind: "sum" }>), added: ["sensor.import"] };
     await settle(el);
     expect(replaceBox(el)!.checked).toBe(true);
     dialogButton(el, "Create").click();
     await settle(el);
     expect(el._changes).toEqual([
-      { type: "add", stat: "sensor.panel_energy", parent: "sensor.server", stat_rate: "sensor.panel_power" },
+      { type: "add", stat: "sensor.panel_energy", parent: "sensor.server" },
       { type: "remove", stat: "sensor.sonos" },
     ]);
     // The group is left empty and gone; the meter is where it was.
@@ -3757,7 +3974,7 @@ describe("groups", () => {
     const mock = solarMock();
     mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.panel_energy", stat_rate: null };
     const el = await mount(mock);
-    await openSum(el, ["sensor.tv", "sensor.server", "sensor.solar"]);
+    await openSum(el, ["sensor.tv", "sensor.server", "sensor.import"]);
     // Only one meter can take a place: no offer.
     expect(replaceBox(el)).toBeNull();
     dialogButton(el, "Create").click();
@@ -3769,7 +3986,7 @@ describe("groups", () => {
     ]);
     // Unticked, the one device moves below the new meter.
     el._undoChange();
-    await openSum(el, ["sensor.server", "sensor.solar"]);
+    await openSum(el, ["sensor.server", "sensor.import"]);
     replaceBox(el)!.click();
     await settle(el);
     expect(replaceBox(el)!.checked).toBe(false);
@@ -3785,13 +4002,12 @@ describe("groups", () => {
   it("sum names members without power sensor", async () => {
     const mock = solarMock();
     mock.responses["energy_flow_mapper/create_sum_meter"] = { entity_id: "sensor.panel_energy", stat_rate: null };
-    mock.hass.states["sensor.import"] = meter("sensor.import");
     const el = await mount(mock);
-    await openSum(el, ["sensor.tv", "sensor.solar"]);
+    await openSum(el, ["sensor.tv", "sensor.server"]);
     expect(dialogEl(el).textContent).toContain("No power sum, because these have no power sensor: TV.");
     expect(dialogEl(el).textContent).not.toContain("adds up their power");
     // Grid and battery never add their power.
-    await openSum(el, ["sensor.server", "sensor.solar", "sensor.import"]);
+    await openSum(el, ["sensor.server", "sensor.import"]);
     expect(dialogEl(el).textContent).toContain("grid and battery cannot be added up");
     expect(dialogEl(el).textContent).not.toContain("have no power sensor");
     dialogButton(el, "Create").click();
@@ -3800,142 +4016,19 @@ describe("groups", () => {
       type: "energy_flow_mapper/create_sum_meter",
       kind: "electricity",
       name: "Panel Energy",
-      entity_ids: ["sensor.server", "sensor.solar", "sensor.import"],
+      entity_ids: ["sensor.server", "sensor.import"],
     });
   });
 
-  function integralButton(el: EnergyFlowMapperPanel, stat: string): HTMLButtonElement | undefined {
-    const member = dialogEl(el).querySelector(`.sum-member[data-stat="${stat}"]`)!;
-    return [...member.querySelectorAll("button")].find((b) => b.textContent!.includes("Use an integral of its power"));
-  }
-
-  it("sum warns when a daily meter is mixed", async () => {
-    // The server counts total_increasing; an integral (total) cannot join it.
-    const el = await mount(solarMock(true));
-    await openSum(el, ["sensor.server", "sensor.solar"]);
-    expect(dialogEl(el).textContent).toContain("These meters start again at 0 every day: Roof solar.");
-    expect(integralButton(el, "sensor.solar")).toBeUndefined();
-    expect(dialogEl(el).textContent).toContain(
-      "This sum does not work with a daily meter. For a solar in a circuit, “Solar feeds in here…” on the device builds the gross meter instead.",
-    );
-    expect(dialogButton(el, "Create").disabled).toBe(false);
-  });
-
-  it("sum offers an integral of a daily solar when the others count total", async () => {
-    const mock = solarMock(true);
-    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
-    mock.responses["energy_flow_mapper/create_integral"] = {
-      entity_id: "sensor.roof_solar_energy",
-      stat_rate: "sensor.solar_power",
-      kind: "electricity",
-    };
-    // HA's integral helper counts total.
-    mock.hass.states["sensor.roof_solar_energy"] = meter("sensor.roof_solar_energy", "total");
-    const el = await mount(mock);
-    await openSum(el, ["sensor.server", "sensor.solar"]);
-    expect(dialogEl(el).textContent).toContain("These meters start again at 0 every day: Roof solar.");
-    expect(dialogEl(el).textContent).not.toContain("does not work with a daily meter");
-    const solar = dialogEl(el).querySelector('.sum-member[data-stat="sensor.solar"]')!;
-    [...solar.querySelectorAll("button")].find((b) => b.textContent!.includes("Use an integral of its power"))!.click();
-    await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/create_integral")).toEqual({
-      type: "energy_flow_mapper/create_integral",
-      power_entity_id: "sensor.solar_power",
-      name: "Roof solar Energy",
-      of_source: true,
-    });
-    // The integral stands for the solar in the sum; the source is unchanged.
-    expect(members(el)).toEqual(["sensor.server", "sensor.roof_solar_energy"]);
-    expect(dialogEl(el).textContent).not.toContain("start again at 0 every day");
-    expect(el._changes).toEqual([]);
-    expect(el.draftSources).toContainEqual(
-      expect.objectContaining({ type: "solar", stat_energy_from: "sensor.solar", stat_rate: "sensor.solar_power" }),
-    );
-    // Its power is the solar's, and the server is still replaced.
-    expect(replaceBox(el)!.checked).toBe(true);
-    expect(dialogEl(el).textContent).not.toContain("do not all have the same state class");
-    expect(dialogButton(el, "Create").disabled).toBe(false);
-    dialogButton(el, "Create").click();
-    await settle(el);
-    expect(lastCall(mock, "energy_flow_mapper/create_sum_meter")).toMatchObject({
-      entity_ids: ["sensor.server", "sensor.roof_solar_energy"],
-      rate_entity_ids: ["sensor.server_power", "sensor.solar_power"],
-    });
-    expect(el._changes.at(-1)).toEqual({ type: "remove", stat: "sensor.server" });
-    // A power sensor set only in the draft is not offered: the backend integrates saved ones.
-    el._change({ type: "set_source_rate", stat: "sensor.solar", role: "production", stat_rate: "sensor.other_power" });
-    await openSum(el, ["sensor.tv", "sensor.solar"]);
-    mock.hass.states["sensor.tv"] = meter("sensor.tv", "total");
-    el.requestUpdate();
-    await settle(el);
-    expect(integralButton(el, "sensor.solar")).toBeUndefined();
-  });
-
-  it("a late integral stays out of a sum dialog opened meanwhile", async () => {
-    const mock = solarMock(true);
-    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
-    mock.hass.states["sensor.tv"] = meter("sensor.tv", "total");
-    let resolve: (value: unknown) => void = () => {};
-    mock.responses["energy_flow_mapper/create_integral"] = () => new Promise((r) => (resolve = r));
-    const el = await mount(mock);
-    await openSum(el, ["sensor.server", "sensor.solar"]);
-    integralButton(el, "sensor.solar")!.click();
-    await settle(el);
-    // Cancelled before the answer; another sum with the same solar is opened.
-    dialogButton(el, "Cancel").click();
-    await settle(el);
-    el._openSum({ origin: "sensor.tv" });
-    el._dialog = { kind: "sum", group: null, origin: "sensor.tv", added: ["sensor.tv", "sensor.solar"], picking: false };
-    await settle(el);
-    resolve({ entity_id: "sensor.roof_solar_energy", stat_rate: "sensor.solar_power", kind: "electricity" });
-    await settle(el);
-    expect(members(el)).toEqual(["sensor.tv", "sensor.solar"]);
-    expect(el._dialog).toMatchObject({ kind: "sum", origin: "sensor.tv" });
-    expect((el._dialog as { integrals?: unknown }).integrals).toBeUndefined();
-    // The helper was created all the same: the toast says so.
-    expect(el._toast).toContain("Roof solar Energy");
-  });
-
-  it("sum of a net meter and a solar points to the solar setup", async () => {
-    // A net sub-panel meter counts total, the solar total_increasing.
+  it("sum of meters with different state classes says so", async () => {
     const mock = solarMock();
     mock.hass.states["sensor.server"] = meter("sensor.server", "total");
     const el = await mount(mock);
-    await openSum(el, ["sensor.server", "sensor.solar"]);
-    let text = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(text).toContain("do not all have the same state class");
-    expect(text).toContain(
-      "For a solar in a circuit, “Solar feeds in here…” on the device builds the gross meter instead, with templates that can mix them.",
-    );
-    // Without a solar among them the classes only differ.
     await openSum(el, ["sensor.server", "sensor.tv"]);
-    text = dialogEl(el).textContent!.replace(/\s+/g, " ");
+    const text = dialogText(el);
     expect(text).toContain("do not all have the same state class");
     expect(text).not.toContain("Solar feeds in here");
-  });
-
-  it("sum points to the solar setup at most once, and not next to the integral", async () => {
-    // A daily solar without a saved power sensor and a net meter (total):
-    // both the daily and the state class warning apply.
-    const mock = solarMock(true);
-    const snap = mock.responses["energy_flow_mapper/get"] as Snapshot;
-    delete snap.prefs.energy_sources.at(-1)!.stat_rate;
-    mock.hass.states["sensor.server"] = meter("sensor.server", "total");
-    const el = await mount(mock);
-    await openSum(el, ["sensor.server", "sensor.solar"]);
-    let text = dialogEl(el).textContent!.replace(/\s+/g, " ");
-    expect(text).toContain("do not all have the same state class");
-    expect(text).toContain("These meters start again at 0 every day: Roof solar.");
-    expect(text.split("Solar feeds in here").length - 1).toBe(1);
-    // With the solar's power sensor the integral is offered: no pointer elsewhere.
-    document.body.innerHTML = "";
-    const withPower = solarMock(true);
-    withPower.hass.states["sensor.server"] = meter("sensor.server", "total");
-    const other = await mount(withPower);
-    await openSum(other, ["sensor.server", "sensor.solar"]);
-    text = dialogEl(other).textContent!.replace(/\s+/g, " ");
-    expect(integralButton(other, "sensor.solar")).toBeDefined();
-    expect(text).not.toContain("Solar feeds in here");
+    expect(dialogButton(el, "Create").disabled).toBe(true);
   });
 
   it("sum with a water source makes no flow sum", async () => {

@@ -89,8 +89,11 @@ with a live reading, statistics evidence, helpers, offset, why it is blocked) wi
 creating anything; `create_solar_setup` plans again with the same choices and refuses
 anything the preview would not offer (`not_offered`) or an offset that is no longer enough
 (`values_changed`). `create_integral` with `of_source`
-builds the integral of a saved solar source's power, for a sum that would otherwise hold a
-daily meter.
+builds the integral of a saved solar source's power (the panel no longer offers it).
+`create_sum_meter` refuses a saved solar source, or a meter whose inputs hold one
+(`sum_with_solar`); the panel's sum dialog sends such sums to *Solar feeds in here …* and
+checks its members with `daily_check` on demand (a periodic member blocks the sum). When
+the request fails or is cancelled, every sum it made is removed again (shielded).
 
 ### Hints
 

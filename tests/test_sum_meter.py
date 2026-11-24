@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -11,7 +12,6 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.energy_flow_mapper import _flow
 from custom_components.energy_flow_mapper import sum_meter as sum_module
-from custom_components.energy_flow_mapper import websocket as ws_module
 from custom_components.energy_flow_mapper.const import DOMAIN
 from custom_components.energy_flow_mapper.hierarchy import DeviceKind
 
@@ -210,7 +210,7 @@ async def test_ws_failed_rate_sum_removes_the_energy_sum(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """When the rate sum fails, the energy sum is removed again and forgotten."""
-    original = ws_module.async_create_sum
+    original = sum_module.async_create_sum
     calls = 0
 
     async def second_fails(*args: Any, **kwargs: Any) -> tuple[str, str]:
@@ -220,7 +220,7 @@ async def test_ws_failed_rate_sum_removes_the_energy_sum(
             raise sum_module._failed()
         return await original(*args, **kwargs)
 
-    monkeypatch.setattr(ws_module, "async_create_sum", second_fails)
+    monkeypatch.setattr(sum_module, "async_create_sum", second_fails)
     response = await send(
         hass_ws_client,
         hass,
@@ -371,3 +371,106 @@ async def test_ws_refuses_bad_rate_member_before_creating(
     assert response["error"]["translation_key"] == "sum_not_possible"
     assert response["error"]["translation_placeholders"] == {"entity": "ext:rate"}
     assert hass.config_entries.async_entries("group") == []
+
+
+@pytest.mark.parametrize("cancel_at", [1, 2])
+async def test_create_sum_cancelled_cleans_up(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_at: int,
+) -> None:
+    """A cancelled request removes the sums it made (shielded), then is cancelled.
+
+    1: cancelled while the energy sum is remembered; 2: while the rate sum is
+    created, after the energy sum exists.
+    """
+    helpers = loaded_entry.runtime_data.helpers
+    if cancel_at == 1:
+        original_add = helpers.async_add
+
+        async def add_cancelled(*args: Any, **kwargs: Any) -> None:
+            await original_add(*args, **kwargs)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(helpers, "async_add", add_cancelled)
+    else:
+        original = sum_module.async_create_sum
+        calls = 0
+
+        async def second_cancelled(*args: Any, **kwargs: Any) -> tuple[str, str]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                raise asyncio.CancelledError
+            return await original(*args, **kwargs)
+
+        monkeypatch.setattr(sum_module, "async_create_sum", second_cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await sum_module.async_create_sums(
+            hass,
+            helpers,
+            "Kitchen energy",
+            ["sensor.kitchen_energy", "sensor.coffee_energy"],
+            rate_entity_ids=["sensor.main_power", "sensor.printer_power"],
+            rate_name="Kitchen power",
+        )
+    assert hass.config_entries.async_entries("group") == []
+    assert helpers.entries() == []
+
+
+async def test_failed_rate_record_removes_both_sums(
+    hass: HomeAssistant,
+    loaded_entry: MockConfigEntry,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Any error once a sum exists removes every sum of the request."""
+    helpers = loaded_entry.runtime_data.helpers
+    original_add = helpers.async_add
+    calls = 0
+
+    async def second_fails(*args: Any, **kwargs: Any) -> None:
+        nonlocal calls
+        calls += 1
+        await original_add(*args, **kwargs)
+        if calls == 2:
+            raise RuntimeError("store")
+
+    monkeypatch.setattr(helpers, "async_add", second_fails)
+    with pytest.raises(RuntimeError):
+        await sum_module.async_create_sums(
+            hass,
+            helpers,
+            "Kitchen energy",
+            ["sensor.kitchen_energy"],
+            rate_entity_ids=["sensor.main_power"],
+            rate_name="Kitchen power",
+        )
+    assert hass.config_entries.async_entries("group") == []
+    assert helpers.entries() == []
+
+
+@pytest.mark.usefixtures("loaded_entry")
+async def test_ws_create_sum_meter_refuses_a_solar(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator
+) -> None:
+    """A solar source, or a meter that holds it, never goes into a group sum.
+
+    The guided setup builds that gross meter; nothing is created.
+    """
+    _, holder = await sum_module.async_create_sum(
+        hass, "Solar and more", ["sensor.solar_energy", "sensor.garage_energy"]
+    )
+    before = len(hass.config_entries.async_entries("group"))
+    for member in ("sensor.solar_energy", holder):
+        response = await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/create_sum_meter",
+            kind="electricity",
+            name="x",
+            entity_ids=["sensor.kitchen_energy", member],
+        )
+        assert response["error"]["translation_key"] == "sum_with_solar", response
+        assert response["error"]["translation_placeholders"] == {"entity": member}
+    assert len(hass.config_entries.async_entries("group")) == before

@@ -7,6 +7,9 @@ unit from its members and converts members of one device class to one unit.
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Collection
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.const import ATTR_DEVICE_CLASS, CONF_ENTITIES, CONF_NAME, CONF_TYPE
 from homeassistant.core import HomeAssistant
@@ -14,7 +17,9 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from ._flow import async_run_helper_flow
 from .const import DOMAIN
+from .created_helpers import CreatedHelpers
 from .hierarchy import DeviceKind
+from .meter_inputs import Cache, counted_inputs
 
 GROUP_DOMAIN = "group"
 CONF_HIDE_MEMBERS = "hide_members"
@@ -72,6 +77,26 @@ def check_sum_members(
         )
 
 
+def check_no_solar(
+    hass: HomeAssistant, entity_ids: list[str], solar: Collection[str]
+) -> None:
+    """Raise if a member is a solar meter or holds one (`solar`: its stats and powers).
+
+    A group sum adds its members without knowing how a circuit meter counts,
+    so a gross meter of a circuit with a solar is left to the guided setup.
+    """
+    cache: Cache = {}
+    for entity_id in entity_ids:
+        if entity_id in solar or set(
+            counted_inputs(hass, [entity_id], cache).get(entity_id, [])
+        ).intersection(solar):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="sum_with_solar",
+                translation_placeholders={"entity": entity_id},
+            )
+
+
 async def async_create_sum(
     hass: HomeAssistant, name: str, entity_ids: list[str]
 ) -> tuple[str, str]:
@@ -107,3 +132,46 @@ async def async_create_sum(
             }
         ],
     )
+
+
+async def _async_undo(
+    hass: HomeAssistant, helpers: CreatedHelpers, entry_ids: list[str]
+) -> None:
+    """Remove the sums of a failed request again and forget them."""
+    for entry_id in entry_ids:
+        await hass.config_entries.async_remove(entry_id)
+        await helpers.async_discard(entry_id)
+
+
+async def async_create_sums(  # noqa: PLR0913
+    hass: HomeAssistant,
+    helpers: CreatedHelpers,
+    name: str,
+    entity_ids: list[str],
+    *,
+    rate_entity_ids: list[str],
+    rate_name: str,
+) -> tuple[str, str | None]:
+    """Create the sum of `entity_ids`, and one of `rate_entity_ids` if any.
+
+    Return the meter's entity ID and the rate sum's (None without one). Both
+    are remembered as created helpers. If anything fails, a cancelled request
+    too, every sum made so far is removed again (shielded from a further
+    cancel) and the error is raised: a retry would create a second one.
+    """
+    made: list[str] = []
+    try:
+        entry_id, entity_id = await async_create_sum(hass, name, entity_ids)
+        made.append(entry_id)
+        await helpers.async_add(entry_id)
+        stat_rate = None
+        if rate_entity_ids:
+            rate_entry_id, stat_rate = await async_create_sum(
+                hass, rate_name, rate_entity_ids
+            )
+            made.append(rate_entry_id)
+            await helpers.async_add(rate_entry_id)
+    except Exception, asyncio.CancelledError:
+        await asyncio.shield(_async_undo(hass, helpers, made))
+        raise
+    return entity_id, stat_rate

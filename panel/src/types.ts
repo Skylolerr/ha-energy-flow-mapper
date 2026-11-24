@@ -26,7 +26,7 @@ export interface HomeAssistant {
     number_format?: string;
   };
   /** Unit system of the instance; `volume` is "L" or "gal". */
-  config?: { unit_system?: { volume?: string } };
+  config?: { unit_system?: { volume?: string }; time_zone?: string };
   callWS<T>(msg: { type: string; [key: string]: unknown }): Promise<T>;
   /** Home Assistant's own translations (for its energy check messages). */
   localize?(key: string, values?: Record<string, unknown>): string;
@@ -407,4 +407,28 @@ export interface HomeResult {
   /** The meter whose data is not recent enough; then there is no value. */
   stale: string | null;
   untracked: number | null;
+}
+
+/** Why a statistic is (or is not known to be) periodic. */
+export type EvidenceReason = "utility_meter" | "last_reset" | "drops" | "no_data";
+
+/**
+ * What the statistics of one sensor show (`daily_check`). `periodic` is null
+ * when unknown; `certain` for a utility meter with a cycle or a changing
+ * `last_reset`. `drops` are the resets found, with times in ISO form.
+ */
+export interface StatsEvidence {
+  periodic: boolean | null;
+  certain: boolean;
+  reason: EvidenceReason | null;
+  drops: { at: string; before: number; after: number }[];
+  went_negative: boolean;
+  /** Hourly points: the last state of each hour, or the mean power. */
+  series: [string, number][];
+}
+
+/** Result of `energy_flow_mapper/daily_check`; `unknown` when the recorder failed. */
+export interface DailyCheckResult {
+  evidence: Record<string, StatsEvidence>;
+  unknown: boolean;
 }

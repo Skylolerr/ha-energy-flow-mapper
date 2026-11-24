@@ -76,6 +76,9 @@
     "sum_state_classes_differ": {
       "message": "Les capteurs n’ont pas tous la même classe d’état (total ou total_increasing) ; leur somme ne serait donc pas acceptée comme compteur."
     },
+    "sum_with_solar": {
+      "message": "{entity} est un compteur solaire ou en contient un. Un compteur de somme avec une installation solaire nécessite plutôt la configuration guidée « Le solaire alimente ici… »."
+    },
     "sum_failed": {
       "message": "Le compteur de somme n’a pas pu être créé."
     },

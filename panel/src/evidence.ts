@@ -1,0 +1,49 @@
+import { formatNumber, localize } from "./localize";
+import type { HomeAssistant, StatsEvidence } from "./types";
+
+/** The user's language for dates, as `localize` picks it. */
+function language(hass: HomeAssistant | undefined): string {
+  return hass?.locale.language || (typeof document === "undefined" ? "" : document.documentElement.lang) || "en";
+}
+
+/** Day and time of an ISO timestamp («22.11.», «06:00»), in Home Assistant's time zone if known. */
+export function formatDayTime(hass: HomeAssistant | undefined, iso: string): { date: string; time: string } {
+  const when = new Date(iso);
+  const zone = hass?.config?.time_zone;
+  const format = (options: Intl.DateTimeFormatOptions) => {
+    try {
+      return new Intl.DateTimeFormat(language(hass), { ...options, ...(zone ? { timeZone: zone } : {}) }).format(when);
+    } catch {
+      // An unknown time zone: the browser's own.
+      return new Intl.DateTimeFormat(language(hass), options).format(when);
+    }
+  };
+  return {
+    date: format({ day: "numeric", month: "numeric" }),
+    time: format({ hour: "2-digit", minute: "2-digit" }),
+  };
+}
+
+/**
+ * One sentence of evidence why a meter counts as periodic: a utility meter
+ * with a cycle, a changing `last_reset`, or the latest fall to 0 with its
+ * values (in `unit`, the statistic's unit).
+ */
+export function evidenceText(hass: HomeAssistant | undefined, evidence: StatsEvidence, unit: string | null): string {
+  if (evidence.reason === "utility_meter") {
+    return localize(hass, "evidence_utility_meter");
+  }
+  if (evidence.reason === "last_reset") {
+    return localize(hass, "evidence_last_reset");
+  }
+  const drop = evidence.drops.at(-1);
+  if (drop === undefined) {
+    return localize(hass, "evidence_statistics");
+  }
+  const value = (v: number) => (unit ? `${formatNumber(hass, v, 2)} ${unit}` : formatNumber(hass, v, 2));
+  return localize(hass, "evidence_drop", {
+    ...formatDayTime(hass, drop.at),
+    before: value(drop.before),
+    after: value(drop.after),
+  });
+}

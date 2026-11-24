@@ -36,6 +36,7 @@ import {
   newGroupId,
 } from "./groups";
 import { icon, typeIcon, typePath } from "./icons";
+import { evidenceText } from "./evidence";
 import "./solar-setup";
 import type { SolarCreatedDetail, SolarSetupContext } from "./solar-setup";
 import {
@@ -77,6 +78,7 @@ import type {
   Candidate,
   Change,
   ChildPair,
+  DailyCheckResult,
   Device,
   DeviceKind,
   DiffEntry,
@@ -97,6 +99,7 @@ import type {
   Tab,
   StatInfo,
   StatType,
+  StatsEvidence,
   ValidateResult,
   WSError,
 } from "./types";
@@ -166,9 +169,8 @@ type Dialog =
   /**
    * A sum meter: from a group (its devices are fixed) or free from a device
    * (`origin`, whose parent the meter takes); `added` are the chosen sensors.
-   * `replace` is false once the user unticks *Replace <device>*; `integrals`
-   * maps an integral meter that stands in for a daily solar meter to its
-   * power sensor (the solar's).
+   * `replace` is false once the user unticks *Replace <device>*; `named` once
+   * the user typed a name, which then stays when the members change.
    */
   | {
       kind: "sum";
@@ -177,7 +179,7 @@ type Dialog =
       added: string[];
       picking: boolean;
       replace?: boolean;
-      integrals?: Record<string, string>;
+      named?: boolean;
     }
   /** The name of a new group made from the selected blocks. */
   | { kind: "group_name" }
@@ -193,8 +195,9 @@ type Dialog =
   /**
    * "Solar feeds in here" for the electricity device `stat`; its own state
    * (solar, meter kind, preview, names) lives in `<efm-solar-setup>`.
+   * `solar` is the solar source the user came with (from a sum), if any.
    */
-  | { kind: "solar"; stat: string };
+  | { kind: "solar"; stat: string; solar?: string };
 
 type SolarDialog = Extract<Dialog, { kind: "solar" }>;
 
@@ -250,6 +253,16 @@ const GROUP_ERRORS: ReadonlySet<string> = new Set(["unknown_group", "group_paren
 
 /** State classes of meters a sensor group can add up (as `create_sum_meter` checks). */
 const METER_STATE_CLASSES = ["total", "total_increasing"];
+
+/**
+ * The on-demand check of a sum's members for periodic meters: `key` names
+ * the members it is for; "unknown" when the check could not run.
+ */
+interface SumCheck {
+  key: string;
+  status: "checking" | "done" | "unknown";
+  evidence: Record<string, StatsEvidence>;
+}
 
 /** Prefix of drop targets on sources: `src:<assign role>:<block id>`. */
 const SOURCE_TARGET = "src:";
@@ -421,6 +434,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _selectMode: { state: true },
     _toolsOpen: { state: true },
     _helpOpen: { state: true },
+    _sumCheck: { state: true },
   };
 
   // Reactive properties are declared and set in the constructor, because
@@ -483,6 +497,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** On a phone the diagram's tools and its help text are folded away until opened. */
   declare _toolsOpen: boolean;
   declare _helpOpen: boolean;
+  /** The check of the open sum dialog's members for periodic meters. */
+  declare _sumCheck: SumCheck | null;
 
   private _loading = false;
   /** Whether the kept draft was looked at; until then nothing is stored. */
@@ -491,6 +507,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   private _energyRequest = 0;
   /** Counts sum dialogs opened and dialogs closed; a late answer for an earlier one is dropped. */
   private _sumSession = 0;
+  /** Counts member checks asked for; a late answer for other members is dropped. */
+  private _sumCheckRequest = 0;
   private _toastTimer: ReturnType<typeof setTimeout> | undefined;
   private _fitted = false;
   /** The diagram follows the viewport size until the user zooms or pans. */
@@ -536,6 +554,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._selectMode = false;
     this._toolsOpen = false;
     this._helpOpen = false;
+    this._sumCheck = null;
   }
 
   /** Ctrl+Z (Cmd+Z) takes back the last change of the draft, outside text fields. */
@@ -578,6 +597,14 @@ export class EnergyFlowMapperPanel extends LitElement {
         if (change.type === "create_group") {
           this._seenGroups.add(change.id);
         }
+      }
+    }
+    // The members of an open sum are checked for periodic meters, again when they change.
+    if (this._dialog?.kind === "sum") {
+      const { all } = this._sumMembers(this._dialog);
+      const key = JSON.stringify([this._tab, all]);
+      if (this._sumCheck?.key !== key && all.length > 0 && this._sumSolar(all) === null) {
+        void this._checkSum(all, key);
       }
     }
     // Selected blocks the draft no longer has (undo, removed) leave the selection.
@@ -1965,14 +1992,35 @@ export class EnergyFlowMapperPanel extends LitElement {
    * from a device, which is preselected. The name defaults to «<name> Energy».
    */
   _openSum(from: { group: string } | { origin: string }): void {
-    const base =
-      "group" in from ? (this._groups.find((g) => g.id === from.group)?.name ?? "") : this._name(from.origin, this.draft);
-    this._renameValue = `${base} ${this._t(tabKind(this._tab) === "water" ? "water_suffix" : "energy_suffix")}`;
     this._sumSession++;
-    this._dialog =
+    this._sumCheckRequest++;
+    this._sumCheck = null;
+    this._setSum(
       "group" in from
         ? { kind: "sum", group: from.group, origin: null, added: [], picking: false }
-        : { kind: "sum", group: null, origin: from.origin, added: [from.origin], picking: false };
+        : { kind: "sum", group: null, origin: from.origin, added: [from.origin], picking: false },
+    );
+  }
+
+  /**
+   * Show the sum dialog `dialog`. Until the user types a name, the name
+   * follows the members: the user-set name of the device the sum replaces,
+   * else «<group or device> Energy» (water: «… Water»).
+   */
+  private _setSum(dialog: SumDialog): void {
+    this._dialog = dialog;
+    if (dialog.named) {
+      return;
+    }
+    const { all } = this._sumMembers(dialog);
+    const replacing = dialog.replace === false ? null : this._sumReplaceable(all);
+    const own = replacing === null ? undefined : this.draft.find((d) => d.stat_consumption === replacing)?.name;
+    const base =
+      dialog.group !== null
+        ? (this._groups.find((g) => g.id === dialog.group)?.name ?? "")
+        : this._name(dialog.origin ?? "", this.draft);
+    this._renameValue =
+      own || `${base} ${this._t(tabKind(this._tab) === "water" ? "water_suffix" : "energy_suffix")}`;
   }
 
   /** The sensors of a sum: every device of the group (fixed), then the added ones. */
@@ -2037,29 +2085,24 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * The rate sensors to add up as well, in the order of `stats`: a device's
-   * power sensor, a solar source's, or that of an integral standing in for a
-   * solar meter (`integrals`). `rates` is empty unless every member has one;
-   * `missing` are the members without. Any other source (grid and battery:
-   * the sign depends on the direction; water, gas: no consumer) gives no
-   * rates (`blockedBySource`).
+   * The rate sensors to add up as well, in the order of `stats`: each
+   * device's power sensor. `rates` is empty unless every member has one;
+   * `missing` are the members without. A source (grid and battery: the sign
+   * depends on the direction; water, gas: no consumer; a solar is never in
+   * a sum) gives no rates (`blockedBySource`).
    */
-  private _sumRates(
-    stats: string[],
-    integrals: Record<string, string> = {},
-  ): { rates: string[]; missing: string[]; blockedBySource: boolean } {
+  private _sumRates(stats: string[]): { rates: string[]; missing: string[]; blockedBySource: boolean } {
     const devices = this.draft;
     const sources = sourceRows(this.draftSources, this._tab);
     const rates: string[] = [];
     const missing: string[] = [];
     let blockedBySource = false;
     for (const stat of stats) {
-      const row = sources.find((r) => r.stat === stat);
-      if (row !== undefined && row.type !== "solar") {
+      if (sources.some((r) => r.stat === stat)) {
         blockedBySource = true;
         continue;
       }
-      const rate = integrals[stat] ?? (row ?? devices.find((d) => d.stat_consumption === stat))?.stat_rate;
+      const rate = devices.find((d) => d.stat_consumption === stat)?.stat_rate;
       if (typeof rate === "string" && rate !== "") {
         rates.push(rate);
       } else {
@@ -2071,95 +2114,98 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /**
    * The device a sum may replace: the only device of the sum, when the sum
-   * also has a source (or an integral standing in for one). Below the new
-   * meter it would count twice. Null otherwise.
+   * also has a source. Below the new meter it would count twice. Null
+   * otherwise.
    */
-  private _sumReplaceable(dialog: SumDialog, all: string[]): string | null {
+  private _sumReplaceable(all: string[]): string | null {
     const sources = new Set(sourceRows(this.draftSources, this._tab).map((r) => r.stat));
-    const integrals = dialog.integrals ?? {};
     const devices = all.filter((stat) => this.draft.some((d) => d.stat_consumption === stat));
-    return devices.length === 1 && all.some((stat) => sources.has(stat) || stat in integrals) ? devices[0] : null;
+    return devices.length === 1 && all.some((stat) => sources.has(stat)) ? devices[0] : null;
   }
 
   /**
-   * The power sensor whose integral may stand in for the daily solar meter
-   * `stat` in a sum of `all`, or null. The solar's saved power sensor (the
-   * backend only integrates that one), unchanged in the draft; and every other
-   * member must have the integral's state class `total`, or the sum would mix
-   * state classes.
+   * What makes a sum a gross meter of a circuit with a solar, which only the
+   * guided setup builds: members that are a solar source's meter (`solars`),
+   * members whose meter already holds a solar's meter or power sensor
+   * (`holders`, from `inputs`), and the other members that are devices.
+   * Null when the sum has no solar.
    */
-  private _sumIntegralPower(stat: string, all: string[]): string | null {
-    const solar = (sources: Source[]) =>
-      sourceRows(sources, this._tab).find((r) => r.type === "solar" && r.stat === stat)?.stat_rate;
-    const saved = solar(this._snapshot?.prefs.energy_sources ?? []);
-    const others = all.filter((member) => member !== stat);
-    const total = others.every((member) => this.hass?.states[member]?.attributes.state_class === "total");
-    return saved && solar(this.draftSources) === saved && others.length > 0 && total ? saved : null;
-  }
-
-  /**
-   * Whether a solar source is among the members: a net circuit meter (total)
-   * and a solar (total increasing) cannot be summed, but the solar setup
-   * builds their gross meter with templates.
-   */
-  private _sumHasSolar(all: string[]): boolean {
-    const solars = new Set(
-      sourceRows(this.draftSources, this._tab)
-        .filter((row) => row.type === "solar")
-        .map((row) => row.stat),
+  private _sumSolar(all: string[]): { solars: string[]; holders: string[]; devices: string[]; solar: string } | null {
+    const sources = this.draftSources.filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string");
+    const meters = new Set(sources.map((s) => s.stat_energy_from as string));
+    const ofSolar = (stat: string) =>
+      sources.find((s) => s.stat_energy_from === stat || (typeof s.stat_rate === "string" && s.stat_rate === stat));
+    const inputs = this._snapshot?.inputs ?? {};
+    const solars = all.filter((stat) => meters.has(stat));
+    const holders = all.filter((stat) => !meters.has(stat) && (inputs[stat] ?? []).some((input) => ofSolar(input)));
+    if (solars.length === 0 && holders.length === 0) {
+      return null;
+    }
+    const devices = all.filter(
+      (stat) => !meters.has(stat) && !holders.includes(stat) && this.draft.some((d) => d.stat_consumption === stat),
     );
-    return all.some((stat) => solars.has(stat));
-  }
-
-  /** The members that reset every day, when they are mixed with members that do not. */
-  private _sumDailyMix(all: string[]): string[] {
-    const daily = all.filter((stat) => this._info(stat)?.daily_reset === true);
-    return daily.length > 0 && daily.length < all.length ? daily : [];
+    const solar =
+      solars[0] ?? (inputs[holders[0]] ?? []).map((input) => ofSolar(input)?.stat_energy_from).find(Boolean) ?? "";
+    return { solars, holders, devices, solar: solar as string };
   }
 
   /**
-   * Create an integral of a daily solar meter's power sensor right away and
-   * put its meter into the sum in the solar's place. The solar source itself
-   * stays as it is. Only the sum dialog that asked takes the answer: not one
-   * opened after it was closed, nor one without the solar any more.
+   * Check the members of a sum for periodic meters (saved or only in the
+   * draft), with the draft's power sensors of the devices to explain their
+   * falls. A failed request counts as unknown; an answer for other members
+   * than now is dropped.
    */
-  async _sumIntegral(stat: string, power: string): Promise<void> {
-    const asked = this._dialog;
-    if (!this.hass || asked?.kind !== "sum") {
+  async _checkSum(all: string[], key: string): Promise<void> {
+    if (!this.hass) {
       return;
     }
-    const session = this._sumSession;
-    const base = String(this.hass.states[power]?.attributes.friendly_name ?? "") || this._name(stat);
-    const name = `${base} ${this._t("energy_suffix")}`;
-    this._busy = true;
-    try {
-      const result = await this.hass.callWS<{ entity_id: string; stat_rate: string }>({
-        type: `${DOMAIN}/create_integral`,
-        power_entity_id: power,
-        name,
-        of_source: true,
-      });
-      await this._load();
-      const dialog = this._dialog;
-      if (
-        dialog?.kind === "sum" &&
-        this._sumSession === session &&
-        dialog.origin === asked.origin &&
-        dialog.group === asked.group &&
-        dialog.added.includes(stat)
-      ) {
-        this._dialog = {
-          ...dialog,
-          added: dialog.added.map((s) => (s === stat ? result.entity_id : s)),
-          integrals: { ...dialog.integrals, [result.entity_id]: result.stat_rate },
-        };
+    const request = ++this._sumCheckRequest;
+    this._sumCheck = { key, status: "checking", evidence: {} };
+    const power: Record<string, string> = {};
+    if (this._tab === "electricity") {
+      for (const stat of all) {
+        const rate = this.draft.find((d) => d.stat_consumption === stat)?.stat_rate;
+        if (typeof rate === "string" && rate !== "") {
+          power[stat] = rate;
+        }
       }
-      this._showToast(this._t("sum_integral_created", { name }));
-    } catch (err) {
-      await this._handleError(err);
-    } finally {
-      this._busy = false;
     }
+    let result: DailyCheckResult | null = null;
+    try {
+      result = await this.hass.callWS<DailyCheckResult>({
+        type: `${DOMAIN}/daily_check`,
+        stats: all,
+        ...(Object.keys(power).length ? { power } : {}),
+      });
+    } catch {
+      result = null;
+    }
+    if (request !== this._sumCheckRequest) {
+      return;
+    }
+    this._sumCheck =
+      result && !result.unknown
+        ? { key, status: "done", evidence: result.evidence ?? {} }
+        : { key, status: "unknown", evidence: {} };
+  }
+
+  /**
+   * The members that start again at 0 now and then, each with its evidence:
+   * from the check of the members, or (while it could not run) from the
+   * check of the last load.
+   */
+  private _sumPeriodic(all: string[]): { stat: string; evidence: string }[] {
+    const check = this._sumCheck;
+    const found: { stat: string; evidence: string }[] = [];
+    for (const stat of all) {
+      const evidence = check?.status === "done" ? check.evidence[stat] : undefined;
+      if (evidence?.periodic === true) {
+        found.push({ stat, evidence: evidenceText(this.hass, evidence, this._info(stat)?.unit ?? null) });
+      } else if (check?.status === "unknown" && this._info(stat)?.daily_reset === true) {
+        found.push({ stat, evidence: this._t("evidence_statistics") });
+      }
+    }
+    return found;
   }
 
   /** «Kitchen Power» for the meter «Kitchen Energy» (water: «… Flow»). */
@@ -2219,16 +2265,20 @@ export class EnergyFlowMapperPanel extends LitElement {
     const nested = dialog.group !== null ? groups.filter((g) => g.group === dialog.group).map((g) => g.id) : [];
     const following = new Set(nested.flatMap((id) => groupDevices(groups, id)));
     const moves = all.filter((stat) => devices.some((d) => d.stat_consumption === stat) && !following.has(stat));
-    const { rates } = this._sumRates(all, dialog.integrals);
-    const replacing = dialog.replace === false ? null : this._sumReplaceable(dialog, all);
+    const { rates } = this._sumRates(all);
+    const replacing = dialog.replace === false ? null : this._sumReplaceable(all);
     // A group's meter takes the group's place, a free one the device's group.
     const replaceGroup =
       dialog.group !== null ? enclosing : (groups.find((g) => g.members.includes(replacing ?? ""))?.id ?? null);
+    // The list the sum is for: the user may switch tabs while it is created.
+    const tab = this._tab;
+    const deviceKind = this._deviceKind();
+    const kind = this._kind();
     this._busy = true;
     try {
       const result = await this.hass.callWS<{ entity_id: string; stat_rate: string | null }>({
         type: `${DOMAIN}/create_sum_meter`,
-        kind: this._deviceKind(),
+        kind: deviceKind,
         name,
         entity_ids: all,
         ...(rates.length ? { rate_entity_ids: rates, rate_name: this._sumRateName(name) } : {}),
@@ -2236,10 +2286,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._dialog = null;
       await this._load();
       const stat = result.entity_id;
-      const kind = this._kind();
       const groupMoves = nested.map((id) => ({ type: "move_group" as const, id, parent: stat, ...kind }));
-      const replaced =
-        replacing !== null ? this._replaceSteps(replacing, stat, result.stat_rate, replaceGroup, groupMoves) : [];
+      // The field named the helper; a user-set name of the replaced device becomes it too.
+      const replaced = (
+        replacing !== null
+          ? this._replaceSteps(replacing, stat, result.stat_rate, replaceGroup, groupMoves, deviceKind)
+          : []
+      ).map((change) => (change.type === "add" && change.name !== undefined ? { ...change, name } : change));
       this._changeAll(
         replaced.length
           ? replaced
@@ -2250,7 +2303,9 @@ export class EnergyFlowMapperPanel extends LitElement {
               ...moves.map((member) => ({ type: "move" as const, stat: member, parent: stat, ...kind })),
             ],
       );
-      this._selected = stat;
+      if (this._tab === tab) {
+        this._selected = stat;
+      }
       this._showToast(this._t("sum_created", { name }));
     } catch (err) {
       this._dialog = null;
@@ -2278,10 +2333,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /**
-   * The changes of `_replace`, with the new meter in the group `groupOf`;
-   * `groupMoves` (a sum's nested groups) move along with the groups below
-   * the old meter. Nothing for an unknown device. `newStat` must not be in
-   * the draft yet.
+   * The changes of `_replace` in the list `deviceKind` (default: the tab's),
+   * with the new meter in the group `groupOf`; `groupMoves` (a sum's nested
+   * groups) move along with the groups below the old meter. Nothing for an
+   * unknown device. `newStat` must not be in the draft yet.
    */
   private _replaceSteps(
     oldStat: string,
@@ -2289,13 +2344,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     newRate: string | null,
     groupOf: string | null,
     groupMoves: Change[] = [],
+    deviceKind: DeviceKind = this._deviceKind(),
   ): Change[] {
-    const kind = this._kind();
-    const changes = replaceChanges(this.draft, groupOf, oldStat, newStat, { kind: this._deviceKind(), newRate });
+    const kind = deviceKind === "water" ? { kind: "water" as const } : {};
+    const changes = replaceChanges(this.draftOf(deviceKind), groupOf, oldStat, newStat, { kind: deviceKind, newRate });
     if (changes.length === 0) {
       return [];
     }
-    const below = this._groups
+    const below = this.groupsOf(deviceKind)
       .filter((g) => g.parent === oldStat && g.group === null)
       .map((g) => ({ type: "move_group" as const, id: g.id, parent: newStat, ...kind }));
     // Before the device moves, which would take the children out of their groups.
@@ -2336,9 +2392,13 @@ export class EnergyFlowMapperPanel extends LitElement {
     return (this._snapshot?.prefs.device_consumption ?? []).some((d) => d.stat_consumption === stat);
   }
 
-  /** Open "Solar feeds in here…" for a device; the setup preselects the only solar source. */
-  _openSolarSetup(stat: string): void {
-    this._dialog = { kind: "solar", stat };
+  /**
+   * Open "Solar feeds in here…" for a device; the setup preselects the only
+   * solar source. From a sum, `solar` is the solar source that was in it.
+   */
+  _openSolarSetup(stat: string, solar?: string): void {
+    this._sumSession++;
+    this._dialog = solar ? { kind: "solar", stat, solar } : { kind: "solar", stat };
   }
 
   /**
@@ -4344,6 +4404,9 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   private _close(): void {
     this._sumSession++;
+    // A sum opened again checks its members again.
+    this._sumCheckRequest++;
+    this._sumCheck = null;
     this._dialog = null;
   }
 
@@ -4368,37 +4431,49 @@ export class EnergyFlowMapperPanel extends LitElement {
   /**
    * The sum meter dialog: name, the sensors in the sum (each with the reason
    * it cannot be summed, if so), adding and removing sensors, and Create.
+   * A sum with a solar is never built: the dialog leads to the solar setup.
+   * Every member is checked for periodic meters, which block the sum; a
+   * disabled Create says why.
    */
   private _renderSum(dialog: SumDialog): TemplateResult {
     const { fixed, all } = this._sumMembers(dialog);
     const reasons = new Map(all.map((stat) => [stat, this._sumReason(stat)]));
     const blocked = [...reasons.values()].some((reason) => reason !== null);
-    const mixed = !blocked && this._sumStateClasses(all).size > 1;
+    const solar = this._sumSolar(all);
+    const mixed = !blocked && solar === null && this._sumStateClasses(all).size > 1;
     const name = this._renameValue.trim();
-    const { rates, missing, blockedBySource } = this._sumRates(all, dialog.integrals);
-    const replaceable = this._sumReplaceable(dialog, all);
-    const daily = this._sumDailyMix(all);
-    const integralPowers = new Map(daily.map((stat) => [stat, this._sumIntegralPower(stat, all)]));
-    // At most one pointer to "Solar feeds in here…", and none while the
-    // integral is offered: then this sum can be built after all.
-    const integralOffered = [...integralPowers.values()].some((power) => power !== null);
-    const setupPointer = integralOffered
-      ? null
-      : daily.length
-        ? "daily"
-        : mixed && this._sumHasSolar(all)
-          ? "mixed"
-          : null;
+    const { rates, missing, blockedBySource } = this._sumRates(all);
+    const replaceable = solar === null ? this._sumReplaceable(all) : null;
+    const check = solar === null && this._sumCheck?.key === JSON.stringify([this._tab, all]) ? this._sumCheck : null;
+    const checking = solar === null && all.length > 0 && (check === null || check.status === "checking");
+    const periodic = solar === null ? this._sumPeriodic(all) : [];
     const water = tabKind(this._tab) === "water";
-    const update = (added: string[], picking: boolean) => (this._dialog = { ...dialog, added, picking });
+    const update = (added: string[], picking: boolean) => this._setSum({ ...dialog, added, picking });
     const options = dialog.picking ? this._sumOptions(dialog) : [];
+    // Every reason the dialog does not show elsewhere.
+    const why = this._busy
+      ? null
+      : !name
+        ? this._t("sum_need_name")
+        : all.length === 0
+          ? this._t("sum_need_member")
+          : checking && !blocked && !mixed
+            ? this._t("sum_checking")
+            : null;
+    const disabled =
+      !name || all.length === 0 || blocked || mixed || solar !== null || checking || periodic.length > 0 || this._busy;
     return html`<h2>${this._t("sum_create")}</h2>
       <label
         >${this._t("name_label")}
         <input
           type="text"
           .value=${this._renameValue}
-          @input=${(e: Event) => (this._renameValue = (e.target as HTMLInputElement).value)}
+          @input=${(e: Event) => {
+            this._renameValue = (e.target as HTMLInputElement).value;
+            if (this._dialog?.kind === "sum" && !this._dialog.named) {
+              this._dialog = { ...this._dialog, named: true };
+            }
+          }}
         />
       </label>
       ${this._entityNamed(name)
@@ -4410,20 +4485,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${all.map((stat) => {
           const reason = reasons.get(stat) ?? null;
           const label = this._name(stat);
-          const power = integralPowers.get(stat);
           return html`<li class="sum-member" data-stat=${stat}>
             <div class="candidate-text">
               <span class="node-name">${label}</span>
               ${reason ? html`<span class="sub warning">${reason}</span>` : nothing}
-              ${power
-                ? html`<button
-                    class="sum-integral"
-                    ?disabled=${this._busy}
-                    @click=${() => void this._sumIntegral(stat, power)}
-                  >
-                    ${this._t("sum_use_integral")}
-                  </button>`
-                : nothing}
             </div>
             ${fixed.includes(stat)
               ? nothing
@@ -4439,16 +4504,22 @@ export class EnergyFlowMapperPanel extends LitElement {
         })}
       </ul>
       ${blocked ? html`<p class="warning">${this._t("sum_blocked")}</p>` : nothing}
-      ${mixed
-        ? html`<p class="warning sum-mixed">
-            ${this._t("error_sum_state_classes_differ")} ${setupPointer === "mixed" ? this._t("sum_mixed_solar_setup") : nothing}
-          </p>`
+      ${solar !== null ? this._renderSumSolar(solar) : nothing}
+      ${mixed ? html`<p class="warning sum-mixed">${this._t("error_sum_state_classes_differ")}</p>` : nothing}
+      ${periodic.length
+        ? html`<div class="warning sum-periodic">
+            <p>${this._t("sum_periodic")}</p>
+            <ul>
+              ${periodic.map(
+                ({ stat, evidence }) =>
+                  html`<li>${this._t("sum_periodic_member", { name: this._name(stat), evidence })}</li>`,
+              )}
+            </ul>
+          </div>`
         : nothing}
-      ${daily.length
-        ? html`<p class="warning sum-daily-mix">
-            ${this._t("sum_daily_mix", { names: daily.map((stat) => this._name(stat)).join(", ") })}
-            ${setupPointer === "daily" ? this._t("sum_daily_mix_setup") : nothing}
-          </p>`
+      ${check?.status === "unknown"
+        ? html`<p class="hint warning sum-unchecked">${this._t("sum_check_unknown")}</p>
+            <button class="sum-recheck" @click=${() => (this._sumCheck = null)}>${this._t("sum_check_retry")}</button>`
         : nothing}
       ${dialog.picking
         ? options.length
@@ -4468,41 +4539,61 @@ export class EnergyFlowMapperPanel extends LitElement {
               <input
                 type="checkbox"
                 .checked=${dialog.replace !== false}
-                @change=${(e: Event) =>
-                  (this._dialog = { ...dialog, replace: (e.target as HTMLInputElement).checked })}
+                @change=${(e: Event) => this._setSum({ ...dialog, replace: (e.target as HTMLInputElement).checked })}
               />
               ${this._t("sum_replace", { name: this._name(replaceable) })}
             </label>
             <p class="hint">${this._t("sum_replace_reason")}</p>`
         : nothing}
-      <p class="hint">
-        ${replaceable !== null && dialog.replace !== false
-          ? this._t("sum_text_replace", { helper: name, name: this._name(replaceable) })
-          : this._t("sum_text", { helper: name })}
-      </p>
-      ${rates.length
+      ${solar === null
         ? html`<p class="hint">
-            ${this._t(water ? "sum_rate_hint_water" : "sum_rate_hint", { helper: this._sumRateName(name) })}
-          </p>`
-        : blockedBySource
-          ? html`<p class="hint sum-rate-none">${this._t(water ? "sum_rate_source_water" : "sum_rate_source_sign")}</p>`
-          : missing.length
-            ? html`<p class="hint sum-rate-none">
-                ${this._t(water ? "sum_rate_missing_water" : "sum_rate_missing", {
-                  names: missing.map((stat) => this._name(stat)).join(", "),
-                })}
-              </p>`
-            : nothing}
+              ${replaceable !== null && dialog.replace !== false
+                ? this._t("sum_text_replace", { helper: name, name: this._name(replaceable) })
+                : this._t("sum_text", { helper: name })}
+            </p>
+            ${rates.length
+              ? html`<p class="hint">
+                  ${this._t(water ? "sum_rate_hint_water" : "sum_rate_hint", { helper: this._sumRateName(name) })}
+                </p>`
+              : blockedBySource
+                ? html`<p class="hint sum-rate-none">
+                    ${this._t(water ? "sum_rate_source_water" : "sum_rate_source_sign")}
+                  </p>`
+                : missing.length
+                  ? html`<p class="hint sum-rate-none">
+                      ${this._t(water ? "sum_rate_missing_water" : "sum_rate_missing", {
+                        names: missing.map((stat) => this._name(stat)).join(", "),
+                      })}
+                    </p>`
+                  : nothing}`
+        : nothing}
+      ${why ? html`<p class="hint sum-why">${why}</p>` : nothing}
       <div class="dialog-actions">
         <button @click=${() => this._close()}>${this._t("cancel")}</button>
-        <button
-          class="primary"
-          ?disabled=${!name || all.length === 0 || blocked || mixed || this._busy}
-          @click=${() => this._createSum(dialog)}
-        >
+        <button class="primary" ?disabled=${disabled} @click=${() => this._createSum(dialog)}>
           ${this._busy ? this._t("creating") : this._t("sum_create_button")}
         </button>
       </div>`;
+  }
+
+  /**
+   * Why a sum with a solar is not built, and the way on: the setup for the
+   * only device of the sum; with a meter that holds the solar, which one;
+   * otherwise build the devices' sum first.
+   */
+  private _renderSumSolar(solar: NonNullable<ReturnType<EnergyFlowMapperPanel["_sumSolar"]>>): TemplateResult {
+    const { holders, devices } = solar;
+    const device = holders.length === 0 && devices.length === 1 ? devices[0] : null;
+    return html`<p class="warning sum-solar">${this._t("sum_solar_use_setup")}</p>
+      ${holders.length
+        ? html`<p class="hint sum-solar-holders">
+            ${this._t("sum_solar_holders", { names: holders.map((stat) => this._name(stat)).join(", ") })}
+          </p>`
+        : device !== null
+          ? html`<button class="sum-solar-setup" @click=${() => this._openSolarSetup(device, solar.solar)}>
+              ${this._t("sum_solar_open_setup", { name: this._name(device, this.draft) })}
+            </button>`
+          : html`<p class="hint sum-solar-one-device">${this._t("sum_solar_one_device")}</p>`}`;
   }
 
   /**
@@ -4513,6 +4604,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     const prefs = this._snapshot?.prefs;
     const context: SolarSetupContext = {
       stat: dialog.stat,
+      solar: dialog.solar ?? null,
       deviceName: this._name(dialog.stat, this.draft),
       saved: this._solarDeviceSaved(dialog.stat),
       solars: this._setupSolars(),

@@ -76,6 +76,9 @@
     "sum_state_classes_differ": {
       "message": "The sensors do not all have the same state class (total or total increasing), so their sum would not be accepted as a meter."
     },
+    "sum_with_solar": {
+      "message": "{entity} is a solar meter or holds one. A sum meter with a solar needs the guided setup “Solar feeds in here…” instead."
+    },
     "sum_failed": {
       "message": "The sum meter could not be created."
     },

@@ -16,6 +16,8 @@ export interface SolarSetupContext {
   saved: boolean;
   /** The solar sources the setup can use (saved ones the draft still has). */
   solars: string[];
+  /** The solar source the user came with (from a sum meter dialog), if any. */
+  solar?: string | null;
   /** Saved and draft sources and the device, for the note on unsaved power sensors. */
   savedSources: Source[];
   draftSources: Source[];
