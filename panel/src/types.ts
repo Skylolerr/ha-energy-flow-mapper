@@ -167,12 +167,24 @@ export interface ChildPair {
 }
 
 /** The hints the panel shows at the blocks (computed in the backend's `hints.py`). */
-export type HintCode = "returned_energy" | "daily_in_sum" | "power_available";
+export type HintCode =
+  | "returned_energy"
+  | "daily_in_sum"
+  | "power_available"
+  | "gross_off"
+  | "gross_unknown"
+  | "solar_term_short"
+  | "solar_term_high";
 
 /**
  * A hint at a block. `data` by code: `returned_energy` {entity_id, disabled};
  * `daily_in_sum` {entry_id, members, daily}; `power_available` {entity_id}
  * and, for a source, `role` (a grid and the home meter may share a statistic).
+ * The safety net of the gross meters of the solar setup: `gross_off`
+ * {direction, hour, method, change_kwh, power_kwh?, input?, cause?};
+ * `gross_unknown` {hour, minutes, input?}; at the solar source,
+ * `solar_term_short` / `solar_term_high` {role, entity_id, day, term_kwh,
+ * source_kwh}.
  */
 export interface Hint {
   code: HintCode | string;

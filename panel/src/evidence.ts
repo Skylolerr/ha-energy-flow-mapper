@@ -25,6 +25,20 @@ export function formatDayTime(hass: HomeAssistant | undefined, iso: string): { d
 }
 
 /**
+ * A local day as the backend gives it («2026-11-22» → «22.11.»). It is
+ * already a day of Home Assistant's time zone, so it is shown as it is:
+ * as an instant it would move back a day west of UTC.
+ */
+export function formatDay(hass: HomeAssistant | undefined, day: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(day);
+  if (!match) {
+    return day;
+  }
+  const noon = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+  return new Intl.DateTimeFormat(language(hass), { day: "numeric", month: "numeric", timeZone: "UTC" }).format(noon);
+}
+
+/**
  * One sentence of evidence why a meter counts as periodic: a utility meter
  * with a cycle, a changing `last_reset`, or the latest fall to 0 with its
  * values (in `unit`, the statistic's unit).

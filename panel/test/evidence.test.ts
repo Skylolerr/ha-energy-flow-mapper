@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { evidenceText, formatDayTime, inputEvidenceText } from "../src/evidence";
+import { evidenceText, formatDay, formatDayTime, inputEvidenceText } from "../src/evidence";
 import type { HomeAssistant, StatsEvidence } from "../src/types";
 
 function hass(language: string, time_zone?: string): HomeAssistant {
@@ -70,5 +70,14 @@ describe("input evidence", () => {
     expect(inputEvidenceText(hass("de"), evidence({ periodic: false, reason: null }), null)).toBe(
       "stieg in den letzten Tagen, ohne wieder bei 0 anzufangen",
     );
+  });
+
+  it("names a local day as it is, in any time zone", () => {
+    // A day of the backend is already local: west of UTC it must not move back.
+    expect(formatDay(hass("de", "America/Los_Angeles"), "2026-11-22")).toBe("22.11.");
+    expect(formatDay(hass("de", "Pacific/Kiritimati"), "2026-11-22")).toBe("22.11.");
+    expect(formatDay(hass("en"), "2026-11-22")).toBe("11/22");
+    // Anything else is shown as it came.
+    expect(formatDay(hass("de"), "yesterday")).toBe("yesterday");
   });
 });

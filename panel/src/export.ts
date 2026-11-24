@@ -14,6 +14,8 @@ export interface ExportBlock {
   area: string | null;
   color: string;
   warn: boolean;
+  /** The block shows the info mark of its hints. */
+  info?: boolean;
   /** The sub names a sensor (a late home meter); hidden with the names. */
   named?: boolean;
   /** Child devices hidden because the device is collapsed. */
@@ -101,7 +103,19 @@ function blockSvg(item: ExportBlock, index: number, options: ExportOptions): str
           y + 18
         }" text-anchor="middle" font-family="${FONT}" font-size="12" font-weight="700" fill="#ffffff">!</text>`
       : "",
+    // The info mark of hints, an outline «i» as in the diagram; left of a «!».
+    item.info ? infoSvg(x + w - (item.warn ? 34 : 14), y + 14) : "",
   ].join("");
+}
+
+/** Colour of the info mark (Home Assistant's info colour). */
+const INFO_COLOR = "#039be5";
+
+function infoSvg(cx: number, cy: number): string {
+  return (
+    `<circle class="info" cx="${cx}" cy="${cy}" r="8" fill="none" stroke="${INFO_COLOR}" stroke-width="1.5"/>` +
+    `<text x="${cx}" y="${cy + 4}" text-anchor="middle" font-family="Georgia, 'Times New Roman', serif" font-size="12" font-style="italic" font-weight="700" fill="${INFO_COLOR}">i</text>`
+  );
 }
 
 /** The dashed frame around an expanded group; drawn first, below everything else. */

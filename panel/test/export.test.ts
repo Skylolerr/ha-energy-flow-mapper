@@ -141,6 +141,17 @@ describe("lines and markers in the picture", () => {
     expect(diagramSvg(LAYOUT, [blocks()[2]], [], options)).not.toContain("scale(0.5833)");
   });
 
+  it("draws the info mark of a block with hints, next to its warning", () => {
+    // An outline «i» like in the diagram, at the top right; left of a «!».
+    const info = diagramSvg(LAYOUT, [{ ...blocks()[3], info: true }], [], options);
+    expect(info).toContain('<circle class="info" cx="806" cy="134" r="8" fill="none" stroke="#039be5"');
+    expect(info).toMatch(/<text x="806" y="138" text-anchor="middle"[^>]*font-style="italic"[^>]*>i<\/text>/);
+    const both = diagramSvg(LAYOUT, [{ ...blocks()[2], info: true }], [], options);
+    expect(both).toContain('<circle cx="806" cy="38" r="8" fill="#ffa600"/>');
+    expect(both).toContain('<circle class="info" cx="786" cy="38"');
+    expect(diagramSvg(LAYOUT, blocks(), [], options)).not.toContain('class="info"');
+  });
+
   it("marks a collapsed device with the number of hidden child devices", () => {
     const device = { ...blocks()[2], hidden: 3 };
     expect(diagramSvg(LAYOUT, [device], [], options)).toContain("▸ +3");

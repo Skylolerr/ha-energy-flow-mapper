@@ -36,7 +36,7 @@ import {
   newGroupId,
 } from "./groups";
 import { icon, typeIcon, typePath } from "./icons";
-import { evidenceText } from "./evidence";
+import { evidenceText, formatDay, formatDayTime } from "./evidence";
 import "./solar-setup";
 import type { SolarCreatedDetail, SolarSetupContext, SolarSetupState } from "./solar-setup";
 import {
@@ -125,6 +125,18 @@ const TYPE_MARKS_KEY = "energy_flow_mapper.helper_marks";
 const FREE_COLLAPSED_KEY = "energy_flow_mapper.free_collapsed";
 /** The unsaved draft of this browser, so leaving the panel does not lose it. */
 const DRAFT_KEY = "energy_flow_mapper.draft";
+/** The README on GitHub; hints link to its sections. */
+const README_URL = "https://github.com/Skylolerr/ha-energy-flow-mapper";
+/**
+ * The README section each safety-net hint links to. The README must keep
+ * headings that give exactly these anchors.
+ */
+export const README_ANCHORS = {
+  gross_off: "if-a-gross-meter-falls-or-jumps",
+  gross_off_input: "if-an-input-was-reset-or-replaced",
+  gross_unknown: "gaps-in-a-gross-meter",
+  solar_term: "solar-term-differs",
+} as const;
 
 interface KeptDraft {
   hash: string;
@@ -1208,7 +1220,7 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   /** The text of a hint. */
-  private _hintText(hint: Hint): string {
+  _hintText(hint: Hint): string {
     const data = hint.data ?? {};
     const entity = typeof data.entity_id === "string" ? this._sensorName(data.entity_id) : "";
     switch (hint.code) {
@@ -1220,8 +1232,107 @@ export class EnergyFlowMapperPanel extends LitElement {
       }
       case "power_available":
         return this._t(hint.kind === "electricity" ? "hint_power_available" : "hint_flow_available", { entity });
+      case "gross_off":
+        return this._grossOffText(hint);
+      case "gross_unknown": {
+        const input = typeof data.input === "string" ? data.input : null;
+        return [
+          this._t("hint_gross_unknown", {
+            meter: this._name(hint.stat),
+            length: this._minutesText(Number(data.minutes)),
+            ...this._hourText(data.hour),
+          }),
+          input === null
+            ? this._t("hint_gross_unknown_inputs")
+            : this._t("hint_gross_unknown_input", { input: this._sensorName(input) }),
+        ].join(" ");
+      }
+      case "solar_term_short":
+      case "solar_term_high":
+        return this._t(hint.code === "solar_term_short" ? "hint_solar_term_short" : "hint_solar_term_high", {
+          date: formatDay(this.hass, String(data.day ?? "")),
+          term: entity,
+          term_energy: formatEnergy(this.hass, Number(data.term_kwh)),
+          source_energy: formatEnergy(this.hass, Number(data.source_kwh)),
+        });
       default:
         return hint.code;
+    }
+  }
+
+  /** «14:00» and «23.11.» of a hint's hour, in Home Assistant's time zone. */
+  private _hourText(hour: unknown): { date: string; time: string } {
+    return typeof hour === "string" ? formatDayTime(this.hass, hour) : { date: "", time: "" };
+  }
+
+  /** «90 min», or from two hours on «5 h». */
+  private _minutesText(minutes: number): string {
+    return minutes < 120
+      ? this._t("hint_minutes", { count: formatNumber(this.hass, minutes) })
+      : this._t("hint_hours", { count: formatNumber(this.hass, minutes / 60, 1) });
+  }
+
+  /**
+   * A gross meter that left its gross power: what it counted in which hour,
+   * then the likely cause (`cause`, from the backend) and what to do.
+   */
+  private _grossOffText(hint: Hint): string {
+    const data = hint.data ?? {};
+    const change = Number(data.change_kwh);
+    const power = typeof data.power_kwh === "number" ? data.power_kwh : null;
+    const what = {
+      meter: this._name(hint.stat),
+      change: formatEnergy(this.hass, change),
+      drop: formatEnergy(this.hass, -change),
+      power: power === null ? "" : formatEnergy(this.hass, power),
+      ...this._hourText(data.hour),
+    };
+    const step =
+      change < 0
+        ? power === null
+          ? "hint_gross_off_down"
+          : "hint_gross_off_down_power"
+        : power === null
+          ? "hint_gross_off_counted"
+          : data.direction === "jump"
+            ? "hint_gross_off_more"
+            : "hint_gross_off_less";
+    return `${this._t(step, what)} ${this._t(this._grossOffCause(hint), {
+      input: typeof data.input === "string" ? this._sensorName(data.input) : "",
+    })}`;
+  }
+
+  /** The sentence of a gross_off hint's cause, with its way forward. */
+  private _grossOffCause(hint: Hint): StringKey {
+    const data = hint.data ?? {};
+    switch (data.cause) {
+      case "input":
+        // A meter that counts both ways may also fall through export; a solar's counter may not.
+        return data.method === "net" && !this._isSolarMeter(String(data.input))
+          ? "hint_gross_off_input_net"
+          : "hint_gross_off_input";
+      case "solar_term":
+        return "hint_gross_off_solar_term";
+      case "sign":
+        // From power counts its gross power: then the meter is wrong as well.
+        return data.method === "power" ? "hint_gross_off_sign_power" : "hint_gross_off_sign";
+      default:
+        return "hint_gross_off_unclear";
+    }
+  }
+
+  /** The README section a hint links to, or null. */
+  _hintReadme(hint: Hint): string | null {
+    switch (hint.code) {
+      case "gross_off":
+        return `${README_URL}#${hint.data?.cause === "input" ? README_ANCHORS.gross_off_input : README_ANCHORS.gross_off}`;
+      case "gross_unknown":
+        return `${README_URL}#${README_ANCHORS.gross_unknown}`;
+      case "solar_term_short":
+      case "solar_term_high":
+        return `${README_URL}#${README_ANCHORS.solar_term}`;
+      default:
+        return null;
     }
   }
 
@@ -1254,6 +1365,12 @@ export class EnergyFlowMapperPanel extends LitElement {
     this.dispatchEvent(
       new CustomEvent("hass-more-info", { detail: { entityId, view: "settings" }, bubbles: true, composed: true }),
     );
+  }
+
+  /** Show an entity in Home Assistant's more-info dialog: its value and history. */
+  private _openMoreInfo(entityId: string): void {
+    this._close();
+    this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
   }
 
   _change(change: Change): void {
@@ -2752,6 +2869,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       .map((e) => e.textContent?.trim() ?? "")
       .filter(Boolean);
     const warn = Boolean(element?.querySelector(".badge"));
+    // Only the marks the diagram shows: dismissed hints have none.
+    const info = Boolean(element?.querySelector(".hint-mark"));
     if (block.kind === "device") {
       const stat = block.stat!;
       const device = devices.find((d) => d.stat_consumption === stat);
@@ -2763,6 +2882,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         area: this._info(stat)?.area_name ?? null,
         color: this._cssColor("var(--primary-color, #03a9f4)"),
         warn,
+        info,
         hidden: this._collapsed.has(stat) ? (block.node?.children.length ?? 0) : 0,
         mark: this._typeMarks && this._info(stat)?.stat_type ? typePath(this._info(stat)!.stat_type!) : null,
       };
@@ -2799,6 +2919,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         area: block.source?.name || this._name(block.stat),
         color: this._cssColor(color),
         warn,
+        info,
       };
     }
     // A late home meter is named in the text of Home.
@@ -3881,14 +4002,19 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${rows.length === 0
           ? html`<p class="empty">${this._t("no_sources")}</p>`
           : html`<div class="sources">
-              ${rows.map(
-                (row) => html`<div class="source">
-                  <span class="source-role"
-                    >${this._roleLabel(row.role === "consumption" ? row.type : row.role)}</span
-                  >
+              ${rows.map((row) => {
+                const label = this._roleLabel(row.role === "consumption" ? row.type : row.role);
+                // Like a source block of the diagram: it opens the source dialog.
+                return html`<button
+                  class="source"
+                  data-role=${row.role}
+                  @click=${() => (this._dialog = { kind: "source", role: row.role, label, stat: row.stat })}
+                >
+                  <span class="source-role">${label}</span>
                   <span class="source-name">${row.name || this._name(row.stat)}</span>
-                </div>`,
-              )}
+                  ${this._renderHintMark(this._hintsFor(row.stat, row.role))}
+                </button>`;
+              })}
             </div>`}
       </section>
     `;
@@ -3983,6 +4109,7 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${warned || node.problem
             ? html`<span class="badge" title=${this._badgeTitle(node.stat, issues)}>!</span>`
             : nothing}
+          ${this._renderHintMark(this._hintsFor(node.stat))}
           <span class="node-power">${watts === null ? nothing : this._formatValue(watts)}</span>
           <button
             class="icon"
@@ -4027,6 +4154,12 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   private _renderCandidates(foldable = false): TemplateResult {
     const candidates = this._freeCandidates();
+    // A sensor a meter of the draft already counts (an input of a sum or
+    // template, a helper of the setup) is folded away: adding it counts twice.
+    const used = this._usedInDraft();
+    const holder = (c: Candidate) => (c.contained_in && used.has(c.contained_in) ? c.contained_in : null);
+    const free = candidates.filter((c) => holder(c) === null);
+    const contained = candidates.filter((c) => holder(c) !== null);
     return html`
       <section class="card">
         <div class="card-header">
@@ -4054,42 +4187,59 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${candidates.length === 0
           ? html`<p class="empty">${this._t(this._tabKey("no_candidates"))}</p>`
           : html`<ul class="candidates">
-              ${candidates.map(
-                (c) => html`<li
-                  class="candidate"
-                  draggable="true"
-                  data-stat=${c.stat}
-                  @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "candidate", stat: c.stat })}
-                  @dragend=${() => {
-                    this._dragged = null;
-                    this._dropTarget = null;
-                  }}
-                >
-                  <div class="candidate-text">
-                    <span class="node-name">${c.name || c.stat}</span>
-                    <span class="sub"
-                      >${[
-                        c.external ? this._t("external_statistic") : null,
-                        c.area_name,
-                        c.device_name,
-                        c.created_helper ? this._t("created_by") : null,
-                      ]
-                        .filter(Boolean)
-                        .join(" · ") || c.stat}</span
-                    >
-                  </div>
-                  <button
-                    @click=${() =>
-                      this._tab === "gas" ? this._assign("gas", c.stat) : (this._dialog = { kind: "add", stat: c.stat })}
-                  >
-                    ${this._t("add")}
-                  </button>
-                </li>`,
-              )}
+              ${free.map((c) => this._renderCandidate(c))}
             </ul>`}
+        ${contained.length
+          ? html`<details class="contained">
+              <summary>
+                ${this._t("free_contained")} <span class="contained-count">${formatNumber(this.hass, contained.length)}</span>
+              </summary>
+              <p class="hint">${this._t("free_contained_hint")}</p>
+              <ul class="candidates contained-list">
+                ${contained.map((c) =>
+                  this._renderCandidate(c, this._t("free_contained_in", { meter: this._name(holder(c)!) })),
+                )}
+              </ul>
+            </details>`
+          : nothing}
         ${this._renderPowerSensors()}
       </section>
     `;
+  }
+
+  /** A free sensor to drag or add; `sub` replaces its area and device. */
+  private _renderCandidate(c: Candidate, sub?: string): TemplateResult {
+    return html`<li
+      class="candidate"
+      draggable="true"
+      data-stat=${c.stat}
+      @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "candidate", stat: c.stat })}
+      @dragend=${() => {
+        this._dragged = null;
+        this._dropTarget = null;
+      }}
+    >
+      <div class="candidate-text">
+        <span class="node-name">${c.name || c.stat}</span>
+        <span class="sub"
+          >${sub ??
+          ([
+            c.external ? this._t("external_statistic") : null,
+            c.area_name,
+            c.device_name,
+            c.created_helper ? this._t("created_by") : null,
+          ]
+            .filter(Boolean)
+            .join(" · ") ||
+            c.stat)}</span
+        >
+      </div>
+      <button
+        @click=${() => (this._tab === "gas" ? this._assign("gas", c.stat) : (this._dialog = { kind: "add", stat: c.stat }))}
+      >
+        ${this._t("add")}
+      </button>
+    </li>`;
   }
 
   private _renderPowerSensors(): TemplateResult | typeof nothing {
@@ -4282,6 +4432,30 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${this._t(hint.kind === "electricity" ? "hint_set_power" : "hint_set_flow")}
         </button>`;
       }
+      case "gross_off":
+        // A wrong sign of a meter made of energy counters: its power can be set to none.
+        // From power counts its gross power, so that would not fix the meter.
+        return hint.data?.cause === "sign" &&
+          hint.data.method !== "power" &&
+          this.draft.find((d) => d.stat_consumption === hint.stat)?.stat_rate
+          ? html`<button class="primary" @click=${() => this._openPowerDialog({ kind: "device", stat: hint.stat })}>
+              ${this._t("power_sensor")}
+            </button>`
+          : nothing;
+      case "gross_unknown": {
+        const input = hint.data?.input;
+        return typeof input === "string"
+          ? html`<button class="primary" @click=${() => this._openMoreInfo(input)}>${this._t("hint_show_sensor")}</button>`
+          : nothing;
+      }
+      case "solar_term_high": {
+        const term = hint.data?.entity_id;
+        return typeof term === "string"
+          ? html`<button class="primary" @click=${() => this._openEntitySettings(term)}>
+              ${this._t("hint_open_helper")}
+            </button>`
+          : nothing;
+      }
       default:
         return nothing;
     }
@@ -4309,7 +4483,14 @@ export class EnergyFlowMapperPanel extends LitElement {
     return html`<h3>${this._t("hints")}</h3>
       ${hints.map(
         (hint) => html`<div class="hint-line" data-code=${hint.code}>
-          <p><span class="hint-mark">i</span> ${this._hintText(hint)}</p>
+          <p>
+            <span class="hint-mark">i</span> ${this._hintText(hint)}
+            ${this._hintReadme(hint)
+              ? html`<a class="readme" href=${this._hintReadme(hint)!} target="_blank" rel="noreferrer"
+                  >${this._t("hint_readme")}</a
+                >`
+              : nothing}
+          </p>
           <div class="dialog-actions">
             ${this._hintAction(hint)}
             <button title=${this._t("hint_dismiss_title")} @click=${() => void this._dismissHint(hint)}>
@@ -4347,6 +4528,10 @@ export class EnergyFlowMapperPanel extends LitElement {
   }
 
   _issueText(issue: Issue): string {
+    // A device counted twice names the meter that holds it.
+    if (issue.code === "counted_twice" && typeof issue.details.meter === "string") {
+      return this._t("issue_counted_twice_in", { meter: this._name(issue.details.meter) });
+    }
     const key = `issue_${issue.code}`;
     return hasKey(key)
       ? this._t(key, { unit: String(issue.details.unit ?? "") })
@@ -4954,7 +5139,8 @@ export class EnergyFlowMapperPanel extends LitElement {
               ? html`<button @click=${() => (this._dialog = { kind: "replace", stat: dialog.stat })}>
                   ${this._t("replace_with")}
                 </button>`
-              : nothing}
+              : html`<button disabled title=${this._t("replace_none")}>${this._t("replace_with")}</button>
+                  <p class="hint replace-none">${this._t("replace_none")}</p>`}
             <button @click=${() => this._openSum({ origin: dialog.stat })}>${this._t("sum_create")}</button>
             ${this._offersSolarSetup(dialog.stat)
               ? html`<button @click=${() => this._openSolarSetup(dialog.stat)}>${this._t("solar_setup")}</button>`
@@ -5747,6 +5933,16 @@ export class EnergyFlowMapperPanel extends LitElement {
       font-size: 12px;
       color: var(--secondary-text-color);
     }
+    /* A source row of the list view is a button: it opens the source dialog. */
+    .sources .source {
+      align-items: flex-start;
+      gap: 2px;
+      border: none;
+      font: inherit;
+      color: inherit;
+      text-align: start;
+      cursor: pointer;
+    }
     ul {
       list-style: none;
       margin: 0;
@@ -5846,6 +6042,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       margin-right: 4px;
       vertical-align: -3px;
     }
+    .hint-line a.readme {
+      color: var(--primary-color);
+      white-space: nowrap;
+    }
     .children-solar {
       margin: 4px 0 0;
     }
@@ -5883,6 +6083,18 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .candidate {
       cursor: grab;
+    }
+    /* Free sensors a meter already counts, folded below the others. */
+    .contained {
+      margin-top: 12px;
+    }
+    .contained summary {
+      cursor: pointer;
+      font-weight: 500;
+    }
+    .contained-count {
+      color: var(--secondary-text-color);
+      font-weight: normal;
     }
     .candidate-text {
       display: flex;
