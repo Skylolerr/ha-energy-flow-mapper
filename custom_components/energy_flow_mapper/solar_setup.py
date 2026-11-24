@@ -328,12 +328,16 @@ def gross_power_template(
     the solar's held power template (`solar_power_template`, as the solar
     term reads it): through a short dropout of `solar` it keeps the solar's
     last power, then 0; without a number it counts 0, unless `solar` has
-    one (a unit the held template cannot read): `none`. Once the hold has
-    ended (`solar` still not a number, `held` 0) while the circuit feeds in,
-    the template is `none` (H6a), as its true value is unknown. Home
-    Assistant's integral counts no energy for an unknown source and stays
-    available, so the gross energy never falls for a dropout of the solar.
-    There is no floor at 0: a wrong sign must stay visible.
+    one (a unit the held template cannot read): `none`. While `solar` has no
+    number, a sum below 0 is `none` (H6a): during the hold the real solar may
+    have risen above the held value, after it (`held` 0) the circuit feeds
+    in; either way the true value is unknown. Home Assistant's integral
+    counts no energy for an unknown source and stays available, so the gross
+    energy never falls for a dropout of the solar. With the solar's own
+    number there is no floor at 0: a wrong sign must stay visible. Right
+    after a start the two templates render in either order; for that moment
+    the gross power may be `none` or lack the solar, a negligible transient
+    (until the next render, at the next change of an input).
     """
     circuit_term = _Term("circuit", circuit, -1 if invert else 1)
     held_term = _Term("held", held, zero=True)
@@ -347,7 +351,7 @@ def gross_power_template(
         energy=False,
         guard=(
             f"(held | is_number or not {raw})"
-            f" and ({raw} or {held_w} != 0 or {circuit_w} >= 0)"
+            f" and ({raw} or ({circuit_w} + {held_w}) >= 0)"
         ),
     )
 
@@ -1037,7 +1041,8 @@ def _live(
     """Return the circuit, solar and gross power now, as the template reads them.
 
     The solar without a number is what its held template `held` (ours, to
-    be reused) holds, else 0: a new one starts without a value of its own.
+    be reused) holds, else 0: a new one starts without a value of its own;
+    then a sum below 0 is unknown.
     """
     circuit_w = _value(hass, circuit, "power") if circuit is not None else None
     if circuit_w is not None and invert:
@@ -1054,7 +1059,7 @@ def _live(
         round(circuit_w + solar_w, POWER_DECIMALS)
         if circuit_w is not None
         and solar_w is not None
-        and not (offline and solar_w == 0 and circuit_w < 0)
+        and not (offline and circuit_w + solar_w < 0)
         else None
     )
     return {"circuit_w": circuit_w, "solar_w": solar_w, "gross_w": gross_w}

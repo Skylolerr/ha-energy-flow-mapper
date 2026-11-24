@@ -483,6 +483,29 @@ async def test_gross_power_template_inverted(hass: HomeAssistant) -> None:
     assert render(hass, template) == 50.0
 
 
+@pytest.mark.parametrize("invert", [False, True])
+async def test_gross_power_template_never_below_0_while_held(
+    hass: HomeAssistant, invert: bool
+) -> None:
+    """During the hold the real solar may have risen: a sum below 0 is unknown.
+
+    The solar unavailable, held at 300 W, the circuit feeding in 400 W: the
+    held value is too low, so the gross power is `none`, never -100 W. With
+    the solar's own number the sum counts as it is (a wrong sign stays
+    visible).
+    """
+    template = gross_power_template("sensor.c", "sensor.p", "sensor.h", invert=invert)
+    _set(hass, "sensor.c", "400" if invert else "-400", "W")
+    _set(hass, "sensor.p", "unavailable", None)
+    _set(hass, "sensor.h", "300", "W")
+    assert render(hass, template) is None
+    _set(hass, "sensor.h", "500", "W")
+    assert render(hass, template) == 100.0
+    _set(hass, "sensor.p", "300", "W")
+    _set(hass, "sensor.h", "300", "W")
+    assert render(hass, template) == -100.0
+
+
 async def test_solar_power_template_zero_mapped(hass: HomeAssistant) -> None:
     """The solar's power in W; offline (not a number) is 0, an odd unit unknown."""
     template = solar_power_template("sensor.p")
@@ -3045,8 +3068,7 @@ async def test_live_gross_power_follows_the_hold(
     """The preview's live gross power reads the solar as the template does.
 
     Without a number the solar is what our held template holds, else 0
-    (a new one starts at 0); once that is 0 while the circuit feeds in, the
-    live gross power is unknown.
+    (a new one starts at 0); a sum below 0 is then unknown.
     """
     hass.states.async_set(MAIN_POWER, "-100", {"unit_of_measurement": "W"})
     hass.states.async_set(SOLAR_POWER, "unavailable", {})
@@ -3065,3 +3087,7 @@ async def test_live_gross_power_follows_the_hold(
     hass.states.async_set(MAIN_POWER, "-100", {"unit_of_measurement": "W"})
     result = await result_of(hass_ws_client, hass, method="power")
     assert result["live"] == {"circuit_w": -100.0, "solar_w": 300.0, "gross_w": 200.0}
+    # Feeding in more than the held solar: unknown, as in the template.
+    hass.states.async_set(MAIN_POWER, "-400", {"unit_of_measurement": "W"})
+    result = await result_of(hass_ws_client, hass, method="power")
+    assert result["live"] == {"circuit_w": -400.0, "solar_w": 300.0, "gross_w": None}

@@ -1327,3 +1327,42 @@ async def test_compile_across_the_fall_back(
     assert await hourly(hass, gross, start, 3) == approx([0.3, 0.3, 0.3])
     hints = await safety_net(hass, client, gross, power)
     assert not [h for h in hints if h["code"] in ("gross_off", "gross_unknown")]
+
+
+@pytest.mark.parametrize("energy_prefs", [settings(NET, NET_POWER)])
+async def test_compile_from_power_sun_rises_in_the_hold(
+    hass: HomeAssistant,
+    client: Connect,
+    freezer: FrozenDateTimeFactory,
+    start: datetime,
+) -> None:
+    """From power: the solar sensor drops out at 0:20, the sun comes out at 0:22.
+
+    The held 300 W is then too low: circuit + held would be below 0. While
+    the solar has no number, such a sum is unknown, so the integral counts
+    nothing and never falls.
+
+    Load 200 W; solar 300 W, 2000 W from 0:22; the sensor back at 0:30.
+    True consumption: 0.2 kWh per hour.
+    0:20-0:22: circuit -100 W + held 300 W = 200 W, right.
+    0:22-0:30: circuit -1800 W + held 300 W < 0: unknown. The integral has
+    counted up to its update at 0:21:59 and counts again from 0:29:59:
+    8 minutes at 200 W lost. Hour 0: 0.2 - 0.2 x 8/60 = 0.1733 kWh.
+    Counting circuit + held would have given 0.2 - 1.7 x 8/60 = -0.027.
+    """
+    circuit = Circuit("power", load=200, solar=300)
+    clock, gross, _ = await begin(hass, client, freezer, circuit, start)
+    await clock.run(
+        circuit,
+        start + 2 * HOUR,
+        {
+            start + 20 * MINUTE: change(solar_state="unavailable"),
+            start + 22 * MINUTE: change(solar=2000),
+            start + 30 * MINUTE: change(solar_state=None),
+        },
+    )
+    assert circuit.truth(start, 2) == pytest.approx([0.2] * 2)
+    assert await hourly(hass, gross, start, 2) == approx([0.2 - 0.2 * 8 / 60, 0.2])
+    steps = await short_term(hass, gross, start, start + 2 * HOUR)
+    assert len(steps) == 24
+    assert min(steps) >= 0
