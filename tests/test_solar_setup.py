@@ -27,6 +27,8 @@ from custom_components.energy_flow_mapper.device_rules import Method
 from custom_components.energy_flow_mapper.integral import GROSS_INTEGRAL_OPTIONS
 from custom_components.energy_flow_mapper.meter_inputs import meter_inputs
 from custom_components.energy_flow_mapper.solar_setup import (
+    KIND_SOLAR_ENERGY,
+    KIND_SOLAR_POWER,
     KWH,
     WATTS,
     Choices,
@@ -1789,6 +1791,51 @@ async def test_setup_with_a_solar_power_starting_with_a_digit(
         rate = response["result"]["stat_rate"]
         assert rate is not None
         assert _number(hass, rate) == 400
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])
+@pytest.mark.usefixtures("evidence")
+async def test_two_setups_at_once_share_one_solar_term(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Two setups sent at the same moment on one solar make one solar term.
+
+    The second waits for the first and then reuses its held template and
+    integral.
+    """
+
+    async def setup(stat: str) -> dict[str, Any]:
+        shown = await preview(hass_ws_client, hass, stat=stat, method="net")
+        assert shown["success"], shown
+        return await send(
+            hass_ws_client,
+            hass,
+            type=f"{DOMAIN}/create_solar_setup",
+            stat=stat,
+            solar=SOLAR,
+            method="net",
+            offset=shown["result"]["offset"],
+            names={"energy": f"{stat} gross"},
+        )
+
+    first, second = await asyncio.gather(setup(MAIN), setup("sensor.garage_energy"))
+    assert first["success"], first
+    assert second["success"], second
+    records = loaded_entry.runtime_data.helpers.records().values()
+    assert [r["kind"] for r in records if r.get("kind") == KIND_SOLAR_POWER] == [
+        KIND_SOLAR_POWER
+    ]
+    assert [r["kind"] for r in records if r.get("kind") == KIND_SOLAR_ENERGY] == [
+        KIND_SOLAR_ENERGY
+    ]
+    integral = _solar_integral(hass)
+    entries = _template_entries(hass)
+    for stat in (MAIN, "sensor.garage_energy"):
+        assert meter_inputs(hass, _entity_of(hass, entries[f"{stat} gross"].entry_id))[
+            "entities"
+        ] >= {stat, integral}
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SOLAR_POWER])

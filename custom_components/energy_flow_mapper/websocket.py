@@ -922,14 +922,17 @@ async def websocket_create_solar_setup(
     planned again with the same choices and refused with the preview's
     `blocked` reason, `not_offered`, or `values_changed` when the previewed
     `offset` is no longer enough. Names are passed ready (translated) by the
-    panel, per helper role; an empty one gets the default.
+    panel, per helper role; an empty one gets the default. Plan and create
+    run under the lock of the writes: a second setup at the same moment
+    waits, then sees (and reuses) the solar term the first one made.
     """
     runtime = _runtime(hass)
-    prefs, saved = await _async_setup_prefs(hass, runtime, msg)
-    plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg), saved)
-    entity_id, stat_rate = await async_create(
-        hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
-    )
+    async with runtime.lock:
+        prefs, saved = await _async_setup_prefs(hass, runtime, msg)
+        plan = await async_plan(hass, prefs, runtime.helpers, _choices(msg), saved)
+        entity_id, stat_rate = await async_create(
+            hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
+        )
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 
