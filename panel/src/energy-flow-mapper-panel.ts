@@ -6957,6 +6957,13 @@ export class EnergyFlowMapperPanel extends LitElement {
       gap: 8px;
       border-left: 4px solid var(--energy-solar-color, #ff9800);
     }
+    /* The text takes the line; the button goes below it in a narrow column. */
+    .solar-block {
+      flex-wrap: wrap;
+    }
+    .solar-block .candidate-text {
+      flex: 1 1 10em;
+    }
     .solar-block .solar-pick {
       margin-left: auto;
       flex: none;
