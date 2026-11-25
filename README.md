@@ -353,8 +353,9 @@ feed in?*). Drag it onto the circuit the solar really feeds into:
   the solar* only places it.
 
 Without dragging (on a phone, or with the keyboard), *Choose circuit…* on the block lists
-the circuits. A solar stays placed at its innermost circuit: when a sub panel around that
-circuit gets a gross meter too, the solar does not move to the sub panel.
+the circuits. Without a solar source the free sensors say so, with *Add solar production*.
+When a sub panel around the solar's circuit gets a gross meter too (⋮ → *Solar feeds in
+here…*), the solar stays placed at its circuit; drag the block to move it.
 
 A placed solar is a block below its circuit, in the solar colour with its current value,
 in the diagram, the list, the dashboard card and «Save as image». It only shows where the

@@ -21,7 +21,7 @@ from homeassistant.components.websocket_api.decorators import (
     websocket_command,
 )
 from homeassistant.core import HomeAssistant, callback, valid_entity_id
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import config_validation as cv
 from homeassistant.util import dt as dt_util
 from homeassistant.util.unit_conversion import VolumeConverter
@@ -937,6 +937,9 @@ async def websocket_solar_setup_preview(
         **_SETUP_CHOICES,
         vol.Optional("names"): {vol.In([role.value for role in Role]): str},
         vol.Required("offset"): vol.All(vol.Coerce(float), vol.Range(min=0)),
+        # Opened from the solar block: place the solar here, also when it was
+        # placed at a circuit inside this device (moved outward).
+        vol.Optional("place", default=False): bool,
     }
 )
 @require_admin
@@ -966,7 +969,7 @@ async def websocket_create_solar_setup(
         # The solar feeds in here now, whatever opened the setup; a place at
         # a circuit inside this device stays (that meter is gross as well).
         placed = runtime.solar_places.places().get(msg["solar"])
-        if placed is None or not _inside(prefs, placed, msg["stat"]):
+        if msg["place"] or placed is None or not _inside(prefs, placed, msg["stat"]):
             await runtime.solar_places.async_set(msg["solar"], entity_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
@@ -1497,8 +1500,8 @@ async def websocket_dismiss_hint(
 @websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/place_solar",
-        vol.Required("solar"): str,
-        vol.Required("stat"): vol.Any(str, None),
+        vol.Required("solar"): vol.All(str, vol.Length(min=1)),
+        vol.Required("stat"): vol.Any(vol.All(str, vol.Length(min=1)), None),
     }
 )
 @require_admin
@@ -1512,5 +1515,16 @@ async def websocket_place_solar(
     change by it.
     """
     runtime = _runtime(hass)
-    places = await runtime.solar_places.async_set(msg["solar"], msg["stat"])
+    stat = msg["stat"]
+    if stat is not None:
+        prefs = await energy_access.async_get_prefs(hass)
+        holds = SolarHolds(hass, prefs, runtime.helpers)
+        # A solar is never placed at itself or a meter made only of a solar.
+        if stat == msg["solar"] or holds.is_solar(stat):
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key="solar_place_refused",
+                translation_placeholders={"entity": stat},
+            )
+    places = await runtime.solar_places.async_set(msg["solar"], stat)
     connection.send_result(msg["id"], {"places": places})

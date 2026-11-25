@@ -51,6 +51,7 @@ async def async_get_config_entry_diagnostics(
         "backup_limit": runtime.backups.limit,
         "created_helpers": len(runtime.helpers.entries()),
         "ignored_suggestions": len(runtime.suggestions.ignored()),
+        "solar_places": len(runtime.solar_places.places()),
         "groups": {
             kind.value: {
                 "count": len(groups[kind.value]),

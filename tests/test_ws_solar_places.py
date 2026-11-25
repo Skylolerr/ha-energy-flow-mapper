@@ -39,6 +39,32 @@ async def test_place_solar_set_and_clear(
     assert response["result"] == {"places": {}}
 
 
+@pytest.mark.usefixtures("loaded_entry")
+@pytest.mark.parametrize(
+    ("solar", "stat"),
+    [
+        (SOLAR, SOLAR),
+        (SOLAR, "sensor.solar_copy"),
+        ("", "sensor.garage_energy"),
+        (SOLAR, ""),
+    ],
+)
+async def test_place_solar_refuses_the_solar_itself_and_empty_values(
+    hass: HomeAssistant, hass_ws_client: WebSocketGenerator, solar: str, stat: str
+) -> None:
+    """A solar is never placed at itself, a copy of it, or at nothing."""
+    _meter(hass, SOLAR)
+    _template(hass, "sensor.solar_copy", "{{ states('sensor.solar_energy') | float }}")
+    response = await send(
+        hass_ws_client, hass, type=f"{DOMAIN}/place_solar", solar=solar, stat=stat
+    )
+    assert not response["success"]
+    if solar and stat:
+        assert response["error"]["translation_key"] == "solar_place_refused"
+    got = (await send(hass_ws_client, hass, type=f"{DOMAIN}/get"))["result"]
+    assert got["solar_places"] == {}
+
+
 async def test_place_solar_needs_an_admin(
     hass: HomeAssistant,
     hass_ws_client: WebSocketGenerator,

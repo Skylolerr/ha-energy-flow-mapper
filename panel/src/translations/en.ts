@@ -527,7 +527,7 @@ export const en = {
   solar_setup_power_not_kept: "The current power of {device} is not kept, because it is net. A live power cannot be added later; if you want one, set this up only once the circuit has fed in.",
   solar_setup_unusable_power: "{entity}, the power sensor of {name}, is disabled or has no power unit that can be read.",
   solar_block_free: "{solar}: where does it feed in?",
-  solar_block_free_hint: "Drag it onto the circuit the solar feeds into.",
+  solar_block_free_hint: "Drag it onto the circuit the solar feeds into, or choose the circuit.",
   solar_block_strip: "A solar is not placed yet",
   solar_block_placed_title: "Drag it onto another circuit to move it; click for more.",
   solar_block_placed: "{solar} is placed at {device}.",
@@ -541,4 +541,9 @@ export const en = {
   solar_block_pick: "Choose circuit…",
   solar_block_move: "Move to another circuit…",
   solar_pick_title: "Where does {solar} feed in?",
+  solar_pick_hint: "Choose the circuit the solar feeds into.",
+  solar_pick_none: "No circuit can take {solar} yet. Add the circuit it feeds into as a device first.",
+  solar_howto_title: "Does a solar feed into a circuit?",
+  solar_howto_text: "To show where it feeds in, add it as a source first: «Solar production» at the top, as Home Assistant has it. Its block then appears here, to drag onto its circuit.",
+  solar_howto_button: "Add solar production",
 };

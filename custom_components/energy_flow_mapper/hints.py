@@ -83,7 +83,7 @@ from .hierarchy import (
     used_stats,
 )
 from .meter_inputs import Cache, direct_inputs
-from .solar_setup import KIND_GROSS_ENERGY, KIND_SOLAR_ENERGY
+from .solar_setup import GROSS_NOISE_W, KIND_GROSS_ENERGY, KIND_SOLAR_ENERGY
 from .stats_probe import (
     FALL_SHARE,
     HOURLY,
@@ -379,7 +379,12 @@ def every_solar_held(
     user placed at it (`places`: solar statistic -> meter).
     """
     devices = [d[STAT] for d in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])]
-    held = {solar for solar, meter in (places or {}).items() if meter in devices}
+    # A place at the solar itself, or a meter made only of it, holds nothing.
+    held = {
+        solar
+        for solar, meter in (places or {}).items()
+        if meter in devices and not holds.is_solar(meter)
+    }
     for device in devices:
         held |= counted_solars(hass, prefs, holds, device)
     return all(source[FROM] in held for source in _solars(prefs))
@@ -451,10 +456,14 @@ async def async_returned(
         {
             stat
             for stat, power in powers.items()
+            # A current transformer's noise at night is no feeding in.
             if sign_evidence(
-                (dt_util.utc_from_timestamp(row["start"]), low)
-                for row in rows.get(power, [])
-                if (low := row.get("min")) is not None
+                (
+                    (dt_util.utc_from_timestamp(row["start"]), low)
+                    for row in rows.get(power, [])
+                    if (low := row.get("min")) is not None
+                ),
+                GROSS_NOISE_W,
             )
         },
     )

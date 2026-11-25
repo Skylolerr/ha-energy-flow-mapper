@@ -1718,6 +1718,22 @@ async def test_create_keeps_the_place_of_an_inner_circuit(
     assert places.places() == {SOLAR: "sensor.inner_gross"}
 
 
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY_CHILD])
+@pytest.mark.usefixtures("signed")
+async def test_create_from_the_block_places_where_it_was_put(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Moved out of an inner circuit (the block, `place`), the solar goes along."""
+    _shelly_pro_em(hass)
+    places = loaded_entry.runtime_data.solar_places
+    await places.async_set(SOLAR, "sensor.inner_gross")
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em", place=True)
+    assert response["success"], response
+    assert places.places() == {SOLAR: response["result"]["entity_id"]}
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
 @pytest.mark.usefixtures("signed")
 async def test_create_em_template_state_class_total(

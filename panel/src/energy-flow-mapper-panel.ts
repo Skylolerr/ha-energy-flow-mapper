@@ -247,7 +247,7 @@ type Dialog =
    * `solar` is the solar source the user came with (from a sum), if any;
    * `resume` the setup's state when it comes back from a power dialog.
    */
-  | { kind: "solar"; stat: string; solar?: string; resume?: SolarSetupState };
+  | { kind: "solar"; stat: string; solar?: string; resume?: SolarSetupState; place?: boolean };
 
 type SolarDialog = Extract<Dialog, { kind: "solar" }>;
 
@@ -2749,7 +2749,7 @@ export class EnergyFlowMapperPanel extends LitElement {
    * Open "Solar feeds in here…" for a device; the setup preselects the only
    * solar source. From a sum, `solar` is the solar source that was in it.
    */
-  _openSolarSetup(stat: string, solar?: string): void {
+  _openSolarSetup(stat: string, solar?: string, fromBlock = false): void {
     this._sumSession++;
     // Left for a sensor's settings: as the user left it, once.
     const resume = this._setupResume;
@@ -2758,7 +2758,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._dialog = { ...resume };
       return;
     }
-    this._dialog = solar ? { kind: "solar", stat, solar } : { kind: "solar", stat };
+    this._dialog = solar
+      ? { kind: "solar", stat, solar, ...(fromBlock ? { place: true } : {}) }
+      : { kind: "solar", stat };
   }
 
   /**
@@ -3084,7 +3086,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (this._solarDrop(solar, target) === "place") {
       void this._placeSolar(solar, target);
     } else {
-      this._openSolarSetup(target, solar);
+      this._openSolarSetup(target, solar, true);
     }
   }
 
@@ -4054,8 +4056,8 @@ export class EnergyFlowMapperPanel extends LitElement {
       class="block device node ${suggestion ? "suggested" : ""} ${this._findClass(stat)} ${this._selected === stat ? "selected" : ""} ${this._multi.has(stat) ? "multi" : ""} ${this._dropTarget ===
       stat
         ? "drop"
-        : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""} ${this._dragged?.stat ===
-      stat
+        : ""} ${hasError ? "has-error" : warned ? "has-warning" : ""} ${this._dragged?.kind !== "solar" &&
+      this._dragged?.stat === stat
         ? "dragged"
         : this._dragged && this._canDrop(stat)
           ? "can-drop"
@@ -4131,7 +4133,17 @@ export class EnergyFlowMapperPanel extends LitElement {
       ? html`${solars.map(
           (solar) => html`<button
             class="solar-tag"
+            draggable="true"
             title=${this._t("solar_block_placed_title")}
+            @dragstart=${(e: DragEvent) => {
+              // The solar moves, not the device row around the tag.
+              e.stopPropagation();
+              this._startDrag(e, { kind: "solar", stat: solar, free: true });
+            }}
+            @dragend=${() => {
+              this._dragged = null;
+              this._dropTarget = null;
+            }}
             @click=${(e: Event) => {
               e.stopPropagation();
               this._dialog = { kind: "solar_place", solar, stat };
@@ -4539,6 +4551,16 @@ export class EnergyFlowMapperPanel extends LitElement {
 
   /** The solar sources placed nowhere yet: a block each, to drag onto the circuit it feeds into. */
   private _renderFreeSolars(): TemplateResult | typeof nothing {
+    if (this._tab === "electricity" && !this._hasSolar()) {
+      // The block needs the solar as a source first, as Home Assistant has it.
+      return html`<details class="solar-howto">
+        <summary>${icon("sun")} ${this._t("solar_howto_title")}</summary>
+        <p class="hint">${this._t("solar_howto_text")}</p>
+        <button @click=${() => (this._dialog = { kind: "assign", role: "production" })}>
+          ${this._t("solar_howto_button")}
+        </button>
+      </details>`;
+    }
     const solars = this._freeSolarStats();
     if (!solars.length) {
       return nothing;
@@ -5401,6 +5423,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       // A stale draft: load the settings again; the draft is kept for them.
       reload: () => this._load(),
       canPlace: (solar) => this._solarDrop(solar, dialog.stat) !== null,
+      placeHere: dialog.place === true,
     };
     return html`${keyed(
       dialog,
@@ -6036,7 +6059,11 @@ export class EnergyFlowMapperPanel extends LitElement {
       case "solar_pick": {
         const targets = devices.filter((d) => this._solarDrop(dialog.solar, d.stat_consumption) !== null);
         return html`<h2>${this._t("solar_pick_title", { solar: this._solarName(dialog.solar) })}</h2>
-          <p class="hint">${this._t("solar_block_free_hint")}</p>
+          <p class="hint">
+            ${targets.length
+              ? this._t("solar_pick_hint")
+              : this._t("solar_pick_none", { solar: this._solarName(dialog.solar) })}
+          </p>
           <div class="dialog-actions column-actions">
             ${targets.map(
               (d) => html`<button
@@ -6934,6 +6961,18 @@ export class EnergyFlowMapperPanel extends LitElement {
       margin-left: auto;
       flex: none;
     }
+    .solar-howto {
+      margin: 8px 0;
+    }
+    .solar-howto summary {
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .solar-howto .mdi {
+      color: var(--energy-solar-color, #ff9800);
+    }
     .solar-tag {
       display: inline-flex;
       align-items: center;
@@ -6950,6 +6989,17 @@ export class EnergyFlowMapperPanel extends LitElement {
     .solar-tag .mdi {
       width: 14px;
       height: 14px;
+      flex: none;
+    }
+    /* A long solar name gives way to the device's name. */
+    .solar-tag {
+      max-width: 40%;
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      flex: 0 1 auto;
+      cursor: grab;
     }
     .block.untracked {
       border: 2px dashed var(--block-border);

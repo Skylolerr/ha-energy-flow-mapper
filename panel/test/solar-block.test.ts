@@ -45,10 +45,11 @@ describe("solar places in the draft", () => {
     expect(solarElsewhere([ROOF], DEVICES, { "sensor.roof": "gone" }, counted).size).toBe(0);
   });
 
-  it("does not warn on the same branch: an outer or inner meter counts the solar rightly", () => {
+  it("does not warn above the place: an outer meter counts its circuit's solar rightly", () => {
     const devices = [device("uv"), device("f11", "uv"), device("inner", "f11"), device("f13")];
     const counted = { uv: ["sensor.roof"], f11: ["sensor.roof"], inner: ["sensor.roof"], f13: ["sensor.roof"] };
-    expect([...solarElsewhere([ROOF], devices, { "sensor.roof": "f11" }, counted).keys()]).toEqual(["f13"]);
+    // An inner circuit's gross meter left over after a move outward does warn.
+    expect([...solarElsewhere([ROOF], devices, { "sensor.roof": "f11" }, counted).keys()]).toEqual(["inner", "f13"]);
   });
 });
 

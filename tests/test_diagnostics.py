@@ -64,6 +64,7 @@ async def test_diagnostics(hass: HomeAssistant, loaded_entry: MockConfigEntry) -
         "backup_limit": 20,
         "created_helpers": 0,
         "ignored_suggestions": 0,
+        "solar_places": 0,
         "groups": {
             "electricity": {"count": 3, "max_depth": 2},
             "water": {"count": 0, "max_depth": 0},
@@ -91,6 +92,7 @@ async def test_diagnostics_unsupported(
         "backup_limit": 20,
         "created_helpers": 0,
         "ignored_suggestions": 0,
+        "solar_places": 0,
         "groups": {
             "electricity": {"count": 0, "max_depth": 0},
             "water": {"count": 0, "max_depth": 0},

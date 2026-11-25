@@ -5550,6 +5550,80 @@ describe("hints and solar setup", () => {
       expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
     });
 
+    it("in the list, dragging the solar tag moves the solar, not the device", async () => {
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.tv" };
+      snap.solar_counted = { "sensor.server": ["sensor.solar"] };
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      el._view = "list";
+      await settle(el);
+      const tag = node(el, "sensor.tv").querySelector<HTMLElement>(".solar-tag")!;
+      expect(tag.getAttribute("draggable")).toBe("true");
+      drag(tag, node(el, "sensor.server"));
+      await settle(el);
+      expect(el._changes).toEqual([]);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toMatchObject({ solar: "sensor.solar", stat: "sensor.server" });
+    });
+
+    it("dragging a solar does not make its own meter's device look dragged", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
+      const el = await mount(placeMock(snap));
+      freeSolar(el)!.dispatchEvent(
+        Object.assign(new Event("dragstart", { bubbles: true }), { dataTransfer: { setData: vi.fn(), effectAllowed: "" } }),
+      );
+      await settle(el);
+      expect(el._dragged).toMatchObject({ kind: "solar" });
+      expect(node(el, "sensor.solar").classList.contains("dragged")).toBe(false);
+    });
+
+    it("the picker says what to do, and why when no circuit fits", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.device_consumption = [{ stat_consumption: "sensor.solar" }];
+      const el = await mount(placeMock(snap));
+      freeSolar(el)!.querySelector<HTMLButtonElement>("button.solar-pick")!.click();
+      await settle(el);
+      expect(dialogEl(el).textContent).toContain("No circuit can take Roof solar");
+      expect(dialogEl(el).textContent).not.toContain("Drag it");
+      const full = await mount(placeMock());
+      freeSolar(full)!.querySelector<HTMLButtonElement>("button.solar-pick")!.click();
+      await settle(full);
+      expect(dialogEl(full).textContent).toContain("Choose the circuit the solar feeds into.");
+    });
+
+    it("a setup opened from the block places the solar there; from the menu it does not ask to", async () => {
+      const mock = placeMock();
+      mock.responses["energy_flow_mapper/create_solar_setup"] = { entity_id: "sensor.server_gross", stat_rate: null };
+      const el = await mount(mock);
+      drag(freeSolar(el)!, node(el, "sensor.server"));
+      await settle(el);
+      dialogButton(el, "Set up")!.click();
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/create_solar_setup")).toMatchObject({ solar: "sensor.solar", place: true });
+      const menu = placeMock();
+      menu.responses["energy_flow_mapper/create_solar_setup"] = { entity_id: "sensor.server_gross", stat_rate: null };
+      const other = await mount(menu);
+      other._openSolarSetup("sensor.server");
+      await settle(other);
+      dialogButton(other, "Set up")!.click();
+      await settle(other);
+      expect(lastCall(menu, "energy_flow_mapper/create_solar_setup")).not.toHaveProperty("place");
+    });
+
+    it("without a solar source it says to add the solar as a source first", async () => {
+      const el = await mount(placeMock(snapshot()));
+      const howto = root(el).querySelector<HTMLElement>(".solar-howto")!;
+      expect(howto.textContent).toContain("add it as a source first");
+      howto.querySelector<HTMLButtonElement>("button")!.click();
+      await settle(el);
+      expect(dialogEl(el).open).toBe(true);
+      expect(el._dialog).toMatchObject({ kind: "assign", role: "production" });
+      // With a solar source, its block takes the place of the hint.
+      const withSolar = await mount(placeMock());
+      expect(root(withSolar).querySelector(".solar-howto")).toBeNull();
+    });
+
     it("is not dropped on the solar's own meter or on Home", async () => {
       const snap = solarSnapshot();
       snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });

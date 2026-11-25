@@ -58,6 +58,8 @@ export interface SolarSetupContext {
   reload: () => Promise<void>;
   /** Whether *My meter already counts the solar* may place `solar` here (as a drop could). */
   canPlace?: (solar: string) => boolean;
+  /** Opened from the solar block: *Set up* places the solar here, wherever it was. */
+  placeHere?: boolean;
 }
 
 /** Detail of `created`: the gross meter and its power, and the names for the toast. */
@@ -526,6 +528,7 @@ export class EfmSolarSetup extends LitElement {
         invert: preview.invert,
         offset: preview.offset,
         names,
+        ...(this.context.placeHere ? { place: true } : {}),
       });
       const detail: SolarCreatedDetail = {
         stat,

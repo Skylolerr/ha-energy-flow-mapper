@@ -273,13 +273,13 @@ def periodic_from_series(
     return len({when.date() for when, _, _ in drops}) >= MIN_RESET_DAYS, drops
 
 
-def sign_evidence(power_series: Iterable[Point]) -> bool:
-    """Return True when a power went below 0: it has a sign.
+def sign_evidence(power_series: Iterable[Point], noise: float = 0) -> bool:
+    """Return True when a power went below -`noise` (W): it has a sign.
 
     A power that never went below 0 says nothing: the circuit may never have
     fed in, or its sensor is unsigned.
     """
-    return any(value < 0 for _, value in power_series)
+    return any(value < -noise for _, value in power_series)
 
 
 def utility_meter_cycle(hass: HomeAssistant, stat: str) -> str | None:

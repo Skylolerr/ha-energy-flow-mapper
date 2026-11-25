@@ -923,9 +923,10 @@ export function freeSolars(sources: Source[], devices: Device[], places: Record<
 /**
  * Devices whose meter still counts a solar that is placed at another device
  * (`counted`: meter → the solars it counts, from the backend): device →
- * [{solar, placedAt}]. After moving a solar, the old circuit is one. A device
- * above or below the place counts it rightly (an outer panel's meter holds
- * its inner circuit's solar too) and is none.
+ * [{solar, placedAt}]. After moving a solar, the old circuit is one, also an
+ * inner circuit after a move outward. A device above the place counts it
+ * rightly (an outer panel's meter holds its inner circuit's solar too) and is
+ * none.
  */
 export function solarElsewhere(
   sources: Source[],
@@ -947,12 +948,13 @@ export function solarElsewhere(
     }
     return found;
   };
-  const sameBranch = (a: string, b: string) => a === b || above(a).has(b) || above(b).has(a);
+  // The place itself and the devices around it count the solar rightly.
+  const rightly = (place: string, stat: string) => place === stat || above(place).has(stat);
   const found = new Map<string, { solar: string; placedAt: string }[]>();
   for (const device of devices) {
     const stat = device.stat_consumption;
     const others = (counted[stat] ?? [])
-      .filter((solar) => at.has(solar) && !sameBranch(at.get(solar)!, stat))
+      .filter((solar) => at.has(solar) && !rightly(at.get(solar)!, stat))
       .map((solar) => ({ solar, placedAt: at.get(solar)! }));
     if (others.length) {
       found.set(stat, others);

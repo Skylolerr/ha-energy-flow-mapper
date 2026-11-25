@@ -81,7 +81,7 @@ and Home Assistant show when they offer the update.
   the text, a button and *Dismiss* in the details. A circuit whose device also counts
   returned energy while you have a solar that no device's meter counts yet (when that
   sensor is enabled and counted lately, or is disabled, the circuit has child devices and
-  its power went below 0 lately; sensors used in the settings never count); children
+  its power went below −20 W lately; sensors used in the settings never count); children
   that use more than their circuit while you have a solar; a sum that mixes meters that
   start again at 0 every day with others; a power sensor that the meter's device has but
   that is not set. A dismissed hint stays hidden for every admin until *Show ignored

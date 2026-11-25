@@ -64,9 +64,10 @@ All in `.storage/`, each with its own version:
 - `energy_flow_mapper.groups` (`GROUPS_STORAGE_VERSION` 1)
 - `energy_flow_mapper.solar_places` (`SOLAR_PLACES_STORAGE_VERSION` 1, `solar_places.py`,
   atomic): `places`, solar statistic → the device meter it feeds into (the solar block).
-  Written at once by `place_solar` and by `create_solar_setup` (its gross meter, unless the
-  solar is placed at a circuit below the set-up device), not with the draft; one place per
-  solar. Never pruned: the panel and the card ignore a place whose
+  Written at once by `place_solar` (refused, `solar_place_refused`, for the solar itself or
+  a meter made only of a solar) and by `create_solar_setup` (its gross meter; opened from
+  the menu, a place at a circuit below the set-up device stays, opened from the block with
+  `place: true` it moves), not with the draft; one place per solar. Never pruned: the panel and the card ignore a place whose
   solar is no source or whose meter is no device. Damaged entries are left out on load. Not
   part of backups, export or import.
 - `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
@@ -237,7 +238,7 @@ All are `{DOMAIN}/<command>`, admin only (`@require_admin`) except `card`. Schem
 | `create_sum_meter` | `kind`, `name`, `entity_ids`, `rate_entity_ids?`, `rate_name?`, `gross_ok?` | `entity_id`, `stat_rate` |
 | `daily_check` | `stats`, `power?` ({energy: power}, draft pairings) | `{evidence: {stat: StatsEvidence}, unknown}` |
 | `solar_setup_preview` | `stat`, `solar`, `method?`, `drawn?`, `returned?`, `invert?`, `periodic?` ({entity: bool}), `base_hash` + `changes` (both or neither) | The plan, see below |
-| `create_solar_setup` | the same, `method` required, `names?` ({role: name}), `offset` | `entity_id`, `stat_rate` |
+| `create_solar_setup` | the same, `method` required, `names?` ({role: name}), `offset`, `place?` | `entity_id`, `stat_rate` |
 | `ignore_suggestion`, `clear_suggestions` | `kind`, `stat`, `parent`; `kind?` | `ignored` |
 | `dismiss_hint` | `code`, `kind`, `stat`, `role?`, `hour?`, `day?` | `dismissed` |
 | `place_solar` | `solar`, `stat` (a meter, or null) | `places` |
@@ -274,7 +275,8 @@ they are made of (`SolarHolds.sources`). `get` returns `counted_solars` of its m
 (3), the `change` of the enabled returned sensors not used in the settings (a hint at
 ≥ `COUNTED_KWH` 0.01 kWh) and the `min` of the own power (`stat_rate`, else
 `paired_power`) of each device with children and a disabled returned sensor (a hint when
-it went below 0, `stats_probe.sign_evidence`). Every solar held, or nothing to read, means
+it went below −`GROSS_NOISE_W`, 20 W, `stats_probe.sign_evidence`; above that it is a
+current transformer's noise). Every solar held, or nothing to read, means
 no query. `get` builds one `SolarHolds` for this and `solar_holds`.
 
 ### The safety net
@@ -350,7 +352,8 @@ touches `panel/`.
 `draft.ts` has the pure rules: `solarPlaces` (the saved places whose solar is a source and
 whose meter is an electricity device of the draft, device → solars), `freeSolars`,
 `solarElsewhere` (a device whose meter still counts a solar placed at another one, from
-`solar_counted`; not one above or below the place, whose meter counts it rightly) and `solarDrop` (`place` on a meter that counts the solar, `setup`
+`solar_counted`; not one above the place, whose meter counts its circuit's solar rightly,
+while an inner circuit's gross meter left over after a move outward is one) and `solarDrop` (`place` on a meter that counts the solar, `setup`
 elsewhere, null on no device, the solar's own meter, a meter that is the solar, or its
 place). `layout` takes `solarPlaces` (device → source rows): each is an item `solar` placed
 first below its device, also below one without children or a collapsed one, with an edge `solar` from the block into the device. The panel shows a free

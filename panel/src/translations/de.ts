@@ -529,7 +529,7 @@ export const de: Translations = {
   solar_setup_power_not_kept: "Die bisherige Leistung von {device} wird nicht übernommen, weil sie netto ist. Eine Live-Leistung lässt sich später nicht nachrüsten; willst du eine, richte das erst ein, wenn der Kreis einmal eingespeist hat.",
   solar_setup_unusable_power: "{entity}, der Leistungssensor von {name}, ist deaktiviert oder hat keine lesbare Leistungseinheit.",
   solar_block_free: "{solar}: Wo speist sie ein?",
-  solar_block_free_hint: "Zieh sie auf den Stromkreis, in den die Solaranlage einspeist.",
+  solar_block_free_hint: "Zieh sie auf den Stromkreis, in den die Solaranlage einspeist, oder wähle den Stromkreis.",
   solar_block_strip: "Eine Solaranlage ist noch nicht platziert",
   solar_block_placed_title: "Zum Verschieben auf einen anderen Stromkreis ziehen, anklicken für mehr.",
   solar_block_placed: "{solar} ist bei {device} platziert.",
@@ -543,4 +543,9 @@ export const de: Translations = {
   solar_block_pick: "Stromkreis wählen…",
   solar_block_move: "In einen anderen Stromkreis verschieben…",
   solar_pick_title: "Wo speist {solar} ein?",
+  solar_pick_hint: "Wähle den Stromkreis, in den die Solaranlage einspeist.",
+  solar_pick_none: "Noch kein Stromkreis passt für {solar}. Lege den Stromkreis, in den sie einspeist, zuerst als Gerät an.",
+  solar_howto_title: "Speist eine Solaranlage in einen Stromkreis ein?",
+  solar_howto_text: "Damit du zeigen kannst, wo sie einspeist, lege sie zuerst als Quelle an: oben «Solar-Ertrag», wie Home Assistant es kennt. Danach erscheint hier ihr Block, den du auf ihren Stromkreis ziehst.",
+  solar_howto_button: "Solar-Ertrag anlegen",
 };

@@ -529,7 +529,7 @@ export const it: Translations = {
   solar_setup_power_not_kept: "La potenza attuale di {device} non viene ripresa, perché è netta. Una potenza in tempo reale non si può aggiungere dopo; se ne vuoi una, configura questo solo quando il circuito avrà immesso almeno una volta.",
   solar_setup_unusable_power: "{entity}, il sensore di potenza di {name}, è disattivato o non ha un’unità di potenza leggibile.",
   solar_block_free: "{solar}: dove immette?",
-  solar_block_free_hint: "Trascinalo sul circuito in cui l’impianto solare immette.",
+  solar_block_free_hint: "Trascinalo sul circuito in cui l’impianto solare immette, oppure scegli il circuito.",
   solar_block_strip: "Un impianto solare non è ancora posizionato",
   solar_block_placed_title: "Trascinalo su un altro circuito per spostarlo; clicca per altro.",
   solar_block_placed: "{solar} è posizionato su {device}.",
@@ -543,4 +543,9 @@ export const it: Translations = {
   solar_block_pick: "Scegli il circuito…",
   solar_block_move: "Sposta in un altro circuito…",
   solar_pick_title: "Dove immette {solar}?",
+  solar_pick_hint: "Scegli il circuito in cui l’impianto solare immette.",
+  solar_pick_none: "Nessun circuito va ancora bene per {solar}. Aggiungi prima come dispositivo il circuito in cui immette.",
+  solar_howto_title: "Un impianto solare immette in un circuito?",
+  solar_howto_text: "Per mostrare dove immette, aggiungilo prima come fonte: «Produzione solare» in alto, come lo conosce Home Assistant. Poi qui appare il suo blocco, da trascinare sul suo circuito.",
+  solar_howto_button: "Aggiungi produzione solare",
 };

@@ -334,7 +334,7 @@ async def test_returned_hint_disabled_reads_the_paired_power(
             {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
         ]
     )
-    data[power] = mins(300.0, -12.5)
+    data[power] = mins(300.0, -42.5)
     assert _returned_only(await _hints(hass, prefs)) == [
         {
             "code": HintCode.RETURNED_ENERGY,
@@ -405,6 +405,27 @@ async def test_returned_hint_enabled_needs_an_unheld_solar(
     ]
 
 
+async def test_returned_hint_disabled_ignores_noise_below_0(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A current transformer's noise at night (down to -20 W) is no feeding in."""
+    _, data = statistics
+    meter, returned = _shelly(hass, "garage", returned_disabled=True)
+    power = _power_of(hass, meter)
+    prefs = _prefs(
+        [
+            {"stat_consumption": meter, "stat_rate": power},
+            {"stat_consumption": "sensor.garage_door", "included_in_stat": meter},
+        ]
+    )
+    data[power] = mins(35.0, 12.0, -0.4, -20.0, 80.0)
+    assert _returned_only(await _hints(hass, prefs)) == []
+    data[power] = mins(35.0, -20.5)
+    assert [hint["data"] for hint in _returned_only(await _hints(hass, prefs))] == [
+        {"entity_id": returned, "disabled": True}
+    ]
+
+
 async def test_no_returned_hint_for_a_placed_solar(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
@@ -426,6 +447,11 @@ async def test_no_returned_hint_for_a_placed_solar(
     assert gone.counted == {returned}
     other = await async_returned(hass, prefs, None, {"sensor.other": "sensor.house"})
     assert other.counted == {returned}
+    # A place at the solar itself (a device in the settings) holds nothing.
+    prefs["device_consumption"].append({"stat_consumption": SOLAR_ENERGY})
+    _meter(hass, SOLAR_ENERGY)
+    itself = await async_returned(hass, prefs, None, {SOLAR_ENERGY: SOLAR_ENERGY})
+    assert itself.counted == {returned}
 
 
 def test_counted_solars(hass: HomeAssistant) -> None:
@@ -486,7 +512,7 @@ async def test_returned_hint_solar_as_device_is_not_held(
     _, data = statistics
     meter, _ = _shelly(hass, "pro_em", returned_disabled=True)
     power = _power_of(hass, meter)
-    data[power] = mins(-5.0)
+    data[power] = mins(-35.0)
     _gross_template(hass, "sensor.solar_copy", SOLAR_ENERGY)
     prefs = _prefs(
         [

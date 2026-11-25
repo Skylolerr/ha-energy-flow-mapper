@@ -529,7 +529,7 @@ export const fr: Translations = {
   solar_setup_power_not_kept: "La puissance actuelle de {device} n’est pas reprise, car elle est nette. Une puissance en direct ne peut pas être ajoutée plus tard ; si tu en veux une, configure ceci seulement quand le circuit aura réinjecté une fois.",
   solar_setup_unusable_power: "{entity}, le capteur de puissance de {name}, est désactivé ou n’a pas d’unité de puissance lisible.",
   solar_block_free: "{solar} : où alimente-t-elle ?",
-  solar_block_free_hint: "Fais-la glisser sur le circuit que l’installation solaire alimente.",
+  solar_block_free_hint: "Fais-la glisser sur le circuit que l’installation solaire alimente, ou choisis le circuit.",
   solar_block_strip: "Une installation solaire n’est pas encore placée",
   solar_block_placed_title: "Glisse-la sur un autre circuit pour la déplacer ; clique pour plus.",
   solar_block_placed: "{solar} est placée sur {device}.",
@@ -543,4 +543,9 @@ export const fr: Translations = {
   solar_block_pick: "Choisir le circuit…",
   solar_block_move: "Déplacer vers un autre circuit…",
   solar_pick_title: "Où {solar} alimente-t-elle ?",
+  solar_pick_hint: "Choisis le circuit que l’installation solaire alimente.",
+  solar_pick_none: "Aucun circuit ne convient encore à {solar}. Ajoute d’abord comme appareil le circuit qu’elle alimente.",
+  solar_howto_title: "Une installation solaire alimente-t-elle un circuit ?",
+  solar_howto_text: "Pour montrer où elle alimente, ajoute-la d’abord comme source : « Production solaire » en haut, comme Home Assistant la connaît. Son bloc apparaît ensuite ici, à faire glisser sur son circuit.",
+  solar_howto_button: "Ajouter la production solaire",
 };
