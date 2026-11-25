@@ -30,6 +30,7 @@ from custom_components.energy_flow_mapper.hints import (
     async_returned,
     async_sum_members,
     async_watch,
+    counted_solars,
     returned_sensor,
     sum_members,
 )
@@ -402,6 +403,47 @@ async def test_returned_hint_enabled_needs_an_unheld_solar(
             "data": {"entity_id": returned, "disabled": False},
         }
     ]
+
+
+async def test_no_returned_hint_for_a_placed_solar(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A solar the user placed at a device meter counts as held.
+
+    The meter may count the solar in hardware, which no helper shows. A
+    place at a meter that is no device of the settings does not count.
+    """
+    calls, data = statistics
+    meter, returned = _shelly(hass, "balcony", returned_disabled=False)
+    data[returned] = changes(0.2, 0.3)
+    _meter(hass, "sensor.house")
+    prefs = _prefs([{"stat_consumption": "sensor.house"}, {"stat_consumption": meter}])
+    assert await async_returned(hass, prefs, None, {SOLAR_ENERGY: "sensor.house"}) == (
+        Returned()
+    )
+    assert calls == []
+    gone = await async_returned(hass, prefs, None, {SOLAR_ENERGY: "sensor.gone"})
+    assert gone.counted == {returned}
+    other = await async_returned(hass, prefs, None, {"sensor.other": "sensor.house"})
+    assert other.counted == {returned}
+
+
+def test_counted_solars(hass: HomeAssistant) -> None:
+    """Which solar sources a meter counts, by the rule of the held solar."""
+    _gross_template(hass, "sensor.f11_brutto", "sensor.f11_energy", SOLAR_ENERGY)
+    _meter(hass, "sensor.garage_pv")
+    _gross_template(hass, "sensor.both", "sensor.f11_brutto", "sensor.garage_pv")
+    garage = {"type": "solar", "stat_energy_from": "sensor.garage_pv"}
+    prefs = _prefs([{"stat_consumption": "sensor.f11_brutto"}], [SOLAR, garage])
+    holds = SolarHolds(hass, prefs)
+    assert counted_solars(hass, prefs, holds, "sensor.f11_brutto") == {SOLAR_ENERGY}
+    assert counted_solars(hass, prefs, holds, "sensor.both") == {
+        SOLAR_ENERGY,
+        "sensor.garage_pv",
+    }
+    # The solar itself, and a meter without it, count none.
+    assert counted_solars(hass, prefs, holds, SOLAR_ENERGY) == set()
+    assert counted_solars(hass, prefs, holds, "sensor.f11_energy") == set()
 
 
 async def test_returned_hint_with_one_of_two_solars_unheld(

@@ -26,6 +26,7 @@ from .frontend import (
 )
 from .group_store import GroupStore
 from .models import EnergyFlowMapperConfigEntry, EnergyFlowMapperData
+from .solar_places import SolarPlaceStore
 from .suggestions import SuggestionStore
 from .websocket import async_setup_websocket
 
@@ -70,12 +71,15 @@ async def async_setup_entry(
     await suggestions.async_load()
     groups = GroupStore(hass)
     await groups.async_load()
+    solar_places = SolarPlaceStore(hass)
+    await solar_places.async_load()
     card_url = await async_register_card(hass)
     entry.runtime_data = EnergyFlowMapperData(
         backups=backups,
         helpers=helpers,
         suggestions=suggestions,
         groups=groups,
+        solar_places=solar_places,
         supported=supported,
         card_url=card_url,
     )
@@ -100,4 +104,5 @@ async def async_remove_entry(
     await CreatedHelpers(hass).async_remove()
     await SuggestionStore(hass).async_remove()
     await GroupStore(hass).async_remove()
+    await SolarPlaceStore(hass).async_remove()
     ir.async_delete_issue(hass, DOMAIN, ISSUE_UNSUPPORTED_ENERGY_API)

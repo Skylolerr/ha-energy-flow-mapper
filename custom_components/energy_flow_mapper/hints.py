@@ -343,26 +343,46 @@ def _circuit_power(
     return power if isinstance(power, str) and valid_entity_id(power) else None
 
 
-def every_solar_held(hass: HomeAssistant, prefs: Prefs, holds: SolarHolds) -> bool:
-    """Return True if a device meter of the settings holds each solar source.
+def counted_solars(
+    hass: HomeAssistant, prefs: Prefs, holds: SolarHolds, meter: str
+) -> set[str]:
+    """Return the solar sources (by statistic) the meter `meter` counts.
 
-    A device's meter holds a solar when what it counts (`SolarHolds.counted`:
-    a meter that holds the solar, or a gross meter of ours) reaches the
-    solar's statistic, its power (without one, its paired power) or what they
-    are made of. A meter that is the solar, or made only of it, holds none.
+    A meter counts a solar when what it counts (`SolarHolds.counted`: a meter
+    that holds the solar, or a gross meter of ours) reaches the solar's
+    statistic, its power (without one, its paired power) or what they are
+    made of. A meter that is the solar, or made only of it, counts none.
     """
+    if holds.is_solar(meter):
+        return set()
+    counted = holds.counted(meter)
     used = used_stats(prefs)
-    counted: set[str] = set()
-    for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], []):
-        if not holds.is_solar(device[STAT]):
-            counted |= holds.counted(device[STAT])
+    found: set[str] = set()
     for source in _solars(prefs):
         solar = set(holds.sources.get(source[FROM], ()))
         if not source.get(RATE) and (power := paired_power(hass, source[FROM], used)):
             solar.add(power)
-        if not counted & solar:
-            return False
-    return True
+        if counted & solar:
+            found.add(source[FROM])
+    return found
+
+
+def every_solar_held(
+    hass: HomeAssistant,
+    prefs: Prefs,
+    holds: SolarHolds,
+    places: Mapping[str, str] | None = None,
+) -> bool:
+    """Return True if a device meter of the settings holds each solar source.
+
+    A device's meter holds a solar it counts (`counted_solars`), or one the
+    user placed at it (`places`: solar statistic -> meter).
+    """
+    devices = [d[STAT] for d in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])]
+    held = {solar for solar, meter in (places or {}).items() if meter in devices}
+    for device in devices:
+        held |= counted_solars(hass, prefs, holds, device)
+    return all(source[FROM] in held for source in _solars(prefs))
 
 
 @dataclass
@@ -376,15 +396,19 @@ class Returned:
 
 
 async def async_returned(
-    hass: HomeAssistant, prefs: Prefs, holds: SolarHolds | None = None
+    hass: HomeAssistant,
+    prefs: Prefs,
+    holds: SolarHolds | None = None,
+    places: Mapping[str, str] | None = None,
 ) -> Returned:
     """Return what the circuits that can get the returned-energy hint did lately.
 
     Read only while a solar source exists that no device meter holds
     (`every_solar_held`; `holds` judges the meters, None: from the settings
-    alone, without our helpers), all in one query of the hourly statistics
-    of the last COUNTED_DAYS: the `change` of the enabled returned sensors
-    of electricity devices that are not used in the settings, and the `min`
+    alone, without our helpers; `places` are the user's solar places), all
+    in one query of the hourly statistics of the last COUNTED_DAYS: the
+    `change` of the enabled returned sensors of electricity devices that are
+    not used in the settings, and the `min`
     of the own power (`_circuit_power`) of each device with children and a
     disabled returned sensor. A failing recorder gives nothing.
     """
@@ -407,7 +431,7 @@ async def async_returned(
     if not enabled and not powers:
         return Returned()
     if every_solar_held(
-        hass, prefs, SolarHolds(hass, prefs) if holds is None else holds
+        hass, prefs, SolarHolds(hass, prefs) if holds is None else holds, places
     ):
         return Returned()
     types = ({"change"} if enabled else set()) | ({"min"} if powers else set())

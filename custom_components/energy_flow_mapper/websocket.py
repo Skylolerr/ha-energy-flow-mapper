@@ -106,6 +106,7 @@ from .hints import (
     async_returned,
     async_sum_members,
     async_watch,
+    counted_solars,
     meter_powers,
     meter_stats,
 )
@@ -316,6 +317,7 @@ def async_setup_websocket(hass: HomeAssistant) -> None:
     async_register_command(hass, websocket_ignore_suggestion)
     async_register_command(hass, websocket_clear_suggestions)
     async_register_command(hass, websocket_dismiss_hint)
+    async_register_command(hass, websocket_place_solar)
 
 
 def _error(key: str, **placeholders: str) -> HomeAssistantError:
@@ -434,7 +436,10 @@ async def websocket_get(
     and water candidates) to what it counts with a plus sign, for the
     panel's `countedTwice`. `solar_holds` names the meters among them that
     are the solar ("solar") or hold it ("holder"), as `create_sum_meter`
-    judges them. `hints` are the hints of devices and sources (see `hints`).
+    judges them. `solar_places` are where the user placed each solar (solar
+    statistic -> meter), `solar_counted` the solar sources each of those
+    meters counts (`hints.counted_solars`; only meters that count one).
+    `hints` are the hints of devices and sources (see `hints`).
     """
     runtime = _runtime(hass)
     prefs = await energy_access.async_get_prefs(hass)
@@ -459,13 +464,14 @@ async def websocket_get(
     # `SolarHolds` judges the meters for the returned-energy hint and for
     # `solar_holds`.
     holds = SolarHolds(hass, prefs, runtime.helpers, cache)
+    places = runtime.solar_places.places()
     daily, returned, watched = await asyncio.gather(
         async_daily_resetting(
             hass,
             sorted(meter_stats(prefs) | async_sum_members(hass, prefs)),
             power_of=meter_powers(prefs),
         ),
-        async_returned(hass, prefs, holds),
+        async_returned(hass, prefs, holds, places),
         async_watch(hass, prefs, runtime.helpers.records(), runtime.watch_cache),
     )
     mark_daily_reset(meters, daily)
@@ -503,6 +509,12 @@ async def websocket_get(
             ),
             "inputs": counted_inputs(hass, in_answer, cache),
             "solar_holds": holds.holds(in_answer),
+            "solar_places": places,
+            "solar_counted": {
+                meter: sorted(solars)
+                for meter in in_answer
+                if (solars := counted_solars(hass, prefs, holds, meter))
+            },
         },
     )
 
@@ -925,7 +937,8 @@ async def websocket_create_solar_setup(
     `offset` is no longer enough. Names are passed ready (translated) by the
     panel, per helper role; an empty one gets the default. Plan and create
     run under the lock of the writes: a second setup at the same moment
-    waits, then sees (and reuses) the solar term the first one made.
+    waits, then sees (and reuses) the solar term the first one made. The
+    solar is placed at the new gross meter (`solar_places`).
     """
     runtime = _runtime(hass)
     async with runtime.lock:
@@ -934,6 +947,8 @@ async def websocket_create_solar_setup(
         entity_id, stat_rate = await async_create(
             hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
         )
+        # The solar feeds in here now, whatever opened the setup.
+        await runtime.solar_places.async_set(msg["solar"], entity_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 
@@ -1118,7 +1133,8 @@ async def websocket_card(
     """Return one device tree for the dashboard card; every user may read it.
 
     Only what the card shows: the devices of the list with name, parent, rate
-    sensor and area, the groups and sources of the list, and with `period` the energy,
+    sensor and area, the groups and sources of the list, the solar places at
+    its devices, and with `period` the energy,
     untracked values and warnings. No prices or costs, and nothing to change.
     """
     runtime = _runtime(hass)
@@ -1186,6 +1202,16 @@ async def websocket_card(
             for source, role, stat in rows
         ],
         "groups": groups_of(groups, kind),
+        # Where a solar source of the list feeds into one of its devices.
+        "solar_places": {
+            solar: meter
+            for solar, meter in runtime.solar_places.places().items()
+            if meter in {d[STAT] for d in devices}
+            and any(
+                s.get("type") == "solar" and s.get("stat_energy_from") == solar
+                for s in sources
+            )
+        },
         "water_unit": water_unit(hass),
         "home_supported": energy_access.home_supported(),
     }
@@ -1447,3 +1473,25 @@ async def websocket_dismiss_hint(
         hint, _known_stats(hass, prefs, with_sources=True)
     )
     connection.send_result(msg["id"], {"dismissed": runtime.suggestions.dismissed()})
+
+
+@websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/place_solar",
+        vol.Required("solar"): str,
+        vol.Required("stat"): vol.Any(str, None),
+    }
+)
+@require_admin
+@async_response
+async def websocket_place_solar(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Place a solar at the meter `stat` (None: nowhere); returns the places.
+
+    Written at once: a place is our annotation, the energy settings do not
+    change by it.
+    """
+    runtime = _runtime(hass)
+    places = await runtime.solar_places.async_set(msg["solar"], msg["stat"])
+    connection.send_result(msg["id"], {"places": places})

@@ -16,6 +16,7 @@ from custom_components.energy_flow_mapper.const import (
     HELPER_RECORDS_STORAGE_KEY,
     HELPERS_STORAGE_KEY,
     ISSUE_UNSUPPORTED_ENERGY_API,
+    SOLAR_PLACES_STORAGE_KEY,
     STORAGE_KEY,
     SUGGESTIONS_STORAGE_KEY,
 )
@@ -53,7 +54,9 @@ async def test_setup_unload_and_remove(
             "water": [],
         }
     )
+    await loaded_entry.runtime_data.solar_places.async_set("sensor.s", "sensor.m")
     assert STORAGE_KEY in hass_storage
+    assert SOLAR_PLACES_STORAGE_KEY in hass_storage
     assert GROUPS_STORAGE_KEY in hass_storage
     assert HELPERS_STORAGE_KEY in hass_storage
     assert HELPER_RECORDS_STORAGE_KEY in hass_storage
@@ -64,6 +67,7 @@ async def test_setup_unload_and_remove(
     # Unloading keeps every file; they are saved at once anyway.
     assert HELPERS_STORAGE_KEY in hass_storage
     assert HELPER_RECORDS_STORAGE_KEY in hass_storage
+    assert SOLAR_PLACES_STORAGE_KEY in hass_storage
 
     await hass.config_entries.async_remove(loaded_entry.entry_id)
     await hass.async_block_till_done()
@@ -72,6 +76,7 @@ async def test_setup_unload_and_remove(
     assert HELPER_RECORDS_STORAGE_KEY not in hass_storage
     assert SUGGESTIONS_STORAGE_KEY not in hass_storage
     assert GROUPS_STORAGE_KEY not in hass_storage
+    assert SOLAR_PLACES_STORAGE_KEY not in hass_storage
     assert "energy" in hass_storage
 
 

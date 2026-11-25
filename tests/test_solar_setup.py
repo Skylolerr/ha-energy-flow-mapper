@@ -1615,6 +1615,8 @@ async def test_setup_blocked_when_the_probe_fails(
     assert response["error"]["translation_key"] == "daily_check_failed"
     assert hass.config_entries.async_entries("template") == []
     assert loaded_entry.runtime_data.helpers.entries() == []
+    # A refused setup places nothing.
+    assert loaded_entry.runtime_data.solar_places.places() == {}
 
 
 # --- Create ----------------------------------------------------------------
@@ -1666,6 +1668,25 @@ def _solar_integral(hass: HomeAssistant) -> str:
         if e.options.get("source") == template_entity
     )
     return _entity_of(hass, integral.entry_id)
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
+@pytest.mark.usefixtures("signed")
+async def test_create_places_the_solar_at_the_gross_meter(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """Whatever opened the setup (the block or the menu), the solar is placed.
+
+    The place moves from where it was to the new gross meter.
+    """
+    _shelly_pro_em(hass)
+    places = loaded_entry.runtime_data.solar_places
+    await places.async_set(SOLAR, "sensor.elsewhere")
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert response["success"], response
+    assert places.places() == {SOLAR: response["result"]["entity_id"]}
 
 
 @pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])

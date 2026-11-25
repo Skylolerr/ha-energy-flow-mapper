@@ -45,3 +45,6 @@ SUGGESTIONS_STORAGE_MINOR_VERSION: Final = 3
 SUGGESTIONS_STORAGE_KEY: Final = f"{DOMAIN}.suggestions"
 GROUPS_STORAGE_VERSION: Final = 1
 GROUPS_STORAGE_KEY: Final = f"{DOMAIN}.groups"
+# Where each solar feeds in (the solar block): solar statistic -> device meter.
+SOLAR_PLACES_STORAGE_VERSION: Final = 1
+SOLAR_PLACES_STORAGE_KEY: Final = f"{DOMAIN}.solar_places"

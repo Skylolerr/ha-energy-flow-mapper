@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from .backups import BackupStore
 from .created_helpers import CreatedHelpers
 from .group_store import GroupStore
+from .solar_places import SolarPlaceStore
 from .stats_probe import ReadingCache
 from .suggestions import SuggestionStore
 
@@ -22,13 +23,15 @@ class EnergyFlowMapperData:
     `lock` serializes writes so that two saves cannot interleave between
     the conflict check and the write. `card_url` is the loader URL added to
     the frontend, removed again on unload. `suggestions` holds the ignored
-    suggestions, `groups` the device groups.
+    suggestions, `groups` the device groups, `solar_places` where each
+    solar feeds in.
     """
 
     backups: BackupStore
     helpers: CreatedHelpers
     suggestions: SuggestionStore
     groups: GroupStore
+    solar_places: SolarPlaceStore
     supported: bool
     card_url: str
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
