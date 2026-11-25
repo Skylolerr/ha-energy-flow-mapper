@@ -352,6 +352,10 @@ feed in?*). Drag it onto the circuit the solar really feeds into:
   (for example a meter wired so that it never sees the solar), *My meter already counts
   the solar* only places it.
 
+Without dragging (on a phone, or with the keyboard), *Choose circuit…* on the block lists
+the circuits. A solar stays placed at its innermost circuit: when a sub panel around that
+circuit gets a gross meter too, the solar does not move to the sub panel.
+
 A placed solar is a block below its circuit, in the solar colour with its current value,
 in the diagram, the list, the dashboard card and «Save as image». It only shows where the
 solar sits: Home Assistant's energy settings do not change, and the solar stays a source

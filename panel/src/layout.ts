@@ -135,10 +135,9 @@ function items(
     }
     const stat = node.node.stat;
     // A placed solar comes first below its device, also below one without
-    // children; the untracked block follows the real children only.
-    const solars: Item[] = collapsed.has(stat)
-      ? []
-      : (solarPlaces.get(stat) ?? []).map((source) => ({
+    // children or a collapsed one (it hides its children, not where its
+    // solar feeds in); the untracked block follows the real children only.
+    const solars: Item[] = (solarPlaces.get(stat) ?? []).map((source) => ({
           id: solarBlockId(source.stat, stat),
           kind: "solar",
           stat: source.stat,

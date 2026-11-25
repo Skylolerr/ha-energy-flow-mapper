@@ -8,6 +8,7 @@ import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.energy_flow_mapper.const import DOMAIN
+from custom_components.energy_flow_mapper.websocket import _inside
 
 from .common import MockConfigEntry, WebSocketGenerator
 from .conftest import _meter
@@ -100,3 +101,20 @@ async def test_card_shows_the_places_of_its_devices(
         kind="water",
     )
     assert water["result"]["solar_places"] == {}
+
+
+def test_inside_follows_parents_and_survives_a_loop() -> None:
+    """`_inside`: below at any depth; a loop of parents ends."""
+    prefs = {
+        "device_consumption": [
+            {"stat_consumption": "a"},
+            {"stat_consumption": "b", "included_in_stat": "a"},
+            {"stat_consumption": "c", "included_in_stat": "b"},
+            {"stat_consumption": "x", "included_in_stat": "y"},
+            {"stat_consumption": "y", "included_in_stat": "x"},
+        ]
+    }
+    assert _inside(prefs, "c", "a")
+    assert not _inside(prefs, "a", "c")
+    assert not _inside(prefs, "x", "a")
+    assert not _inside(prefs, "gone", "a")

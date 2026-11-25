@@ -1689,6 +1689,35 @@ async def test_create_places_the_solar_at_the_gross_meter(
     assert places.places() == {SOLAR: response["result"]["entity_id"]}
 
 
+WITH_SHELLY_CHILD = {
+    **WITH_SHELLY,
+    "device_consumption": [
+        *WITH_SHELLY["device_consumption"],
+        {"stat_consumption": "sensor.inner_gross", "included_in_stat": PRO_EM},
+    ],
+}
+
+
+@pytest.mark.parametrize("energy_prefs", [WITH_SHELLY_CHILD])
+@pytest.mark.usefixtures("signed")
+async def test_create_keeps_the_place_of_an_inner_circuit(
+    hass: HomeAssistant,
+    hass_ws_client: WebSocketGenerator,
+    loaded_entry: MockConfigEntry,
+) -> None:
+    """A solar placed at a circuit inside the device stays there.
+
+    The outer meter counts the solar too (it is gross as well), but the
+    solar feeds into the inner circuit, so the block stays at it.
+    """
+    _shelly_pro_em(hass)
+    places = loaded_entry.runtime_data.solar_places
+    await places.async_set(SOLAR, "sensor.inner_gross")
+    response = await create(hass_ws_client, hass, stat=PRO_EM, method="em")
+    assert response["success"], response
+    assert places.places() == {SOLAR: "sensor.inner_gross"}
+
+
 @pytest.mark.parametrize("energy_prefs", [WITH_SHELLY])
 @pytest.mark.usefixtures("signed")
 async def test_create_em_template_state_class_total(

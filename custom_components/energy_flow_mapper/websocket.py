@@ -875,6 +875,22 @@ async def _async_setup_prefs(
     return prefs, current
 
 
+def _inside(prefs: Prefs, stat: str, outer: str) -> bool:
+    """Return True if the electricity device `stat` sits below `outer`."""
+    parents = {
+        device[STAT]: device.get(PARENT)
+        for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])
+    }
+    seen: set[str] = set()
+    current = parents.get(stat)
+    while current is not None and current not in seen:
+        if current == outer:
+            return True
+        seen.add(current)
+        current = parents.get(current)
+    return False
+
+
 def _choices(msg: dict[str, Any]) -> Choices:
     return Choices(
         stat=msg["stat"],
@@ -947,8 +963,11 @@ async def websocket_create_solar_setup(
         entity_id, stat_rate = await async_create(
             hass, runtime.helpers, plan, msg.get("names", {}), msg["offset"]
         )
-        # The solar feeds in here now, whatever opened the setup.
-        await runtime.solar_places.async_set(msg["solar"], entity_id)
+        # The solar feeds in here now, whatever opened the setup; a place at
+        # a circuit inside this device stays (that meter is gross as well).
+        placed = runtime.solar_places.places().get(msg["solar"])
+        if placed is None or not _inside(prefs, placed, msg["stat"]):
+            await runtime.solar_places.async_set(msg["solar"], entity_id)
     connection.send_result(msg["id"], {"entity_id": entity_id, "stat_rate": stat_rate})
 
 

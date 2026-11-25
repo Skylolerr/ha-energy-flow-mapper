@@ -44,6 +44,12 @@ describe("solar places in the draft", () => {
     expect(solarElsewhere([ROOF], DEVICES, {}, counted).size).toBe(0);
     expect(solarElsewhere([ROOF], DEVICES, { "sensor.roof": "gone" }, counted).size).toBe(0);
   });
+
+  it("does not warn on the same branch: an outer or inner meter counts the solar rightly", () => {
+    const devices = [device("uv"), device("f11", "uv"), device("inner", "f11"), device("f13")];
+    const counted = { uv: ["sensor.roof"], f11: ["sensor.roof"], inner: ["sensor.roof"], f13: ["sensor.roof"] };
+    expect([...solarElsewhere([ROOF], devices, { "sensor.roof": "f11" }, counted).keys()]).toEqual(["f13"]);
+  });
 });
 
 describe("dropping a solar block", () => {
@@ -85,7 +91,7 @@ describe("layout with solar places", () => {
     expect(blocks[untrackedId("f11")]).toBeDefined();
   });
 
-  it("hides the solar of a collapsed device", () => {
+  it("keeps the solar of a collapsed device in view", () => {
     const result = layout(
       displayTree(buildTree(DEVICES), []),
       rows,
@@ -99,7 +105,9 @@ describe("layout with solar places", () => {
       places,
     );
     const ids = result.blocks.map((b) => b.id);
-    expect(ids).not.toContain(solarBlockId("sensor.roof", "f11"));
+    // A collapsed device hides its children, not where its solar feeds in.
+    expect(ids).toContain(solarBlockId("sensor.roof", "f11"));
+    expect(ids).not.toContain("tv");
     expect(ids).toContain(solarBlockId("sensor.roof", "f13"));
   });
 

@@ -540,4 +540,7 @@ export const it: Translations = {
   solar_place_remove: "Rimuovi posizionamento",
   solar_setup_place_only: "Il mio contatore conta già l’impianto solare: posizionalo solo qui",
   hint_solar_elsewhere: "{solar} è posizionato su {device}, ma questo contatore lo conta ancora, quindi due volte. Sostituisci questo contatore con quello vero.",
+  solar_block_pick: "Scegli il circuito…",
+  solar_block_move: "Sposta in un altro circuito…",
+  solar_pick_title: "Dove immette {solar}?",
 };

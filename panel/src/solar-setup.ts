@@ -56,6 +56,8 @@ export interface SolarSetupContext {
   draft: () => { base_hash: string; changes: Change[] } | null;
   /** Load the settings again after a conflict; the draft is kept. */
   reload: () => Promise<void>;
+  /** Whether *My meter already counts the solar* may place `solar` here (as a drop could). */
+  canPlace?: (solar: string) => boolean;
 }
 
 /** Detail of `created`: the gross meter and its power, and the names for the toast. */
@@ -632,7 +634,7 @@ export class EfmSolarSetup extends LitElement {
           </button>`
         : nothing}
       ${preview !== null ? this._renderPreview(preview) : nothing}
-      ${this._solar !== null
+      ${this._solar !== null && (this.context.canPlace?.(this._solar) ?? true)
         ? html`<button
             class="link solar-place-only"
             ?disabled=${this._busy}

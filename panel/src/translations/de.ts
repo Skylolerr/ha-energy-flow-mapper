@@ -540,4 +540,7 @@ export const de: Translations = {
   solar_place_remove: "Platzierung entfernen",
   solar_setup_place_only: "Mein Zähler zählt die Solaranlage schon: nur hier platzieren",
   hint_solar_elsewhere: "{solar} ist bei {device} platziert, aber dieser Zähler zählt sie noch mit, also doppelt. Ersetze diesen Zähler durch den echten.",
+  solar_block_pick: "Stromkreis wählen…",
+  solar_block_move: "In einen anderen Stromkreis verschieben…",
+  solar_pick_title: "Wo speist {solar} ein?",
 };

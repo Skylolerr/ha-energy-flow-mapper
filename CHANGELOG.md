@@ -139,8 +139,9 @@ and Home Assistant show when they offer the update.
 - 0.10.x does not know the solar places (`.storage/energy_flow_mapper.solar_places`) and
   shows no solar blocks; back on 0.11 they are still there.
 - Removing the integration while on 0.10.x leaves `.storage/energy_flow_mapper.helper_records`
-  (and `energy_flow_mapper.solar_places`) behind. It is harmless: 0.11 uses none of its records once the list of created helpers is
-  gone.
+  behind. It is harmless: 0.11 uses none of its records once the list of created helpers is
+  gone. It also leaves `.storage/energy_flow_mapper.solar_places`: a later 0.11 install shows
+  those placements again where the solar and the circuit still exist.
 - A backup made by this release that changed a source's power sensor shows «source_rate: N»
   (N changed sources) in its summary on 0.10.x.
 - Dismissed safety-net hints from a test build of 0.11 are removed once on the update:

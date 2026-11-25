@@ -538,4 +538,7 @@ export const en = {
   solar_place_remove: "Remove placement",
   solar_setup_place_only: "My meter already counts the solar: only place it here",
   hint_solar_elsewhere: "{solar} is placed at {device}, but this meter still counts it, so it is counted twice. Replace this meter with the real one.",
+  solar_block_pick: "Choose circuit…",
+  solar_block_move: "Move to another circuit…",
+  solar_pick_title: "Where does {solar} feed in?",
 };

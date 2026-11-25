@@ -183,6 +183,8 @@ type Dialog =
   | { kind: "replace"; stat: string }
   /** A placed solar block: the solar and the device it feeds into. */
   | { kind: "solar_place"; solar: string; stat: string }
+  /** Pick the circuit a solar feeds into, without dragging. */
+  | { kind: "solar_pick"; solar: string }
   | { kind: "confirm"; result: ValidateResult | null }
   | { kind: "backups"; entries: BackupEntry[] }
   | { kind: "restore"; backup: BackupEntry; undo: boolean }
@@ -1238,8 +1240,12 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Whether a hint still fits the draft (the backend computed it for the saved settings). */
   _hintApplies(hint: Hint): boolean {
     if (hint.code === "returned_energy") {
-      // A placed solar counts as held, also before the draft is saved.
-      return this._hasSolar() && this._freeSolarStats(true).length > 0;
+      // A placed solar, or one a meter of the draft counts, is held, also
+      // before the draft is saved.
+      const counted = new Set(
+        this.draftOf("electricity").flatMap((d) => this._snapshot?.solar_counted?.[d.stat_consumption] ?? []),
+      );
+      return this._hasSolar() && this._freeSolarStats(true).some((solar) => !counted.has(solar));
     }
     if (this._signFixedByPower(hint)) {
       // Its fix is to set the device's power to none; the backend then stops comparing.
@@ -1934,12 +1940,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       return;
     }
     if (dragged.kind === "solar") {
-      // On a meter that counts the solar it is only placed; else the setup opens.
-      if (this._solarDrop(dragged.stat, target) === "place") {
-        void this._placeSolar(dragged.stat, target);
-      } else {
-        this._openSolarSetup(target, dragged.stat);
-      }
+      this._putSolar(dragged.stat, target);
       return;
     }
     if (target.startsWith(SOURCE_TARGET)) {
@@ -3076,6 +3077,15 @@ export class EnergyFlowMapperPanel extends LitElement {
       kind: "electricity",
       data: { solar, placed_at: placedAt },
     }));
+  }
+
+  /** A solar dropped or picked at `target`: on a meter that counts it, only placed; else the setup opens. */
+  _putSolar(solar: string, target: string): void {
+    if (this._solarDrop(solar, target) === "place") {
+      void this._placeSolar(solar, target);
+    } else {
+      this._openSolarSetup(target, solar);
+    }
   }
 
   /** Place a solar at the meter `stat` (null: nowhere); written at once. */
@@ -4550,6 +4560,9 @@ export class EnergyFlowMapperPanel extends LitElement {
             <span class="node-name">${this._t("solar_block_free", { solar: this._solarName(solar) })}</span>
             <span class="sub">${this._t("solar_block_free_hint")}</span>
           </div>
+          <button class="solar-pick" @click=${() => (this._dialog = { kind: "solar_pick", solar })}>
+            ${this._t("solar_block_pick")}
+          </button>
         </li>`,
       )}
     </ul>`;
@@ -5387,6 +5400,7 @@ export class EnergyFlowMapperPanel extends LitElement {
         this._snapshot && this._changes.length ? { base_hash: this._snapshot.hash, changes: this._changes } : null,
       // A stale draft: load the settings again; the draft is kept for them.
       reload: () => this._load(),
+      canPlace: (solar) => this._solarDrop(solar, dialog.stat) !== null,
     };
     return html`${keyed(
       dialog,
@@ -6019,6 +6033,25 @@ export class EnergyFlowMapperPanel extends LitElement {
         return this._renderSum(dialog);
       case "solar":
         return this._renderSolar(dialog);
+      case "solar_pick": {
+        const targets = devices.filter((d) => this._solarDrop(dialog.solar, d.stat_consumption) !== null);
+        return html`<h2>${this._t("solar_pick_title", { solar: this._solarName(dialog.solar) })}</h2>
+          <p class="hint">${this._t("solar_block_free_hint")}</p>
+          <div class="dialog-actions column-actions">
+            ${targets.map(
+              (d) => html`<button
+                class="solar-choice"
+                @click=${() => {
+                  this._close();
+                  this._putSolar(dialog.solar, d.stat_consumption);
+                }}
+              >
+                ${this._name(d.stat_consumption, devices)}
+              </button>`,
+            )}
+            <button class="cancel" @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      }
       case "solar_place": {
         const solar = this._solarName(dialog.solar);
         const device = this._name(dialog.stat, devices);
@@ -6029,6 +6062,9 @@ export class EnergyFlowMapperPanel extends LitElement {
           <p class="hint">${this._t("solar_place_move")}</p>
           ${counts ? html`<p class="hint">${this._t("solar_place_replace_hint", { device })}</p>` : nothing}
           <div class="dialog-actions column-actions">
+            <button @click=${() => (this._dialog = { kind: "solar_pick", solar: dialog.solar })}>
+              ${this._t("solar_block_move")}
+            </button>
             <button
               class="solar-unplace"
               @click=${() => {
@@ -6893,6 +6929,10 @@ export class EnergyFlowMapperPanel extends LitElement {
       align-items: center;
       gap: 8px;
       border-left: 4px solid var(--energy-solar-color, #ff9800);
+    }
+    .solar-block .solar-pick {
+      margin-left: auto;
+      flex: none;
     }
     .solar-tag {
       display: inline-flex;

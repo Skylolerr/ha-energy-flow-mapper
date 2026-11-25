@@ -5499,6 +5499,57 @@ describe("hints and solar setup", () => {
       expect(placed(el)?.dataset.at).toBe("sensor.server");
     });
 
+    it("a circuit can be picked without dragging (phones, keyboard)", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
+      snap.solar_counted = { "sensor.tv": ["sensor.solar"] };
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      const pick = freeSolar(el)!.querySelector<HTMLButtonElement>("button.solar-pick")!;
+      expect(pick.textContent).toContain("Choose circuit");
+      pick.click();
+      await settle(el);
+      const choices = [...dialogEl(el).querySelectorAll<HTMLButtonElement>("button.solar-choice")];
+      // Not the solar's own meter.
+      expect(choices.map((b) => b.textContent!.trim())).toEqual(["Server & co", "Sonos amp", "TV"]);
+      choices[2].click();
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toMatchObject({ solar: "sensor.solar", stat: "sensor.tv" });
+      expect(placed(el)?.dataset.at).toBe("sensor.tv");
+    });
+
+    it("the setup offers only placing where a drop could place", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      el._openSolarSetup("sensor.solar");
+      await settle(el);
+      expect(dialogButton(el, "My meter already counts the solar")).toBeUndefined();
+      el._openSolarSetup("sensor.tv");
+      await settle(el);
+      expect(dialogButton(el, "My meter already counts the solar")).toBeDefined();
+    });
+
+    it("keeps the returned-energy hint hidden for a solar a meter counts", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.energy_sources.push({ type: "solar", stat_energy_from: "sensor.garage_pv" });
+      snap.solar_counted = { "sensor.tv": ["sensor.garage_pv"] };
+      snap.hints = [
+        {
+          code: "returned_energy",
+          stat: "sensor.server",
+          kind: "electricity",
+          data: { entity_id: "sensor.server_returned", disabled: false },
+        },
+      ];
+      const free = await mount(placeMock(structuredClone(snap)));
+      expect(node(free, "sensor.server").querySelector(".hint-mark")).not.toBeNull();
+      snap.solar_places = { "sensor.solar": "sensor.server" };
+      const el = await mount(placeMock(snap));
+      expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
+    });
+
     it("is not dropped on the solar's own meter or on Home", async () => {
       const snap = solarSnapshot();
       snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
