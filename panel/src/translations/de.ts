@@ -390,7 +390,7 @@ export const de: Translations = {
   power_variant_two_battery: "Je ein Sensor für Entlade- und Ladeleistung, beide positiv.",
   hints: "Hinweise",
   hint_returned_energy: "Sein Gerät zählt auch zurückgespeiste Energie ({entity}). Wenn eine Solaranlage in diesen Stromkreis einspeist, sieht dieser Zähler nur, was der Stromkreis vom Haus bezieht, nicht was die Solaranlage darin produziert.",
-  hint_returned_energy_disabled: "Sein Gerät hat auch einen Sensor für zurückgespeiste Energie ({entity}), der deaktiviert ist, und dieser Zähler hat untergeordnete Geräte. Wenn eine Solaranlage in diesen Stromkreis einspeist, sieht dieser Zähler nur, was der Stromkreis vom Haus bezieht, nicht was die Solaranlage darin produziert.",
+  hint_returned_energy_disabled: "Sein Gerät hat auch einen Sensor für zurückgespeiste Energie ({entity}), der deaktiviert ist, und dieser Stromkreis hat in letzter Zeit Energie zurückgespeist (seine Leistung war unter 0). Wenn eine Solaranlage in diesen Stromkreis einspeist, sieht dieser Zähler nur, was der Stromkreis vom Haus bezieht, nicht was die Solaranlage darin produziert.",
   hint_daily_in_sum: "Diese Summe mischt Zähler, die jeden Tag wieder bei 0 beginnen, mit Zählern, die das nicht tun: {names}. Die Summe fällt dann einmal am Tag, und Home Assistant zählt die ganze Summe noch einmal. Verwende im Helfer stattdessen einen Zähler, der nicht zurückgesetzt wird (für eine Solaranlage ein Integral ihrer Leistung).",
   hint_power_available: "Sein Gerät hat einen Leistungssensor, der nicht gesetzt ist: {entity}.",
   hint_flow_available: "Sein Gerät hat einen Durchflusssensor, der nicht gesetzt ist: {entity}.",

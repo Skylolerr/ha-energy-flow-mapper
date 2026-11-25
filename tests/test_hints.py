@@ -19,12 +19,15 @@ from custom_components.energy_flow_mapper import energy_access, stats_probe
 from custom_components.energy_flow_mapper import hints as hints_module
 from custom_components.energy_flow_mapper.candidates import async_stats_info
 from custom_components.energy_flow_mapper.const import DOMAIN
+from custom_components.energy_flow_mapper.created_helpers import CreatedHelpers
 from custom_components.energy_flow_mapper.device_rules import Method
 from custom_components.energy_flow_mapper.hints import (
     HintCode,
     Readings,
+    Returned,
     Watched,
     async_hints,
+    async_returned,
     async_sum_members,
     async_watch,
     returned_sensor,
@@ -36,13 +39,15 @@ from custom_components.energy_flow_mapper.solar_setup import (
     solar_power_template,
 )
 from custom_components.energy_flow_mapper.stats_probe import read_downtimes
+from custom_components.energy_flow_mapper.sum_meter import SolarHolds
 
 from .common import MockConfigEntry, WebSocketGenerator
 from .conftest import ENERGY_PREFS, _meter
 
 type Rows = dict[str, list[dict[str, Any]]]
 
-SOLAR = {"type": "solar", "stat_energy_from": "sensor.solar_energy"}
+SOLAR_ENERGY = "sensor.solar_energy"
+SOLAR = {"type": "solar", "stat_energy_from": SOLAR_ENERGY}
 
 
 class FakeRecorder:
@@ -194,18 +199,61 @@ def _prefs(
     }
 
 
+def mins(*values: float) -> list[dict[str, Any]]:
+    """Return hourly power statistics rows with these minimums (W)."""
+    return [{"start": 1_700_000_000 + 3600 * i, "min": v} for i, v in enumerate(values)]
+
+
+def _power_of(hass: HomeAssistant, meter: str) -> str:
+    """Give a Shelly meter's device the power sensor of its channel."""
+    name = meter.removeprefix("sensor.").removesuffix("_energy")
+    power = f"sensor.{name}_power"
+    _entity(
+        hass,
+        power,
+        er.async_get(hass).async_get(meter).device_id,
+        unique_id=f"aabb-{name}-switch:0-power",
+        device_class="power",
+        unit="W",
+    )
+    return power
+
+
+def _returned_only(hints: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [hint for hint in hints if hint["code"] is HintCode.RETURNED_ENERGY]
+
+
+def _gross_template(hass: HomeAssistant, entity_id: str, *inputs: str) -> str:
+    """Add a hand-made template meter that adds `inputs` (a gross meter)."""
+    for entity in inputs:
+        if hass.states.get(entity) is None:
+            _meter(hass, entity)
+    state = " + ".join(f"states('{entity}') | float(0)" for entity in inputs)
+    return _helper(
+        hass,
+        "template",
+        entity_id,
+        {"template_type": "sensor", "state": "{{ " + state + " }}"},
+    )
+
+
 async def test_returned_hint_disabled_with_children(
     hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
 ) -> None:
-    """A Pro EM channel with a disabled returned sensor and children gets a hint."""
-    calls, _ = statistics
+    """A Pro EM channel with a disabled returned sensor gets a hint.
+
+    It needs children and a circuit power that went below 0 (it fed in).
+    """
+    calls, data = statistics
     meter, returned = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, meter)
     prefs = _prefs(
         [
-            {"stat_consumption": meter},
+            {"stat_consumption": meter, "stat_rate": power},
             {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
         ]
     )
+    data[power] = mins(120.0, -35.0, 80.0)
     assert await _hints(hass, prefs) == [
         {
             "code": HintCode.RETURNED_ENERGY,
@@ -214,8 +262,259 @@ async def test_returned_hint_disabled_with_children(
             "data": {"entity_id": returned, "disabled": True},
         }
     ]
-    # A disabled sensor has no statistics to read.
+    # A disabled sensor has no statistics: the circuit's power is read, its
+    # hourly minimum of the last 3 days, in one query.
+    assert len(calls) == 1
+    _, start, end, ids, period, units, types = calls[0]
+    assert ids == {power}
+    assert (period, units, types) == ("hour", {"energy": "kWh", "power": "W"}, {"min"})
+    assert (end - start).days == 3
+
+
+async def test_no_returned_hint_disabled_when_power_never_below_0(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A circuit whose power never went below 0 never fed in: no hint."""
+    _, data = statistics
+    meter, _ = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, meter)
+    prefs = _prefs(
+        [
+            {"stat_consumption": meter, "stat_rate": power},
+            {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
+        ]
+    )
+    data[power] = mins(174.0, 0.0, 512.0)
+    assert await _hints(hass, prefs) == []
+    # No statistics of the power: no hint either.
+    data.clear()
+    assert await _hints(hass, prefs) == []
+
+    # A failing recorder only loses the hint.
+    def fail(*args: Any) -> Rows:
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(stats_probe, "statistics_during_period", fail)
+    assert await _hints(hass, prefs) == []
+
+
+async def test_no_returned_hint_disabled_without_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A circuit without a power sensor gives no disabled-variant hint, no query."""
+    calls, _ = statistics
+    meter, _ = _shelly(hass, "pro_em", returned_disabled=True)
+    prefs = _prefs(
+        [
+            {"stat_consumption": meter},
+            {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
+        ]
+    )
+    assert await _hints(hass, prefs) == []
     assert calls == []
+    # An external statistic as power cannot be read as a sensor's: no hint.
+    prefs["device_consumption"][0]["stat_rate"] = "external:power"
+    assert _returned_only(await _hints(hass, prefs)) == []
+    assert calls == []
+
+
+async def test_returned_hint_disabled_reads_the_paired_power(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """Without a power in the settings, the power of the meter's channel counts."""
+    calls, data = statistics
+    meter, returned = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, meter)
+    prefs = _prefs(
+        [
+            {"stat_consumption": meter},
+            {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
+        ]
+    )
+    data[power] = mins(300.0, -12.5)
+    assert _returned_only(await _hints(hass, prefs)) == [
+        {
+            "code": HintCode.RETURNED_ENERGY,
+            "stat": meter,
+            "kind": "electricity",
+            "data": {"entity_id": returned, "disabled": True},
+        }
+    ]
+    assert calls[-1][3] == {power}
+
+
+async def test_no_returned_hint_when_solar_held_by_gross_template(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """The maintainer's case: the only solar is in a hand-made gross meter.
+
+    A Pro EM circuit (F13) with a disabled returned sensor, children and a
+    power always above 0, while the user's own gross meter of another
+    circuit (F11 brutto = F11 + solar) holds the only solar: no hint, and
+    nothing is read. Even a power below 0 gives none: the solar is counted.
+    """
+    calls, data = statistics
+    meter, _ = _shelly(hass, "f13", returned_disabled=True)
+    power = _power_of(hass, meter)
+    _gross_template(hass, "sensor.f11_brutto", "sensor.f11_energy", SOLAR_ENERGY)
+    prefs = _prefs(
+        [
+            {"stat_consumption": "sensor.f11_brutto"},
+            {"stat_consumption": meter, "stat_rate": power},
+            {"stat_consumption": "sensor.server", "included_in_stat": meter},
+            {"stat_consumption": "sensor.printer", "included_in_stat": meter},
+        ]
+    )
+    data[power] = mins(174.0, 230.0, 401.0)
+    assert await _hints(hass, prefs) == []
+    data[power] = mins(174.0, -230.0)
+    assert await _hints(hass, prefs) == []
+    assert calls == []
+    # The same circuit without the gross meter: the solar is not held.
+    del prefs["device_consumption"][0]
+    assert [hint["stat"] for hint in await _hints(hass, prefs)] == [meter]
+
+
+async def test_returned_hint_enabled_needs_an_unheld_solar(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """An enabled returned sensor that counted needs a solar no meter holds.
+
+    While a device meter holds the solar: no hint, nothing read. Otherwise
+    the hint as before.
+    """
+    calls, data = statistics
+    meter, returned = _shelly(hass, "balcony", returned_disabled=False)
+    data[returned] = changes(0.2, 0.3)
+    _gross_template(hass, "sensor.house_gross", "sensor.house_net", SOLAR_ENERGY)
+    held = _prefs(
+        [{"stat_consumption": "sensor.house_gross"}, {"stat_consumption": meter}]
+    )
+    assert await _hints(hass, held) == []
+    assert calls == []
+    assert await _hints(hass, _prefs([{"stat_consumption": meter}])) == [
+        {
+            "code": HintCode.RETURNED_ENERGY,
+            "stat": meter,
+            "kind": "electricity",
+            "data": {"entity_id": returned, "disabled": False},
+        }
+    ]
+
+
+async def test_returned_hint_with_one_of_two_solars_unheld(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """Two solars, one held by a gross meter and one not: hints stay possible."""
+    _, data = statistics
+    pro_em, pro_em_returned = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, pro_em)
+    plug, plug_returned = _shelly(hass, "plug", returned_disabled=False)
+    data[power] = mins(50.0, -80.0)
+    data[plug_returned] = changes(0.4)
+    _gross_template(hass, "sensor.house_gross", "sensor.house_net", SOLAR_ENERGY)
+    _meter(hass, "sensor.garage_pv")
+    devices = [
+        {"stat_consumption": "sensor.house_gross"},
+        {"stat_consumption": pro_em, "stat_rate": power},
+        {"stat_consumption": "sensor.heat_pump", "included_in_stat": pro_em},
+        {"stat_consumption": plug},
+    ]
+    garage = {"type": "solar", "stat_energy_from": "sensor.garage_pv"}
+    expected = [
+        (pro_em, {"entity_id": pro_em_returned, "disabled": True}),
+        (plug, {"entity_id": plug_returned, "disabled": False}),
+    ]
+    found = await _hints(hass, _prefs(devices, [SOLAR, garage]))
+    assert [(hint["stat"], hint["data"]) for hint in found] == expected
+    # Both held (the gross meter adds the garage's solar too): none.
+    _gross_template(
+        hass, "sensor.garage_gross", "sensor.garage_net", "sensor.garage_pv"
+    )
+    devices.append({"stat_consumption": "sensor.garage_gross"})
+    assert await _hints(hass, _prefs(devices, [SOLAR, garage])) == []
+
+
+async def test_returned_hint_solar_as_device_is_not_held(
+    hass: HomeAssistant, statistics: tuple[list[tuple[Any, ...]], Rows]
+) -> None:
+    """A device whose meter is the solar itself (or a copy of it) holds nothing."""
+    _, data = statistics
+    meter, _ = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, meter)
+    data[power] = mins(-5.0)
+    _gross_template(hass, "sensor.solar_copy", SOLAR_ENERGY)
+    prefs = _prefs(
+        [
+            {"stat_consumption": SOLAR_ENERGY},
+            {"stat_consumption": "sensor.solar_copy"},
+            {"stat_consumption": meter, "stat_rate": power},
+            {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
+        ]
+    )
+    assert [hint["stat"] for hint in await _hints(hass, prefs)] == [meter]
+
+
+@pytest.mark.parametrize(
+    ("method", "counter", "solar_power"),
+    [
+        ("em", False, True),
+        ("em", True, True),
+        ("power", False, True),
+        ("em", False, False),
+    ],
+)
+async def test_returned_hint_solar_held_by_our_gross_meter(
+    hass: HomeAssistant,
+    statistics: tuple[list[tuple[Any, ...]], Rows],
+    method: str,
+    counter: bool,
+    solar_power: bool,
+) -> None:
+    """A gross meter of the solar setup holds its solar: no hint elsewhere.
+
+    For the methods the setup builds (EM with the solar term, EM on the
+    solar's own counter, From power), and for a solar without a power in
+    the settings (the term integrates its paired power). A gross meter of
+    ours is no holder for a sum, but here it holds its solar.
+    """
+    _, data = statistics
+    meter, returned = _shelly(hass, "pro_em", returned_disabled=True)
+    power = _power_of(hass, meter)
+    data[power] = mins(-40.0)
+    prefs, records = _setup(hass, method, counter=counter)
+    if not solar_power:
+        # The solar's power is the only power of its own device.
+        inverter = _device(hass, "inverter")
+        registry = er.async_get(hass)
+        for entity in (PV_ENERGY, PV_POWER):
+            registry.async_update_entity(entity, device_id=inverter)
+        del prefs["energy_sources"][0]["stat_rate"]
+    prefs["device_consumption"] += [
+        {"stat_consumption": meter, "stat_rate": power},
+        {"stat_consumption": "sensor.heat_pump", "included_in_stat": meter},
+    ]
+    helpers = CreatedHelpers(hass)
+    for entry_id, record in records.items():
+        await helpers.async_add(entry_id, record)
+
+    async def returned_hints(prefs: dict[str, Any]) -> list[dict[str, Any]]:
+        holds = SolarHolds(hass, prefs, helpers)
+        readings = Readings(await async_returned(hass, prefs, holds))
+        return _returned_only(
+            await async_hints(
+                hass, prefs, async_stats_info(hass, prefs), set(), readings
+            )
+        )
+
+    assert await returned_hints(prefs) == []
+    # Without the gross meter the solar is not held.
+    del prefs["device_consumption"][0]
+    assert [hint["data"] for hint in await returned_hints(prefs)] == [
+        {"entity_id": returned, "disabled": True}
+    ]
 
 
 async def test_no_returned_hint_disabled_without_children(
@@ -413,9 +712,11 @@ async def test_returned_hint_any_sensor_qualifies(
         disabled=True,
     )
     data[enabled] = changes(0.0, 0.0)
+    power = _power_of(hass, meter)
+    data[power] = mins(900.0, -150.0)
     prefs = _prefs(
         [
-            {"stat_consumption": meter},
+            {"stat_consumption": meter, "stat_rate": power},
             {"stat_consumption": "sensor.wallbox", "included_in_stat": meter},
         ]
     )
@@ -833,7 +1134,7 @@ async def _watch_hints(
     """Return the safety-net hints only."""
     watched = await async_watch(hass, prefs, records)
     hints = await async_hints(
-        hass, prefs, async_stats_info(hass, prefs), set(), Readings(set(), watched)
+        hass, prefs, async_stats_info(hass, prefs), set(), Readings(Returned(), watched)
     )
     return [hint for hint in hints if hint["code"] in SAFETY_CODES]
 

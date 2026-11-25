@@ -390,7 +390,7 @@ export const it: Translations = {
   power_variant_two_battery: "Un sensore per la potenza di scarica e uno per quella di carica, entrambi positivi.",
   hints: "Indicazioni",
   hint_returned_energy: "Il suo dispositivo conta anche l’energia immessa ({entity}). Se un impianto solare immette in questo circuito, questo contatore vede solo ciò che il circuito preleva dalla casa, non ciò che l’impianto solare vi produce.",
-  hint_returned_energy_disabled: "Il suo dispositivo ha anche un sensore dell’energia immessa ({entity}), che è disattivato, e questo contatore ha dispositivi figli. Se un impianto solare immette in questo circuito, questo contatore vede solo ciò che il circuito preleva dalla casa, non ciò che l’impianto solare vi produce.",
+  hint_returned_energy_disabled: "Il suo dispositivo ha anche un sensore dell’energia immessa ({entity}), che è disattivato, e questo circuito ha immesso energia di recente (la sua potenza è scesa sotto 0). Se un impianto solare immette in questo circuito, questo contatore vede solo ciò che il circuito preleva dalla casa, non ciò che l’impianto solare vi produce.",
   hint_daily_in_sum: "Questa somma mescola contatori che ripartono da 0 ogni giorno con contatori che non lo fanno: {names}. La somma allora scende una volta al giorno, e Home Assistant conta di nuovo l’intera somma. Nell’aiutante usa invece un contatore che non si azzera (per un impianto solare, un integrale della sua potenza).",
   hint_power_available: "Il suo dispositivo ha un sensore di potenza non impostato: {entity}.",
   hint_flow_available: "Il suo dispositivo ha un sensore di portata non impostato: {entity}.",

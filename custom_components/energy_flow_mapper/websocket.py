@@ -102,8 +102,8 @@ from .hierarchy import (
 )
 from .hints import (
     Readings,
-    async_counted_returned,
     async_hints,
+    async_returned,
     async_sum_members,
     async_watch,
     meter_powers,
@@ -453,16 +453,19 @@ async def websocket_get(
     # Daily resets are read only for the meters of devices and sources and the
     # members of their sum helpers: the hints and the sum dialog need no more,
     # so free meters, power sensors and cost statistics keep `daily_reset`
-    # false. The recorder queries (daily resets, returned energy counted
-    # lately, the safety net of the gross meters) run at once: a busy
-    # recorder makes the panel wait for one timeout, not three.
-    daily, counted, watched = await asyncio.gather(
+    # false. The recorder queries (daily resets, returned energy counted or
+    # fed in lately, the safety net of the gross meters) run at once: a busy
+    # recorder makes the panel wait for one timeout, not three. One
+    # `SolarHolds` judges the meters for the returned-energy hint and for
+    # `solar_holds`.
+    holds = SolarHolds(hass, prefs, runtime.helpers, cache)
+    daily, returned, watched = await asyncio.gather(
         async_daily_resetting(
             hass,
             sorted(meter_stats(prefs) | async_sum_members(hass, prefs)),
             power_of=meter_powers(prefs),
         ),
-        async_counted_returned(hass, prefs),
+        async_returned(hass, prefs, holds),
         async_watch(hass, prefs, runtime.helpers.records(), runtime.watch_cache),
     )
     mark_daily_reset(meters, daily)
@@ -496,12 +499,10 @@ async def websocket_get(
             "ignored_suggestions": runtime.suggestions.ignored(),
             "dismissed_hints": runtime.suggestions.dismissed(),
             "hints": await async_hints(
-                hass, prefs, stats, daily, Readings(counted, watched)
+                hass, prefs, stats, daily, Readings(returned, watched)
             ),
             "inputs": counted_inputs(hass, in_answer, cache),
-            "solar_holds": SolarHolds(hass, prefs, runtime.helpers, cache).holds(
-                in_answer
-            ),
+            "solar_holds": holds.holds(in_answer),
         },
     )
 

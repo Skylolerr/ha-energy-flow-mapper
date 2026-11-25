@@ -390,7 +390,7 @@ export const fr: Translations = {
   power_variant_two_battery: "Un capteur pour la puissance de décharge et un pour la puissance de charge, chacun positif.",
   hints: "Remarques",
   hint_returned_energy: "Son appareil compte aussi l’énergie réinjectée ({entity}). Si une installation solaire alimente ce circuit, ce compteur ne voit que ce que le circuit tire de la maison, pas ce que l’installation solaire y produit.",
-  hint_returned_energy_disabled: "Son appareil a aussi un capteur d’énergie réinjectée ({entity}), qui est désactivé, et ce compteur a des appareils enfants. Si une installation solaire alimente ce circuit, ce compteur ne voit que ce que le circuit tire de la maison, pas ce que l’installation solaire y produit.",
+  hint_returned_energy_disabled: "Son appareil a aussi un capteur d’énergie réinjectée ({entity}), qui est désactivé, et ce circuit a réinjecté de l’énergie récemment (sa puissance est passée sous 0). Si une installation solaire alimente ce circuit, ce compteur ne voit que ce que le circuit tire de la maison, pas ce que l’installation solaire y produit.",
   hint_daily_in_sum: "Cette somme mélange des compteurs qui repartent de 0 chaque jour avec des compteurs qui ne le font pas : {names}. La somme chute alors une fois par jour, et Home Assistant compte à nouveau toute la somme. Dans l’entrée d’aide, utilise plutôt un compteur qui ne se remet pas à zéro (pour une installation solaire, une intégrale de sa puissance).",
   hint_power_available: "Son appareil a un capteur de puissance qui n’est pas défini : {entity}.",
   hint_flow_available: "Son appareil a un capteur de débit qui n’est pas défini : {entity}.",

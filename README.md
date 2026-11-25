@@ -587,9 +587,13 @@ in your draft must be saved first.
 They show only while a solar source exists:
 
 - *Its device also counts returned energy:* the circuit's meter has a returned energy
-  sensor on its device. It shows when that sensor is enabled and counted energy lately,
-  or when it is disabled and the circuit has child devices. Sensors already used in the
-  energy settings never count.
+  sensor on its device. It shows when that sensor is enabled and counted energy lately
+  (at least 0.01 kWh in the last 3 days), or when it is disabled, the circuit has child
+  devices and its power went below 0 in the last 3 days (it fed energy back; without a
+  power sensor there is no such hint). Sensors already used in the energy settings never
+  count. It does not show at all once every solar is counted by a device's meter already:
+  a gross meter of the setup, or one of your own that adds the solar (such as a template
+  *circuit + solar*). A device whose meter is the solar itself does not count.
 - *Children use more than their circuit:* the plausibility warning adds that a solar may
   feed into this circuit and offers the setup.
 

@@ -71,12 +71,13 @@ and Home Assistant show when they offer the update.
   disabled and says so.
 - **Hints:** an info mark at a block (also in the list view and in «Save as image»), with
   the text, a button and *Dismiss* in the details. A circuit whose device also counts
-  returned energy while you have a solar (when that sensor is enabled and counted lately,
-  or is disabled and the circuit has child devices; sensors used in the settings never
-  count); children that use more than their circuit while you have a solar; a sum that
-  mixes meters that start again at 0 every day with others; a power sensor that the
-  meter's device has but that is not set. A dismissed hint stays hidden for every admin
-  until *Show ignored suggestions again*. Panel only, not on the card.
+  returned energy while you have a solar that no device's meter counts yet (when that
+  sensor is enabled and counted lately, or is disabled, the circuit has child devices and
+  its power went below 0 lately; sensors used in the settings never count); children
+  that use more than their circuit while you have a solar; a sum that mixes meters that
+  start again at 0 every day with others; a power sensor that the meter's device has but
+  that is not set. A dismissed hint stays hidden for every admin until *Show ignored
+  suggestions again*. Panel only, not on the card.
 - **Meters that start again at 0 every day (or week, or month) are recognised:** a fall
   towards 0 (to less than half of the value before, also from below 0) on at least 2 of the
   last 3 days, read from the 5-minute statistics (hourly where those do not reach back).

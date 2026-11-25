@@ -19,7 +19,7 @@ keep the energy settings safe. The user-facing behaviour is described in the REA
 | `energy_stats.py` | Energy per statistic in a period, from the recorder |
 | `daily_reset.py` | Recognise meters that reset periodically for `get` and the hints (the rule of `stats_probe.py`, utility meters with a cycle) |
 | `stats_probe.py` | What the statistics show (`async_probe` → `StatsEvidence`): periodic counters (`periodic_from_series`: a fall to less than half the distance from 0 on 2 local days or more; with the meter's own power a fall its power explains is no reset; certain for a utility meter with a cycle or a changing `last_reset`), power sign (`went_negative`), the hourly sparkline. Reads 5-minute statistics first, hourly where they do not cover the window, in kWh and W, with one timeout. `async_read` runs several `Query`s and `read_downtimes` in one recorder executor job and returns a `Reading`, kept in a `ReadingCache` for 5 minutes |
-| `hints.py` | Hints of the panel, returned by `get`: returned energy of a circuit while solar exists, daily meters in a sum, power sensors the HA device has (electricity: of the meter's own channel), and the safety net of the setup's gross meters (`async_watch`) |
+| `hints.py` | Hints of the panel, returned by `get`: returned energy of a circuit that fed in or counted it while a solar no device meter holds exists, daily meters in a sum, power sensors the HA device has (electricity: of the meter's own channel), and the safety net of the setup's gross meters (`async_watch`) |
 | `backups.py` | Backup store, written before every change of the energy preferences |
 | `group_store.py`, `created_helpers.py`, `suggestions.py` | Own stores: groups; helpers the panel created, with a record of what the solar setup made each one for; ignored suggestions and dismissed hints |
 | `_flow.py` | `async_run_helper_flow`: the one place that drives a helper's config flow (and options flow). Refused input and lost flows end in the caller's error, no flow is left open; once the entry exists, any failure or a cancel removes it again (shielded) |
@@ -251,9 +251,21 @@ entity registry (disabled returned sensors), config entries (members of a sum he
 the recorder (energy counted lately, daily resets via `daily_reset.py`), which the panel
 cannot see. The recorder queries are guarded by a timeout: a slow recorder leaves out the
 hints that need it instead of blocking `get`. Daily resets are read only for the meters of
-devices and sources and the members of their sum helpers (what the hints and the sum dialog
-use); free meters keep `daily_reset: false`. `dismiss_hint` stores a dismissal. The card
-gets no hints.
+devices and sources and the members of their sum helpers (what the hints and the sum
+dialog use); free meters keep `daily_reset: false`. `dismiss_hint` stores a dismissal. The
+card gets no hints.
+
+`returned_energy` (`data`: `entity_id`, `disabled`) needs a solar source that no device
+meter holds (`hints.every_solar_held`): a device's meter holds a solar when what it counts
+(`SolarHolds.counted`, the walk `hold` judges by; for our gross meters what they add)
+reaches the solar's statistic, its power (without one, its paired power) or what they are
+made of (`SolarHolds.sources`). A device whose meter is the solar holds nothing. Then
+`async_returned` reads, in one query of the hourly statistics of the last `COUNTED_DAYS`
+(3), the `change` of the enabled returned sensors not used in the settings (a hint at
+≥ `COUNTED_KWH` 0.01 kWh) and the `min` of the own power (`stat_rate`, else
+`paired_power`) of each device with children and a disabled returned sensor (a hint when
+it went below 0, `stats_probe.sign_evidence`). Every solar held, or nothing to read, means
+no query. `get` builds one `SolarHolds` for this and `solar_holds`.
 
 ### The safety net
 

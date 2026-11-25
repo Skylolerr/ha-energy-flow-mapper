@@ -388,7 +388,7 @@ export const en = {
   power_variant_two_battery: "One sensor for discharge power and one for charge power, each positive.",
   hints: "Hints",
   hint_returned_energy: "Its device also counts returned energy ({entity}). If a solar feeds into this circuit, this meter only sees what the circuit draws from the house, not what the solar produces in it.",
-  hint_returned_energy_disabled: "Its device also has a returned energy sensor ({entity}), which is disabled, and this meter has child devices. If a solar feeds into this circuit, this meter only sees what the circuit draws from the house, not what the solar produces in it.",
+  hint_returned_energy_disabled: "Its device also has a returned energy sensor ({entity}), which is disabled, and this circuit fed energy back lately (its power went below 0). If a solar feeds into this circuit, this meter only sees what the circuit draws from the house, not what the solar produces in it.",
   hint_daily_in_sum: "This sum mixes meters that start again at 0 every day with meters that do not: {names}. The sum then drops once a day, and Home Assistant counts the whole sum again. In the helper, use a meter that does not reset instead (for a solar, an integral of its power).",
   hint_power_available: "Its device has a power sensor that is not set: {entity}.",
   hint_flow_available: "Its device has a flow sensor that is not set: {entity}.",

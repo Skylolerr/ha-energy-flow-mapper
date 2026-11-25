@@ -6,10 +6,12 @@ entity registry (disabled returned-energy sensors), config entries (the
 members of a sum helper) and the recorder (energy counted lately).
 
 - `returned_energy`: an electricity device whose HA device also counts
-  returned energy, while a solar source exists. Shelly plugs and switches have
-  an enabled returned sensor, every Shelly Pro EM channel a disabled one, so
-  the hint needs more than the sensor: an enabled one must have counted energy
-  in the last days, a disabled one needs a device with children.
+  returned energy, while a solar source exists that no device meter holds
+  (a gross meter, ours or the user's, counts it already). Shelly plugs and
+  switches have an enabled returned sensor, every Shelly Pro EM channel a
+  disabled one, so the hint needs more than the sensor: an enabled one must
+  have counted energy in the last days; for a disabled one the device needs
+  children and its circuit's own power must have gone below 0 (it fed in).
 - `daily_in_sum`: a meter that is a sensor group sum (ours or the user's) whose
   members mix meters that reset every day with others.
 - `power_available`: a device or source without a power (flow) sensor whose HA
@@ -92,7 +94,9 @@ from .stats_probe import (
     ReadingCache,
     StatType,
     async_read,
+    sign_evidence,
 )
+from .sum_meter import SolarHolds
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -317,57 +321,140 @@ def _power(
     )
 
 
-def _returned_by_device(prefs: Prefs) -> Iterator[tuple[str, set[str]]]:
-    """Yield (electricity device stat, used statistics) while solar exists."""
+def _returned_by_device(prefs: Prefs) -> Iterator[tuple[Mapping[str, Any], set[str]]]:
+    """Yield (electricity device, used statistics) while solar exists."""
     sources = prefs.get(KEY_SOURCES, [])
     if not any(source.get("type") == "solar" for source in sources):
         return
     used = used_stats(prefs)
     for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], []):
-        yield device[STAT], used
+        yield device, used
 
 
-async def async_counted_returned(hass: HomeAssistant, prefs: Prefs) -> set[str]:
-    """Return the enabled returned sensors that counted energy in the last days.
+def _circuit_power(
+    hass: HomeAssistant, device: Mapping[str, Any], used: Collection[str]
+) -> str | None:
+    """Return the circuit's own power sensor, or None.
 
-    Only sensors that can give a hint are read, all in one query: enabled
-    returned sensors of electricity devices, not used in the settings, while
-    a solar source exists. A failing recorder gives an empty set.
+    The device's `stat_rate`, or without one the power of the meter's own
+    channel (`paired_power`). Only a sensor has statistics to read.
     """
-    entity_ids = {
-        entity_id
-        for stat, used in _returned_by_device(prefs)
-        for entity_id, disabled in returned_sensors(hass, stat, exclude=used)
-        if not disabled
-    }
-    if not entity_ids:
-        return set()
-    rows = await async_hourly_statistics(hass, entity_ids, COUNTED_DAYS, {"change"})
-    return {
-        entity_id
-        for entity_id in entity_ids
-        if sum(row.get("change") or 0 for row in (rows or {}).get(entity_id, []))
-        >= COUNTED_KWH
-    }
+    power = device.get(RATE) or paired_power(hass, device[STAT], used)
+    return power if isinstance(power, str) and valid_entity_id(power) else None
 
 
-def _returned_hints(
-    hass: HomeAssistant, prefs: Prefs, counted: set[str]
-) -> dict[str, dict[str, Any]]:
-    """Return the returned-energy hint of each electricity device, by stat.
+def every_solar_held(hass: HomeAssistant, prefs: Prefs, holds: SolarHolds) -> bool:
+    """Return True if a device meter of the settings holds each solar source.
 
-    A device gets it when any of its returned sensors qualifies: enabled and
-    in `counted`, or disabled and the device has children. `data` names the
-    first one that does.
+    A device's meter holds a solar when what it counts (`SolarHolds.counted`:
+    a meter that holds the solar, or a gross meter of ours) reaches the
+    solar's statistic, its power (without one, its paired power) or what they
+    are made of. A meter that is the solar, or made only of it, holds none.
+    """
+    used = used_stats(prefs)
+    counted: set[str] = set()
+    for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], []):
+        if not holds.is_solar(device[STAT]):
+            counted |= holds.counted(device[STAT])
+    for source in _solars(prefs):
+        solar = set(holds.sources.get(source[FROM], ()))
+        if not source.get(RATE) and (power := paired_power(hass, source[FROM], used)):
+            solar.add(power)
+        if not counted & solar:
+            return False
+    return True
+
+
+@dataclass
+class Returned:
+    """What the returned-energy hint read from the recorder."""
+
+    # The enabled returned sensors that counted energy lately.
+    counted: set[str] = field(default_factory=set)
+    # The device meters whose circuit's power went below 0 lately: it fed in.
+    fed_in: set[str] = field(default_factory=set)
+
+
+async def async_returned(
+    hass: HomeAssistant, prefs: Prefs, holds: SolarHolds | None = None
+) -> Returned:
+    """Return what the circuits that can get the returned-energy hint did lately.
+
+    Read only while a solar source exists that no device meter holds
+    (`every_solar_held`; `holds` judges the meters, None: from the settings
+    alone, without our helpers), all in one query of the hourly statistics
+    of the last COUNTED_DAYS: the `change` of the enabled returned sensors
+    of electricity devices that are not used in the settings, and the `min`
+    of the own power (`_circuit_power`) of each device with children and a
+    disabled returned sensor. A failing recorder gives nothing.
     """
     parents = {
         device.get(PARENT)
         for device in prefs.get(DEVICE_KEYS[DeviceKind.ELECTRICITY], [])
     }
+    enabled: set[str] = set()
+    powers: dict[str, str] = {}
+    for device, used in _returned_by_device(prefs):
+        stat = device[STAT]
+        found = returned_sensors(hass, stat, exclude=used)
+        enabled |= {entity_id for entity_id, disabled in found if not disabled}
+        if (
+            stat in parents
+            and any(disabled for _, disabled in found)
+            and (power := _circuit_power(hass, device, used)) is not None
+        ):
+            powers[stat] = power
+    if not enabled and not powers:
+        return Returned()
+    if every_solar_held(
+        hass, prefs, SolarHolds(hass, prefs) if holds is None else holds
+    ):
+        return Returned()
+    types = ({"change"} if enabled else set()) | ({"min"} if powers else set())
+    rows = (
+        await async_hourly_statistics(
+            hass, enabled | set(powers.values()), COUNTED_DAYS, types
+        )
+        or {}
+    )
+    return Returned(
+        {
+            entity_id
+            for entity_id in enabled
+            if sum(row.get("change") or 0 for row in rows.get(entity_id, []))
+            >= COUNTED_KWH
+        },
+        {
+            stat
+            for stat, power in powers.items()
+            if sign_evidence(
+                (dt_util.utc_from_timestamp(row["start"]), low)
+                for row in rows.get(power, [])
+                if (low := row.get("min")) is not None
+            )
+        },
+    )
+
+
+def _returned_hints(
+    hass: HomeAssistant, prefs: Prefs, returned: Returned
+) -> dict[str, dict[str, Any]]:
+    """Return the returned-energy hint of each electricity device, by stat.
+
+    A device gets it when any of its returned sensors qualifies: enabled and
+    in `returned.counted`, or disabled and the device in `returned.fed_in`
+    (it has children and its power went below 0). `data` names the first one
+    that does.
+    """
     hints: dict[str, dict[str, Any]] = {}
-    for stat, used in _returned_by_device(prefs):
+    for device, used in _returned_by_device(prefs):
+        stat = device[STAT]
         for entity_id, disabled in returned_sensors(hass, stat, exclude=used):
-            if (stat in parents) if disabled else (entity_id in counted):
+            if (
+                (stat in returned.fed_in)
+                if disabled
+                else (entity_id in returned.counted)
+            ):
                 hints[stat] = _hint(
                     HintCode.RETURNED_ENERGY,
                     stat,
@@ -426,15 +513,15 @@ async def async_hints(
 
     `stats` is the statistics info of `get` (for the HA device of a meter),
     `daily` the statistics that reset every day, `readings` what `get` read
-    from the recorder for the hints, together with `daily`. Without it the
-    returned sensors that counted lately are read here, and there are no
-    safety-net hints. Hint dicts are `{code, stat, kind, data}`; dismissals
-    are left to the panel.
+    from the recorder for the hints, together with `daily`. Without it what
+    the returned-energy hint needs is read here (`async_returned`, without
+    our helpers), and there are no safety-net hints. Hint dicts are
+    `{code, stat, kind, data}`; dismissals are left to the panel.
     """
     if readings is None:
-        readings = Readings(await async_counted_returned(hass, prefs))
+        readings = Readings(await async_returned(hass, prefs))
     watched = readings.watched
-    returned = _returned_hints(hass, prefs, readings.counted)
+    returned = _returned_hints(hass, prefs, readings.returned)
     used = used_stats(prefs)
     hints: list[dict[str, Any]] = []
     for kind, key in DEVICE_KEYS.items():
@@ -475,8 +562,8 @@ class Watched:
 class Readings:
     """What the hints need from the recorder, read by `get` all at once."""
 
-    # The result of `async_counted_returned`.
-    counted: set[str]
+    # The result of `async_returned`.
+    returned: Returned
     # The result of `async_watch`.
     watched: Watched = field(default_factory=Watched)
 

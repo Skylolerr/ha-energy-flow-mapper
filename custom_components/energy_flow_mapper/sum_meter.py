@@ -101,9 +101,11 @@ type SolarHold = Literal["solar", "holder"]
 
 
 def _recorded(
-    hass: HomeAssistant, helpers: CreatedHelpers, kinds: Collection[str]
+    hass: HomeAssistant, helpers: CreatedHelpers | None, kinds: Collection[str]
 ) -> set[str]:
     """Return the entities of our helpers whose record kind is in `kinds`."""
+    if helpers is None:
+        return set()
     registry = er.async_get(hass)
     return {
         entry.entity_id
@@ -155,44 +157,56 @@ class SolarHolds:
     every input counts. A gross meter of the setup that still reads
     something besides the solar is neither, and a path to the solar through
     one does not count (another path still does).
+
+    `sources` keeps the solar of each solar source (by its statistic): its
+    statistic, its power and what they are made of, without the solar terms.
+    Without `helpers` no helper of ours is known.
     """
 
     def __init__(
         self,
         hass: HomeAssistant,
         prefs: Mapping[str, Any],
-        helpers: CreatedHelpers,
+        helpers: CreatedHelpers | None = None,
         cache: Cache | None = None,
     ) -> None:
         """Read the solar of the saved settings and of our recorded helpers."""
         self._hass = hass
         self._cache: Cache = {} if cache is None else cache
-        own = {
-            stat
+        solars = {
+            str(source["stat_energy_from"]): {
+                stat
+                for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
+                if isinstance(stat, str) and stat
+            }
             for source in prefs.get(KEY_SOURCES, [])
             if source.get("type") == "solar"
-            for stat in (source.get("stat_energy_from"), source.get("stat_rate"))
-            if isinstance(stat, str) and stat
+            and isinstance(source.get("stat_energy_from"), str)
         }
+        own = {stat for stats in solars.values() for stat in stats}
         # What the solar counts (not what it subtracts). A solar computed by
         # subtracting (house - grid import + grid export) does not make the
         # meters of the settings solar; a copy or a sum of meters does.
         others = _settings_stats(prefs) - own
-        made_of: set[str] = set()
-        for stat in own:
-            inputs = meter_inputs(hass, stat, self._cache)
-            # Computed by subtracting; a minus in a bracket makes the signs
-            # unknown, but it subtracts all the same.
-            computed = (inputs["signed_known"] and bool(inputs["subtracted"])) or bool(
-                turned_inputs(hass, stat, self._cache)
-            )
-            made_of |= {
-                entity
-                for entity in _counted(inputs)
-                if energy_or_power(hass, entity) and not (computed and entity in others)
-            }
+        self.sources: dict[str, set[str]] = {}
+        for source, stats in solars.items():
+            made_of: set[str] = set()
+            for stat in stats:
+                inputs = meter_inputs(hass, stat, self._cache)
+                # Computed by subtracting; a minus in a bracket makes the
+                # signs unknown, but it subtracts all the same.
+                computed = (
+                    inputs["signed_known"] and bool(inputs["subtracted"])
+                ) or bool(turned_inputs(hass, stat, self._cache))
+                made_of |= {
+                    entity
+                    for entity in _counted(inputs)
+                    if energy_or_power(hass, entity)
+                    and not (computed and entity in others)
+                }
+            self.sources[source] = stats | made_of
         terms = _recorded(hass, helpers, (KIND_SOLAR_ENERGY, KIND_SOLAR_POWER))
-        self.solar = own | made_of | terms
+        self.solar = {stat for stats in self.sources.values() for stat in stats} | terms
         self._gross = {
             entity
             for entity in _recorded(hass, helpers, (KIND_GROSS_ENERGY,))
@@ -216,13 +230,21 @@ class SolarHolds:
             return SOLAR
         if entity in self._gross:
             return None
-        # Every path to the solar but those through our gross meters, which
-        # count their own solar; with known signs, not the subtracted ones.
+        return HOLDER if self.counted(entity) & self.solar else None
+
+    def counted(self, entity: str) -> set[str]:
+        """Return what the meter `entity` counts, at any depth.
+
+        Every path but those through our gross meters (which count their own
+        solar), the meter's own inputs included; with known signs, not the
+        subtracted ones. `hold` judges by it; for a gross meter of ours it is
+        what that gross meter adds.
+        """
         inputs = meter_inputs(self._hass, entity, self._cache)
         reach = self._walk(entity)
         if inputs["signed_known"]:
             reach &= _counted(inputs)
-        return HOLDER if reach & self.solar else None
+        return reach
 
     def _walk(self, entity: str) -> set[str]:
         """Return the inputs of `entity` at any depth, not into our gross meters.
