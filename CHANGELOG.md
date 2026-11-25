@@ -11,7 +11,7 @@ and Home Assistant show when they offer the update.
 
 ## [Unreleased]
 
-## [0.11.0] - 2026-11-24
+## [0.11.0] - 2026-11-25
 
 > **Highlight:** a solar that feeds into a circuit or a sub panel is counted right: *Solar
 > feeds in here…* builds the circuit's gross meter by a method that fits its meter, and the
