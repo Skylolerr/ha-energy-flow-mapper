@@ -148,7 +148,8 @@ function sparkline(evidence: StatsEvidence): TemplateResult | typeof nothing {
  * touched.
  *
  * Events (none bubble): `close`, `created` (`SolarCreatedDetail`), `failed`
- * (`{ error }`), `set-solar-power` (`{ solar, state }`), `set-circuit-power`
+ * (`{ error }`), `place` (`{ stat, solar }`: the meter counts the solar
+ * already, only place it), `set-solar-power` (`{ solar, state }`), `set-circuit-power`
  * (`{ stat, state }`) and `open-settings` (`{ entity_id, state }`); `state`
  * (`SolarSetupState`) lets the panel open the setup again as it was. It
  * renders into the panel's shadow root (no own shadow root), so the panel's
@@ -631,6 +632,15 @@ export class EfmSolarSetup extends LitElement {
           </button>`
         : nothing}
       ${preview !== null ? this._renderPreview(preview) : nothing}
+      ${this._solar !== null
+        ? html`<button
+            class="link solar-place-only"
+            ?disabled=${this._busy}
+            @click=${() => this._emit("place", { stat: this.context.stat, solar: this._solar })}
+          >
+            ${t("solar_setup_place_only")}
+          </button>`
+        : nothing}
       <div class="dialog-actions">
         ${why !== null ? html`<span class="hint solar-why" id=${WHY_ID}>${why}</span>` : nothing}
         <button @click=${() => this._emit("close")}>${t("cancel")}</button>

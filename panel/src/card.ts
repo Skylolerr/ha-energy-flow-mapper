@@ -19,6 +19,7 @@ import {
   rateValue,
   sourceNow,
   type SourceRole,
+  type SourceRow,
   type TreeNode,
   homeUntracked,
   untracked,
@@ -102,6 +103,8 @@ export interface CardData {
   home?: HomeResult;
   /** Home Assistant's own check, only for what the card shows. */
   ha_issues?: HaIssue[];
+  /** Where a solar source feeds into a device of the list (solar → device). */
+  solar_places?: Record<string, string>;
 }
 
 /** Only entities have a history to show; external statistics have none. */
@@ -485,6 +488,17 @@ export class EnergyFlowMapperCardView extends LitElement {
             ...(s.stat_rate ? { stat_rate: s.stat_rate } : {}),
           }))
         : [];
+    // A placed solar is a block below the device it feeds into.
+    const solarAt = new Map<string, SourceRow[]>();
+    for (const [solar, meter] of Object.entries(this._data?.solar_places ?? {})) {
+      const row = (this._data?.sources ?? []).find((s) => s.role === "production" && s.stat === solar);
+      if (row) {
+        solarAt.set(meter, [
+          ...(solarAt.get(meter) ?? []),
+          { type: row.type, role: row.role, stat: row.stat, name: row.name, ...(row.stat_rate ? { stat_rate: row.stat_rate } : {}) },
+        ]);
+      }
+    }
     const result = layout(
       display,
       sources,
@@ -495,6 +509,7 @@ export class EnergyFlowMapperCardView extends LitElement {
       config.show_untracked,
       config.orientation,
       home?.value != null,
+      solarAt,
     );
     // Below a device the diagram starts at that device: no sources, no Home.
     const shown = result.blocks.filter((b) => !(config.root && b.kind === "home"));
@@ -542,7 +557,9 @@ export class EnergyFlowMapperCardView extends LitElement {
     const color =
       edge.kind === "untracked"
         ? "var(--secondary-text-color)"
-        : edge.kind === "source"
+        : edge.kind === "solar"
+          ? SOURCE_COLORS.production
+          : edge.kind === "source"
           ? (SOURCE_COLORS[source?.role ?? ""] ?? "var(--secondary-text-color)")
           : "var(--primary-color)";
     const dashed = edge.kind === "untracked" || ((edge.kind === "device" || edge.kind === "group") && edge.power === null) || (edge.kind === "source" && from.role === "home");
@@ -595,6 +612,18 @@ export class EnergyFlowMapperCardView extends LitElement {
             : nothing}
         </div>`;
       }
+      case "solar":
+        return html`<div
+          class="block source solar"
+          style="${style};--source-color:${SOURCE_COLORS.production}"
+          data-solar=${block.stat!}
+          data-at=${block.placedAt!}
+        >
+          <div class="block-text">
+            <span class="node-name">${this._t("role_production")}</span>
+            ${this._renderSourceSub(block)}
+          </div>
+        </div>`;
       case "untracked": {
         const value = rest.get(block.stat!);
         const valueText = value == null ? this._t("none") : this._format(value);

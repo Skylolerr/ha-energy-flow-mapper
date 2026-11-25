@@ -35,7 +35,7 @@ export const SOURCE_COLORS: Record<string, string> = {
   home: "var(--secondary-text-color)",
 };
 
-export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked" | "group";
+export type BlockKind = "source" | "placeholder" | "home" | "device" | "untracked" | "group" | "solar";
 
 export interface Block {
   id: string;
@@ -51,9 +51,11 @@ export interface Block {
   node?: TreeNode;
   /** Set on group blocks, collapsed or the header of an expanded group. */
   group?: Group;
+  /** A placed solar block: the device it feeds into (its `stat` is the solar's). */
+  placedAt?: string;
 }
 
-export type EdgeKind = "source" | "device" | "untracked" | "group";
+export type EdgeKind = "source" | "device" | "untracked" | "group" | "solar";
 
 export interface Edge {
   from: string;
@@ -99,31 +101,57 @@ export function untrackedId(stat: string): string {
   return `untracked:${stat}`;
 }
 
+/** Id of the block of the solar `solar` placed at the device `device`. */
+export function solarBlockId(solar: string, device: string): string {
+  return `solar:${solar}@${device}`;
+}
+
 interface Item {
   id: string;
-  kind: "device" | "untracked" | "group";
+  kind: "device" | "untracked" | "group" | "solar";
   /** Statistic of a device, or of the parent of an untracked block. */
   stat?: string;
   node?: TreeNode;
   group?: Group;
   /** Where the value of a group comes from. */
   display?: DisplayNode;
+  /** A placed solar: its source and the device it feeds into. */
+  source?: SourceRow;
+  placedAt?: string;
   children: Item[];
 }
 
-function items(nodes: DisplayNode[], collapsed: Set<string>, showUntracked: boolean): Item[] {
+function items(
+  nodes: DisplayNode[],
+  collapsed: Set<string>,
+  showUntracked: boolean,
+  solarPlaces: Map<string, SourceRow[]>,
+): Item[] {
   return nodes.map((node): Item => {
     if (node.type === "group") {
       const id = groupBlockId(node.group.id);
-      const children = collapsed.has(id) ? [] : items(node.children, collapsed, showUntracked);
+      const children = collapsed.has(id) ? [] : items(node.children, collapsed, showUntracked, solarPlaces);
       return { id, kind: "group", group: node.group, display: node, children };
     }
     const stat = node.node.stat;
+    // A placed solar comes first below its device, also below one without
+    // children; the untracked block follows the real children only.
+    const solars: Item[] = collapsed.has(stat)
+      ? []
+      : (solarPlaces.get(stat) ?? []).map((source) => ({
+          id: solarBlockId(source.stat, stat),
+          kind: "solar",
+          stat: source.stat,
+          source,
+          placedAt: stat,
+          children: [],
+        }));
     const children =
       node.children.length === 0 || collapsed.has(stat)
-        ? []
+        ? solars
         : [
-            ...items(node.children, collapsed, showUntracked),
+            ...solars,
+            ...items(node.children, collapsed, showUntracked, solarPlaces),
             ...(showUntracked ? [{ id: untrackedId(stat), kind: "untracked" as const, stat, children: [] }] : []),
           ];
     return { id: stat, kind: "device", stat, node: node.node, display: node, children };
@@ -156,6 +184,8 @@ function span(item: Item, box: number, space: number): number {
  * without `showUntracked` the blocks for untracked consumption are left out.
  * Levels are rows when horizontal and columns when vertical. `homeUntracked`
  * adds what no top-level device covers below Home (`untracked` of HOME_ID).
+ * `solarPlaces` maps a device to the solar sources placed at it: each is a
+ * block below the device with an edge into it.
  */
 export function layout(
   roots: DisplayNode[] | TreeNode[],
@@ -167,6 +197,7 @@ export function layout(
   showUntracked = true,
   orientation: Orientation = "horizontal",
   homeUntracked = false,
+  solarPlaces: Map<string, SourceRow[]> = new Map(),
 ): Layout {
   const blocks: Block[] = [];
   const edges: Edge[] = [];
@@ -215,6 +246,7 @@ export function layout(
     roots.length > 0 && "type" in roots[0] ? (roots as DisplayNode[]) : wrap(roots as TreeNode[]),
     collapsed,
     showUntracked,
+    solarPlaces,
   );
   if (showUntracked && homeUntracked) {
     tree.push({ id: untrackedId(HOME_ID), kind: "untracked", stat: HOME_ID, children: [] });
@@ -261,6 +293,8 @@ export function layout(
       flow = untracked.get(stat) ?? null;
     } else if (item.kind === "group") {
       flow = groupValue(item.display!, power);
+    } else if (item.kind === "solar") {
+      flow = null;
     } else {
       flow = power.get(stat) ?? null;
     }
@@ -273,8 +307,14 @@ export function layout(
       stat: item.stat,
       node: item.node,
       group: item.group,
+      ...(item.kind === "solar" ? { role: "production" as const, source: item.source, placedAt: item.placedAt } : {}),
     });
-    edges.push({ from: parent, to: item.id, kind: item.kind, power: flow });
+    // The solar feeds into its device.
+    edges.push(
+      item.kind === "solar"
+        ? { from: item.id, to: parent, kind: "solar", power: flow }
+        : { from: parent, to: item.id, kind: item.kind, power: flow },
+    );
     const frame: Frame | null = framed(item)
       ? { id: item.id, ...at(along - FRAME_PAD, start), ...(vertical ? { w: 0, h: size } : { w: size, h: 0 }), group: item.group! }
       : null;

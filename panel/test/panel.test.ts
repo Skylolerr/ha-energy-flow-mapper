@@ -5421,6 +5421,165 @@ describe("hints and solar setup", () => {
     expect(node(el, "sensor.tv").querySelector(".hint-mark")).not.toBeNull();
   });
 
+  describe("solar block", () => {
+    function freeSolar(el: EnergyFlowMapperPanel): HTMLElement | null {
+      return root(el).querySelector<HTMLElement>('.solar-free [data-solar="sensor.solar"]');
+    }
+
+    function placed(el: EnergyFlowMapperPanel): HTMLElement | null {
+      return root(el).querySelector<HTMLElement>('.block.solar[data-solar="sensor.solar"]');
+    }
+
+    function placeMock(snap: Snapshot = solarSnapshot()): Mock {
+      const mock = hintMock(snap);
+      mock.responses["energy_flow_mapper/place_solar"] = (msg: { solar: string; stat: string | null }) => ({
+        places: msg.stat === null ? {} : { [msg.solar]: msg.stat },
+      });
+      mock.responses["energy_flow_mapper/solar_setup_preview"] = preview();
+      return mock;
+    }
+
+    it("shows a free block until the solar is placed, then a block below its device", async () => {
+      const el = await mount(placeMock());
+      expect(freeSolar(el)?.textContent).toContain("Roof solar: where does it feed in?");
+      expect(placed(el)).toBeNull();
+
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.tv" };
+      const at = await mount(placeMock(snap));
+      expect(freeSolar(at)).toBeNull();
+      const block = placed(at)!;
+      expect(block.dataset.at).toBe("sensor.tv");
+      expect(block.textContent).toContain("Roof solar");
+      expect(root(at).querySelector('.edge-solar[data-to="sensor.tv"]')).not.toBeNull();
+    });
+
+    it("a place at a device the draft removed frees the block again", async () => {
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.gone" };
+      const el = await mount(placeMock(snap));
+      expect(freeSolar(el)).not.toBeNull();
+      expect(placed(el)).toBeNull();
+    });
+
+    it("dropped on a meter that counts the solar, it is only placed", async () => {
+      const snap = solarSnapshot();
+      snap.solar_counted = { "sensor.tv": ["sensor.solar"] };
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      drag(freeSolar(el)!, node(el, "sensor.tv"));
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toEqual({
+        type: "energy_flow_mapper/place_solar",
+        solar: "sensor.solar",
+        stat: "sensor.tv",
+      });
+      expect(placed(el)?.dataset.at).toBe("sensor.tv");
+      expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toBeUndefined();
+    });
+
+    it("dropped on another circuit, the setup opens with the solar", async () => {
+      const mock = placeMock();
+      const el = await mount(mock);
+      drag(freeSolar(el)!, node(el, "sensor.server"));
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toBeUndefined();
+      expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toMatchObject({
+        stat: "sensor.server",
+        solar: "sensor.solar",
+      });
+      // "Already counts": only placed, the setup closes.
+      dialogButton(el, "My meter already counts the solar")!.click();
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toMatchObject({
+        solar: "sensor.solar",
+        stat: "sensor.server",
+      });
+      expect(dialogEl(el)?.open ?? false).toBe(false);
+      expect(placed(el)?.dataset.at).toBe("sensor.server");
+    });
+
+    it("is not dropped on the solar's own meter or on Home", async () => {
+      const snap = solarSnapshot();
+      snap.prefs.device_consumption.push({ stat_consumption: "sensor.solar" });
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      drag(freeSolar(el)!, node(el, "sensor.solar"));
+      drag(freeSolar(el)!, root(el).querySelector<HTMLElement>(".block.home")!);
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toBeUndefined();
+      expect(lastCall(mock, "energy_flow_mapper/solar_setup_preview")).toBeUndefined();
+    });
+
+    it("its actions remove the placement and replace a meter that counts it", async () => {
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.tv" };
+      snap.solar_counted = { "sensor.tv": ["sensor.solar"] };
+      const mock = placeMock(snap);
+      const el = await mount(mock);
+      placed(el)!.click();
+      await settle(el);
+      expect(dialogEl(el).textContent).toContain("Roof solar feeds into TV");
+      expect(dialogButton(el, "Replace with")).toBeDefined();
+      dialogButton(el, "Remove placement")!.click();
+      await settle(el);
+      expect(lastCall(mock, "energy_flow_mapper/place_solar")).toMatchObject({ solar: "sensor.solar", stat: null });
+      expect(placed(el)).toBeNull();
+      expect(freeSolar(el)).not.toBeNull();
+    });
+
+    it("warns at a meter that still counts a solar placed elsewhere", async () => {
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.server" };
+      snap.solar_counted = { "sensor.server": ["sensor.solar"], "sensor.tv": ["sensor.solar"] };
+      const el = await mount(placeMock(snap));
+      expect(node(el, "sensor.tv").querySelector(".hint-mark")).not.toBeNull();
+      node(el, "sensor.tv").click();
+      await settle(el);
+      expect(details(el).textContent).toContain("Roof solar is placed at Server & co, but this meter still counts it");
+      expect(detailButton(el, "Replace with")).toBeDefined();
+      expect(detailButton(el, "Dismiss")).toBeUndefined();
+    });
+
+    it("is in the saved image, without its name when names are hidden", async () => {
+      const snap = solarSnapshot();
+      snap.solar_places = { "sensor.solar": "sensor.tv" };
+      const el = await mount(placeMock(snap));
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:image");
+      vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+      vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+      const toPng = vi.fn(async (_svg: string, _w: number, _h: number) => new Blob(["png"]));
+      el._toPng = toPng;
+      try {
+        await el._saveImage(false);
+        expect(toPng.mock.calls[0][0]).toContain("Roof solar");
+        await el._saveImage(true);
+        const hidden = toPng.mock.calls[1][0];
+        expect(hidden).not.toContain("Roof solar");
+        expect(hidden.match(/Solar production/g)?.length).toBe(2);
+      } finally {
+        vi.restoreAllMocks();
+      }
+    });
+
+    it("hides the returned-energy hint once every solar is placed", async () => {
+      const snap = solarSnapshot();
+      snap.hints = [
+        {
+          code: "returned_energy",
+          stat: "sensor.server",
+          kind: "electricity",
+          data: { entity_id: "sensor.server_returned", disabled: false },
+        },
+      ];
+      const free = await mount(placeMock(structuredClone(snap)));
+      expect(node(free, "sensor.server").querySelector(".hint-mark")).not.toBeNull();
+      snap.solar_places = { "sensor.solar": "sensor.tv" };
+      const el = await mount(placeMock(snap));
+      expect(node(el, "sensor.server").querySelector(".hint-mark")).toBeNull();
+    });
+  });
+
   it("hint buttons open the helper's settings and the setup", async () => {
     const snap = solarSnapshot();
     snap.hints = [

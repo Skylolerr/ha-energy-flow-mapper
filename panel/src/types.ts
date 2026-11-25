@@ -300,6 +300,10 @@ export interface Snapshot {
    * hold one ("holder"), judged on the saved settings as `create_sum_meter` does.
    */
   solar_holds?: Record<string, "solar" | "holder">;
+  /** Where the user placed each solar (solar statistic → meter), the solar block. */
+  solar_places?: Record<string, string>;
+  /** The solar sources each meter (as `inputs`) counts; only meters that count one. */
+  solar_counted?: Record<string, string[]>;
 }
 
 /** Device changes name their list; without `kind` they change electricity. */

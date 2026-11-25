@@ -890,3 +890,87 @@ export function coverage(home: number | null, tops: (number | null)[]): number |
   }
   return tops.reduce<number>((sum, v) => sum + (v ?? 0), 0) / home;
 }
+
+/** Statistic of each solar source, in the order of the sources. */
+function solarStats(sources: Source[]): string[] {
+  return sources.filter((s) => s.type === "solar" && typeof s.stat_energy_from === "string").map((s) => s.stat_energy_from!);
+}
+
+/**
+ * Where each solar feeds in, as the draft shows it: device statistic → solar
+ * statistics (in the order of the sources). `places` are the saved places
+ * (solar → meter); one counts when its solar is a solar source and its meter
+ * a device of `devices` (the electricity list), else the solar is free.
+ */
+export function solarPlaces(sources: Source[], devices: Device[], places: Record<string, string>): Map<string, string[]> {
+  const stats = new Set(devices.map((d) => d.stat_consumption));
+  const found = new Map<string, string[]>();
+  for (const solar of solarStats(sources)) {
+    const meter = places[solar];
+    if (meter !== undefined && stats.has(meter)) {
+      found.set(meter, [...(found.get(meter) ?? []), solar]);
+    }
+  }
+  return found;
+}
+
+/** The solar sources (statistics) that are placed at no device of the draft. */
+export function freeSolars(sources: Source[], devices: Device[], places: Record<string, string>): string[] {
+  const placed = new Set([...solarPlaces(sources, devices, places).values()].flat());
+  return solarStats(sources).filter((solar) => !placed.has(solar));
+}
+
+/**
+ * Devices whose meter still counts a solar that is placed at another device
+ * (`counted`: meter → the solars it counts, from the backend): device →
+ * [{solar, placedAt}]. After moving a solar, the old circuit is one.
+ */
+export function solarElsewhere(
+  sources: Source[],
+  devices: Device[],
+  places: Record<string, string>,
+  counted: Record<string, string[]>,
+): Map<string, { solar: string; placedAt: string }[]> {
+  const at = new Map<string, string>();
+  for (const [meter, solars] of solarPlaces(sources, devices, places)) {
+    for (const solar of solars) {
+      at.set(solar, meter);
+    }
+  }
+  const found = new Map<string, { solar: string; placedAt: string }[]>();
+  for (const device of devices) {
+    const stat = device.stat_consumption;
+    const others = (counted[stat] ?? [])
+      .filter((solar) => at.has(solar) && at.get(solar) !== stat)
+      .map((solar) => ({ solar, placedAt: at.get(solar)! }));
+    if (others.length) {
+      found.set(stat, others);
+    }
+  }
+  return found;
+}
+
+/**
+ * What dropping the block of `solar` on `target` does: "place" at a device
+ * whose meter counts the solar already, "setup" (the guided setup) at any
+ * other device, null where it cannot go: no device of `devices`, the solar's
+ * own meter or one that is the solar (`holds`), or where it is placed.
+ */
+export function solarDrop(
+  solar: string,
+  target: string,
+  devices: Device[],
+  places: Record<string, string>,
+  counted: Record<string, string[]>,
+  holds: Record<string, "solar" | "holder">,
+): "place" | "setup" | null {
+  if (
+    target === solar ||
+    holds[target] === "solar" ||
+    places[solar] === target ||
+    !devices.some((d) => d.stat_consumption === target)
+  ) {
+    return null;
+  }
+  return (counted[target] ?? []).includes(solar) ? "place" : "setup";
+}

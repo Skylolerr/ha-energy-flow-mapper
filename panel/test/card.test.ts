@@ -211,6 +211,22 @@ describe("card", () => {
     expect(label).toBe("heat");
   });
 
+  it("shows a placed solar below its device, also without the sources row", async () => {
+    const mock = mockHass(() =>
+      data({
+        sources: [{ type: "solar", role: "production", stat: "sensor.roof", name: "Roof", stat_rate: "sensor.roof_power" }],
+        solar_places: { "sensor.roof": "sensor.server", "sensor.gone": "sensor.server" },
+      }),
+    );
+    mock.hass.states["sensor.roof_power"] = { entity_id: "sensor.roof_power", state: "800", attributes: { unit_of_measurement: "W" } };
+    const el = await view({ period: "now", show_sources: false }, mock);
+    const solars = el.shadowRoot!.querySelectorAll<HTMLElement>(".block.solar");
+    expect([...solars].map((b) => [b.dataset.solar, b.dataset.at])).toEqual([["sensor.roof", "sensor.server"]]);
+    expect(solars[0].textContent).toContain("Solar production");
+    expect(solars[0].querySelector(".value")?.textContent).toBe("800 W");
+    expect(el.shadowRoot!.querySelector('.edge-solar[data-to="sensor.server"]')).not.toBeNull();
+  });
+
   it("shows the power now on its sources", async () => {
     const mock = mockHass(() =>
       data({

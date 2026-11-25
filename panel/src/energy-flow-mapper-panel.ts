@@ -23,6 +23,11 @@ import {
   untracked,
   untrackedMissing,
   homeUntracked,
+  freeSolars,
+  solarDrop,
+  solarElsewhere,
+  solarPlaces,
+  type SourceRow,
 } from "./draft";
 import { anonymize, diagramSize, diagramSvg, type ExportBlock, type ExportEdge, svgToPng } from "./export";
 import {
@@ -163,8 +168,12 @@ interface Zoom {
 
 export const TABS: Tab[] = ["electricity", "water", "gas"];
 
-/** A dragged device, free sensor or group (`stat` is then the block id `group:<id>`). */
-type Dragged = { kind: "device" | "candidate" | "group"; stat: string };
+/**
+ * A dragged device, free sensor, group (`stat` is then the block id
+ * `group:<id>`) or solar block (`stat`: the solar's statistic; `free` from the
+ * free sensors column).
+ */
+type Dragged = { kind: "device" | "candidate" | "group" | "solar"; stat: string; free?: boolean };
 
 type Dialog =
   | { kind: "actions"; stat: string }
@@ -172,6 +181,8 @@ type Dialog =
   | { kind: "add"; stat: string }
   | { kind: "rename"; stat: string }
   | { kind: "replace"; stat: string }
+  /** A placed solar block: the solar and the device it feeds into. */
+  | { kind: "solar_place"; solar: string; stat: string }
   | { kind: "confirm"; result: ValidateResult | null }
   | { kind: "backups"; entries: BackupEntry[] }
   | { kind: "restore"; backup: BackupEntry; undo: boolean }
@@ -469,6 +480,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     _freeCollapsed: { state: true },
     _ignored: { state: true },
     _dismissed: { state: true },
+    _places: { state: true },
     _energy: { state: true },
     _tab: { state: true },
     _find: { state: true },
@@ -526,6 +538,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   declare _ignored: ChildPair[];
   /** Hints an admin dismissed for good, stored in Home Assistant. */
   declare _dismissed: DismissedHint[];
+  /** Where each solar feeds in (solar → meter), written at once by `place_solar`. */
+  declare _places: Record<string, string>;
   /** Energy of the current period and draft; null for "now" or while loading. */
   declare _energy: EnergyResult | null;
   /** The tab shown: electricity, water or gas. */
@@ -591,6 +605,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     this._freeCollapsed = savedFreeCollapsed();
     this._ignored = [];
     this._dismissed = [];
+    this._places = {};
     this._energy = null;
     this._tab = "electricity";
     this._find = "";
@@ -679,6 +694,7 @@ export class EnergyFlowMapperPanel extends LitElement {
       this._loadError = null;
       this._ignored = this._snapshot.ignored_suggestions ?? [];
       this._dismissed = this._snapshot.dismissed_hints ?? [];
+      this._places = this._snapshot.solar_places ?? {};
       this._collapseGroups(this._snapshot);
       this._restoreDraft(this._snapshot.hash);
       // A draft kept over a reload (conflict) now belongs to the new settings.
@@ -1186,6 +1202,10 @@ export class EnergyFlowMapperPanel extends LitElement {
    * which the backend needs to keep the dismissal.
    */
   private _canDismiss(hint: Hint): boolean {
+    // The panel's own hint goes when the solar is counted once again.
+    if (hint.code === "solar_elsewhere") {
+      return false;
+    }
     return EVENT_KEYS[hint.code] === undefined || Object.keys(this._hintEvent(hint)).length > 0;
   }
 
@@ -1218,7 +1238,8 @@ export class EnergyFlowMapperPanel extends LitElement {
   /** Whether a hint still fits the draft (the backend computed it for the saved settings). */
   _hintApplies(hint: Hint): boolean {
     if (hint.code === "returned_energy") {
-      return this._hasSolar();
+      // A placed solar counts as held, also before the draft is saved.
+      return this._hasSolar() && this._freeSolarStats(true).length > 0;
     }
     if (this._signFixedByPower(hint)) {
       // Its fix is to set the device's power to none; the backend then stops comparing.
@@ -1242,7 +1263,8 @@ export class EnergyFlowMapperPanel extends LitElement {
    * role is left out.
    */
   _hintsFor(stat: string, role?: string): Hint[] {
-    return (this._snapshot?.hints ?? []).filter((hint) => {
+    const own = role === undefined ? this._solarElsewhereHints(stat) : [];
+    return [...(this._snapshot?.hints ?? []), ...own].filter((hint) => {
       const hintRole = this._hintRole(hint);
       return (
         hint.stat === stat &&
@@ -1287,6 +1309,11 @@ export class EnergyFlowMapperPanel extends LitElement {
             : this._t("hint_gross_unknown_input", { input: this._sensorName(input) }),
         ].join(" ");
       }
+      case "solar_elsewhere":
+        return this._t("hint_solar_elsewhere", {
+          solar: this._solarName(String(data.solar)),
+          device: this._name(String(data.placed_at)),
+        });
       case "solar_term_short":
       case "solar_term_high":
         return this._t(hint.code === "solar_term_short" ? "hint_solar_term_short" : "hint_solar_term_high", {
@@ -1813,6 +1840,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (dragged === null) {
       return false;
     }
+    if (dragged.kind === "solar") {
+      return !target.startsWith(SOURCE_TARGET) && this._solarDrop(dragged.stat, target) !== null;
+    }
     if (target.startsWith(SOURCE_TARGET)) {
       if (dragged.kind === "device") {
         return target.startsWith(`${SOURCE_TARGET}home:`) && this._canUseHomeMeter(dragged.stat);
@@ -1903,6 +1933,15 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (dragged === null || !allowed) {
       return;
     }
+    if (dragged.kind === "solar") {
+      // On a meter that counts the solar it is only placed; else the setup opens.
+      if (this._solarDrop(dragged.stat, target) === "place") {
+        void this._placeSolar(dragged.stat, target);
+      } else {
+        this._openSolarSetup(target, dragged.stat);
+      }
+      return;
+    }
     if (target.startsWith(SOURCE_TARGET)) {
       // `src:<assign role>:<block id>`; a block with a meter gets it replaced.
       const rest = target.slice(SOURCE_TARGET.length);
@@ -1948,7 +1987,7 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
     }
-    if (dragged.kind !== "candidate" && this._view === "diagram") {
+    if (dragged.kind !== "candidate" && !dragged.free && this._view === "diagram") {
       this._setDragImage(event);
     }
     this._dragged = dragged;
@@ -2955,9 +2994,10 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (home?.value != null) {
       rest.set(HOME_ID, home.untracked);
     }
+    const rows = sourceRows(this.draftSources, this._tab);
     return layout(
       displayTree(roots, this._groups),
-      sourceRows(this.draftSources, this._tab),
+      rows,
       values,
       rest,
       this._collapsed,
@@ -2971,7 +3011,93 @@ export class EnergyFlowMapperPanel extends LitElement {
       true,
       this._orientation,
       home?.value != null,
+      this._solarRows(rows),
     );
+  }
+
+  /** The solar sources placed at each device of the draft, as source rows (electricity only). */
+  private _solarRows(rows: SourceRow[]): Map<string, SourceRow[]> {
+    const found = new Map<string, SourceRow[]>();
+    if (this._tab !== "electricity") {
+      return found;
+    }
+    for (const [stat, solars] of solarPlaces(this.draftSources, this.draft, this._places)) {
+      found.set(
+        stat,
+        solars.flatMap((solar) => rows.filter((r) => r.stat === solar && r.role === "production")),
+      );
+    }
+    return found;
+  }
+
+  /**
+   * The solar sources placed nowhere in the draft, for the free sensors
+   * column (electricity tab only; `any`: whatever tab shows).
+   */
+  _freeSolarStats(any = false): string[] {
+    if (!any && this._tab !== "electricity") {
+      return [];
+    }
+    return freeSolars(this.draftSources, this.draftOf("electricity"), this._places);
+  }
+
+  /** What dropping the block of `solar` on `target` does (`solarDrop`), on the electricity tab. */
+  _solarDrop(solar: string, target: string): "place" | "setup" | null {
+    if (this._tab !== "electricity") {
+      return null;
+    }
+    return solarDrop(
+      solar,
+      target,
+      this.draft,
+      this._places,
+      this._snapshot?.solar_counted ?? {},
+      this._snapshot?.solar_holds ?? {},
+    );
+  }
+
+  /** The name of a solar source, as its source block shows it. */
+  _solarName(solar: string): string {
+    return sourceRows(this.draftSources).find((r) => r.stat === solar && r.role === "production")?.name || this._name(solar);
+  }
+
+  /**
+   * The panel's own hint at a device whose meter still counts a solar that
+   * is placed at another device (after moving it): replace the meter.
+   */
+  private _solarElsewhereHints(stat: string): Hint[] {
+    if (this._tab !== "electricity") {
+      return [];
+    }
+    const found = solarElsewhere(this.draftSources, this.draft, this._places, this._snapshot?.solar_counted ?? {}).get(stat);
+    return (found ?? []).map(({ solar, placedAt }) => ({
+      code: "solar_elsewhere",
+      stat,
+      kind: "electricity",
+      data: { solar, placed_at: placedAt },
+    }));
+  }
+
+  /** Place a solar at the meter `stat` (null: nowhere); written at once. */
+  async _placeSolar(solar: string, stat: string | null): Promise<void> {
+    if (!this.hass) {
+      return;
+    }
+    try {
+      const result = await this.hass.callWS<{ places: Record<string, string> }>({
+        type: `${DOMAIN}/place_solar`,
+        solar,
+        stat,
+      });
+      this._places = result.places;
+      this._showToast(
+        stat === null
+          ? this._t("solar_block_removed", { solar: this._solarName(solar) })
+          : this._t("solar_block_placed", { solar: this._solarName(solar), device: this._name(stat) }),
+      );
+    } catch (err) {
+      this._showToast(errorText(this.hass, err));
+    }
   }
 
   /** A colour of the theme as a plain value, for the picture. */
@@ -3025,6 +3151,17 @@ export class EnergyFlowMapperPanel extends LitElement {
         sub: lines.filter(Boolean).join(" · ") || null,
         area: null,
         color: this._cssColor(GROUP_COLOR),
+        warn: false,
+      };
+    }
+    if (block.kind === "solar") {
+      // Like a source: its role, the value, then the solar's name (which hiding names drops).
+      return {
+        block,
+        title: this._roleLabel("production"),
+        sub: this._sourceValueText(block),
+        area: this._solarName(block.stat!),
+        color: this._cssColor(SOURCE_COLORS.production),
         warn: false,
       };
     }
@@ -3613,6 +3750,9 @@ export class EnergyFlowMapperPanel extends LitElement {
     if (edge.kind === "untracked") {
       return "var(--secondary-text-color)";
     }
+    if (edge.kind === "solar") {
+      return SOURCE_COLORS.production;
+    }
     if (edge.kind === "source") {
       const source = blocks.get(edge.from === HOME_ID ? edge.to : edge.from);
       return SOURCE_COLORS[source?.role ?? ""] ?? "var(--secondary-text-color)";
@@ -3779,6 +3919,8 @@ export class EnergyFlowMapperPanel extends LitElement {
           ${block.kind === "source" && block.stat ? this._renderHintMark(this._hintsFor(block.stat, role)) : nothing}
         </button>`;
       }
+      case "solar":
+        return this._renderSolarBlock(block);
       case "untracked": {
         const restText = this._untrackedText(block.stat!, rest.get(block.stat!), devices);
         return html`<div class="block untracked" style=${style} data-parent=${block.stat!}>
@@ -3791,6 +3933,33 @@ export class EnergyFlowMapperPanel extends LitElement {
       default:
         return this._renderDeviceBlock(block, devices);
     }
+  }
+
+  /** A placed solar below its device: drag it to move it, click for its actions. */
+  private _renderSolarBlock(block: Block): TemplateResult {
+    const solar = block.stat!;
+    const at = block.placedAt!;
+    const value = this._sourceValueText(block);
+    return html`<div
+      class="block solar placed ${this._dragged?.kind === "solar" && this._dragged.stat === solar ? "dragged" : ""}"
+      style="${this._blockStyle(block)};--source-color:${SOURCE_COLORS.production}"
+      draggable="true"
+      data-solar=${solar}
+      data-at=${at}
+      title=${this._t("solar_block_placed_title")}
+      @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "solar", stat: solar })}
+      @dragend=${() => {
+        this._dragged = null;
+        this._dropTarget = null;
+      }}
+      @click=${() => (this._dialog = { kind: "solar_place", solar, stat: at })}
+    >
+      ${icon("sun")}
+      <div class="block-text">
+        <span class="node-name">${this._solarName(solar)}</span>
+        ${value === null ? nothing : html`<span class="sub">${value}</span>`}
+      </div>
+    </div>`;
   }
 
   /**
@@ -3943,6 +4112,25 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${icon("dots")}
       </button>
     </div>`;
+  }
+
+  /** The list's mark of the solars placed at a device: a sun with the solar's name, click for its actions. */
+  private _renderSolarTags(stat: string): TemplateResult | typeof nothing {
+    const solars = this._tab === "electricity" ? (solarPlaces(this.draftSources, this.draft, this._places).get(stat) ?? []) : [];
+    return solars.length
+      ? html`${solars.map(
+          (solar) => html`<button
+            class="solar-tag"
+            title=${this._t("solar_block_placed_title")}
+            @click=${(e: Event) => {
+              e.stopPropagation();
+              this._dialog = { kind: "solar_place", solar, stat };
+            }}
+          >
+            ${icon("sun")} ${this._solarName(solar)}
+          </button>`,
+        )}`
+      : nothing;
   }
 
   /** "1 device", "4 devices": all devices in a group, also in the groups inside it. */
@@ -4232,6 +4420,7 @@ export class EnergyFlowMapperPanel extends LitElement {
               </button>`
             : html`<span class="toggle"></span>`}
           <span class="node-name">${name}</span>
+          ${this._renderSolarTags(node.stat)}
           ${warned || node.problem
             ? html`<span class="badge" title=${this._badgeTitle(node.stat, issues)}>!</span>`
             : nothing}
@@ -4277,6 +4466,9 @@ export class EnergyFlowMapperPanel extends LitElement {
       <span class="free-strip-count"
         >${formatNumber(this.hass, this._freeCandidates().filter((c) => this._holderOf()(c) === null).length)}</span
       >
+      ${this._freeSolarStats().length
+        ? html`<span class="free-strip-solar" title=${this._t("solar_block_strip")}>${icon("sun")}</span>`
+        : nothing}
     </button>`;
   }
 
@@ -4304,6 +4496,7 @@ export class EnergyFlowMapperPanel extends LitElement {
             : nothing}
         </div>
         <p class="hint">${this._t(this._tabKey("free_sensors_hint"))}</p>
+        ${this._renderFreeSolars()}
         <input
           type="search"
           placeholder=${this._t("search")}
@@ -4332,6 +4525,34 @@ export class EnergyFlowMapperPanel extends LitElement {
         ${this._renderPowerSensors()}
       </section>
     `;
+  }
+
+  /** The solar sources placed nowhere yet: a block each, to drag onto the circuit it feeds into. */
+  private _renderFreeSolars(): TemplateResult | typeof nothing {
+    const solars = this._freeSolarStats();
+    if (!solars.length) {
+      return nothing;
+    }
+    return html`<ul class="candidates solar-free">
+      ${solars.map(
+        (solar) => html`<li
+          class="candidate solar-block"
+          draggable="true"
+          data-solar=${solar}
+          @dragstart=${(e: DragEvent) => this._startDrag(e, { kind: "solar", stat: solar, free: true })}
+          @dragend=${() => {
+            this._dragged = null;
+            this._dropTarget = null;
+          }}
+        >
+          ${icon("sun")}
+          <div class="candidate-text">
+            <span class="node-name">${this._t("solar_block_free", { solar: this._solarName(solar) })}</span>
+            <span class="sub">${this._t("solar_block_free_hint")}</span>
+          </div>
+        </li>`,
+      )}
+    </ul>`;
   }
 
   /**
@@ -4570,6 +4791,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         return this._offersSolarSetup(hint.stat)
           ? html`<button class="primary" @click=${() => this._openSolarSetup(hint.stat)}>${this._t("solar_setup")}</button>`
           : nothing;
+      case "solar_elsewhere":
+        return html`<button class="primary" @click=${() => (this._dialog = { kind: "replace", stat: hint.stat })}>
+          ${this._t("replace_with")}
+        </button>`;
       case "daily_in_sum":
         return html`<button class="primary" @click=${() => this._openEntitySettings(hint.stat)}>
           ${this._t("hint_open_helper")}
@@ -5170,6 +5395,10 @@ export class EnergyFlowMapperPanel extends LitElement {
         .localize=${this._localize}
         .context=${context}
         @close=${() => this._close()}
+        @place=${(e: CustomEvent<{ stat: string; solar: string }>) => {
+          this._close();
+          void this._placeSolar(e.detail.solar, e.detail.stat);
+        }}
         @created=${(e: CustomEvent<SolarCreatedDetail>) => void this._onSolarCreated(dialog, e.detail)}
         @failed=${(e: CustomEvent<{ error: unknown }>) => void this._onSolarFailed(e.detail.error)}
         @set-solar-power=${(e: CustomEvent<{ solar: string; state: SolarSetupState }>) =>
@@ -5790,6 +6019,33 @@ export class EnergyFlowMapperPanel extends LitElement {
         return this._renderSum(dialog);
       case "solar":
         return this._renderSolar(dialog);
+      case "solar_place": {
+        const solar = this._solarName(dialog.solar);
+        const device = this._name(dialog.stat, devices);
+        // A meter that counts the solar goes back to the real meter by replacing it.
+        const counts = (this._snapshot?.solar_counted?.[dialog.stat] ?? []).includes(dialog.solar);
+        return html`<h2>${solar}</h2>
+          <p>${this._t("solar_place_text", { solar, device })}</p>
+          <p class="hint">${this._t("solar_place_move")}</p>
+          ${counts ? html`<p class="hint">${this._t("solar_place_replace_hint", { device })}</p>` : nothing}
+          <div class="dialog-actions column-actions">
+            <button
+              class="solar-unplace"
+              @click=${() => {
+                this._close();
+                void this._placeSolar(dialog.solar, null);
+              }}
+            >
+              ${this._t("solar_place_remove")}
+            </button>
+            ${counts
+              ? html`<button @click=${() => (this._dialog = { kind: "replace", stat: dialog.stat })}>
+                  ${this._t("replace_with")}
+                </button>`
+              : nothing}
+            <button class="cancel" @click=${() => this._close()}>${this._t("cancel")}</button>
+          </div>`;
+      }
       case "group_name": {
         const name = this._renameValue.trim();
         const parent = this._selectionParent();
@@ -6618,6 +6874,42 @@ export class EnergyFlowMapperPanel extends LitElement {
     }
     .block.placeholder .node-name {
       color: var(--source-color);
+    }
+    /* A placed solar below its device: the source's colour, dragged to move it. */
+    .block.solar {
+      cursor: grab;
+      border: 1px solid var(--source-color);
+      border-left: 5px solid var(--source-color);
+      background: color-mix(in srgb, var(--source-color) 14%, var(--block-bg));
+    }
+    .block.solar .mdi,
+    .solar-block .mdi,
+    .free-strip-solar .mdi,
+    .solar-tag .mdi {
+      color: var(--energy-solar-color, #ff9800);
+    }
+    .solar-block {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border-left: 4px solid var(--energy-solar-color, #ff9800);
+    }
+    .solar-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 0 6px;
+      border: none;
+      border-radius: 10px;
+      background: color-mix(in srgb, var(--energy-solar-color, #ff9800) 14%, transparent);
+      color: var(--primary-text-color);
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .solar-tag .mdi {
+      width: 14px;
+      height: 14px;
     }
     .block.untracked {
       border: 2px dashed var(--block-border);
