@@ -134,9 +134,11 @@ solar, battery or water meter, and which meters are not used yet.
   part of the sum. The dialog names members without a power sensor, refuses members that
   start again at 0 now and then and a mix of state classes, and sends a sum with a solar
   to *Solar feeds in here…*.
-- **Solar in a circuit** – *Solar feeds in here…* builds the gross meter of a circuit or
-  sub panel with a solar behind its meter, by a method that fits the meter, and watches
-  it afterwards; see [Solar in a circuit or sub panel](#solar-in-a-circuit-or-sub-panel).
+- **Solar in a circuit** – drag the solar block onto the circuit a solar feeds into:
+  *Solar feeds in here…* builds the gross meter of a circuit or sub panel with a solar
+  behind its meter, by a method that fits the meter, and watches it afterwards; the
+  diagram then shows the solar below its circuit. See
+  [Solar in a circuit or sub panel](#solar-in-a-circuit-or-sub-panel).
 - **Draft, check, save** – changes are collected in a draft and checked (loops, missing
   parents, duplicates, a sensor used twice) before anything is written. A device whose
   meter another device's meter already counts, but that is not placed below it, gets a
@@ -250,7 +252,8 @@ the sensors live.
 | Put another meter in a device's place | ⋮ → *Replace with …* → pick the meter |
 | Set the power sensor of a device | ⋮ → *Power sensor …* (water: *Flow sensor …*) |
 | Set the power sensor of a source | Tap the source → *Power sensor …* (water and gas: *Flow sensor …*) |
-| Count a solar that feeds into a circuit | ⋮ on the circuit → *Solar feeds in here…* |
+| Count a solar that feeds into a circuit | Drag the solar block (top of the free sensors) onto the circuit, or ⋮ on the circuit → *Solar feeds in here…* |
+| Move or remove a placed solar | Drag its block onto another circuit; tap it → *Remove placement* |
 | Read or hide a hint | Tap the block with the info mark; *Dismiss* hides it for good (a gross meter's hint for that event only) |
 | Show one group on a dashboard | Card option `root: group:<id>`, or pick the group in the card editor |
 | Find a device in a big diagram | Type in *Find device*; Enter goes to the next match |
@@ -335,6 +338,29 @@ solar produces in it.
 (or the button of a hint), once there is a solar source. It only creates
 ordinary Home Assistant helpers and puts the gross meter in the device's place in your
 draft; you check and save as usual.
+
+### The solar block
+
+Add the solar as a source first, as Home Assistant wants it. Each solar source that is not
+placed yet then has a block at the top of the free sensors (*Roof solar: where does it
+feed in?*). Drag it onto the circuit the solar really feeds into:
+
+- On a meter that counts the solar already (a gross meter you made yourself, or one the
+  setup made), the solar is only **placed** there; nothing is built.
+- On any other circuit, *Solar feeds in here…* opens with that solar. *Set up* builds the
+  gross meter and places the solar at it. If the circuit's meter counts the solar already
+  (for example a meter wired so that it never sees the solar), *My meter already counts
+  the solar* only places it.
+
+A placed solar is a block below its circuit, in the solar colour with its current value,
+in the diagram, the list, the dashboard card and «Save as image». It only shows where the
+solar sits: Home Assistant's energy settings do not change, and the solar stays a source
+at the top. Placing is saved at once, not with the draft. Drag the block onto another
+circuit to move it. A meter that still counts a solar placed elsewhere gets a hint, with
+*Replace with …* to go back to the real meter. Tap the block → *Remove placement* takes
+only the mark away; the gross meter stays. A placed solar counts as held, so the hint
+about returned energy no longer shows for it. Each solar can be placed at one circuit.
+The menu way, ⋮ → *Solar feeds in here…*, works as before and places the solar too.
 
 ### The methods
 

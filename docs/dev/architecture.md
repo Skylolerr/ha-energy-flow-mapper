@@ -62,6 +62,12 @@ All in `.storage/`, each with its own version:
   on load, records still there move once to the records file (which wins where both have
   one), and only then is the helpers file saved without them. 1.1 files have no records.
 - `energy_flow_mapper.groups` (`GROUPS_STORAGE_VERSION` 1)
+- `energy_flow_mapper.solar_places` (`SOLAR_PLACES_STORAGE_VERSION` 1, `solar_places.py`,
+  atomic): `places`, solar statistic → the device meter it feeds into (the solar block).
+  Written at once by `place_solar` and by `create_solar_setup` (its gross meter), not with
+  the draft; one place per solar. Never pruned: the panel and the card ignore a place whose
+  solar is no source or whose meter is no device. Damaged entries are left out on load. Not
+  part of backups, export or import.
 - `energy_flow_mapper.suggestions` (`SUGGESTIONS_STORAGE_VERSION` 1 /
   `SUGGESTIONS_STORAGE_MINOR_VERSION` 3): ignored suggestions and dismissed hints
   (code, kind, stat, optional source role; a safety-net hint also its event, `hour` or
@@ -220,7 +226,7 @@ All are `{DOMAIN}/<command>`, admin only (`@require_admin`) except `card`. Schem
 
 | Command | Takes | Returns |
 |---|---|---|
-| `get` | – | Settings with metadata (see `websocket_get`), `hints`, `dismissed_hints`, `inputs`, `solar_holds` |
+| `get` | – | Settings with metadata (see `websocket_get`), `hints`, `dismissed_hints`, `inputs`, `solar_holds`, `solar_places`, `solar_counted` |
 | `validate`, `save` | `base_hash`, `changes` | Issues; `save` writes (backup first) |
 | `backups`, `restore` | `backup_id`, `base_hash` | |
 | `export`, `import_check`, `import` | `backup_id?`; `base_hash`, `document` | |
@@ -233,6 +239,7 @@ All are `{DOMAIN}/<command>`, admin only (`@require_admin`) except `card`. Schem
 | `create_solar_setup` | the same, `method` required, `names?` ({role: name}), `offset` | `entity_id`, `stat_rate` |
 | `ignore_suggestion`, `clear_suggestions` | `kind`, `stat`, `parent`; `kind?` | `ignored` |
 | `dismiss_hint` | `code`, `kind`, `stat`, `role?`, `hour?`, `day?` | `dismissed` |
+| `place_solar` | `solar`, `stat` (a meter, or null) | `places` |
 
 The preview (`Plan.as_dict`): `method`, `suggested`, `rule`, `methods` (`[{method,
 offered, verified, reason}]`), `drawn`, `returned`, `invert`, `drawn_candidates` and
@@ -256,10 +263,12 @@ dialog use); free meters keep `daily_reset: false`. `dismiss_hint` stores a dism
 card gets no hints.
 
 `returned_energy` (`data`: `entity_id`, `disabled`) needs a solar source that no device
-meter holds (`hints.every_solar_held`): a device's meter holds a solar when what it counts
-(`SolarHolds.counted`, the walk `hold` judges by; for our gross meters what they add)
-reaches the solar's statistic, its power (without one, its paired power) or what they are
-made of (`SolarHolds.sources`). A device whose meter is the solar holds nothing. Then
+meter holds (`hints.every_solar_held`): a device's meter holds a solar when the user placed
+the solar at it (`solar_places`), or when it counts the solar (`hints.counted_solars`):
+what it counts (`SolarHolds.counted`, the walk `hold` judges by; for our gross meters what
+they add) reaches the solar's statistic, its power (without one, its paired power) or what
+they are made of (`SolarHolds.sources`). `get` returns `counted_solars` of its meters as
+`solar_counted`. A device whose meter is the solar holds nothing. Then
 `async_returned` reads, in one query of the hourly statistics of the last `COUNTED_DAYS`
 (3), the `change` of the enabled returned sensors not used in the settings (a hint at
 ≥ `COUNTED_KWH` 0.01 kWh) and the `min` of the own power (`stat_rate`, else
@@ -335,6 +344,21 @@ touches `panel/`.
 | `localize.ts`, `translations/` | Panel texts EN/DE/FR/IT |
 | `types.ts` | Minimal HA frontend types and the WebSocket payloads |
 
+### The solar block
+
+`draft.ts` has the pure rules: `solarPlaces` (the saved places whose solar is a source and
+whose meter is an electricity device of the draft, device → solars), `freeSolars`,
+`solarElsewhere` (a device whose meter still counts a solar placed at another one, from
+`solar_counted`) and `solarDrop` (`place` on a meter that counts the solar, `setup`
+elsewhere, null on no device, the solar's own meter, a meter that is the solar, or its
+place). `layout` takes `solarPlaces` (device → source rows): each is an item `solar` placed
+first below its device, also below one without children and hidden when the device is
+collapsed, with an edge `solar` from the block into the device. The panel shows a free
+block per free solar at the top of the free sensors (a sun in the folded strip), drags
+`{kind: "solar"}`, calls `place_solar` or opens the setup, and adds the hint
+`solar_elsewhere` (not dismissable, button *Replace with …*). The setup's *My meter already
+counts the solar* emits `place`. The card draws the block from `card`'s `solar_places`.
+
 ### The setup dialog
 
 `<efm-solar-setup>` renders into the panel's shadow root (no shadow root of its own, so the
@@ -355,6 +379,8 @@ offers is dropped with a note; a refused draft power (`not_offered` with `power`
 Events (none bubble):
 
 - `close`;
+- `place` (`{stat, solar}`): *My meter already counts the solar*; the panel places the
+  solar and closes the setup;
 - `created` (`SolarCreatedDetail`: `stat`, `entity_id`, `stat_rate`, `old`, `name`): the
   panel loads the settings again and puts the gross meter in the device's place
   (`_replace`, one undo step), also when the dialog was closed meanwhile;

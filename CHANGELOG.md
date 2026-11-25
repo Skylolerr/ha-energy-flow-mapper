@@ -56,6 +56,14 @@ and Home Assistant show when they offer the update.
     through a template, sum, *Combine the state of several sensors*, integral, utility
     meter or derivative helper), the solar's counter may reset, a sensor is disabled, or a
     check could not run.
+- **Solar block:** each solar source that is placed nowhere gets a block at the top of the
+  free sensors. Drag it onto the circuit the solar feeds into: on a meter that counts the
+  solar already it is only placed, on another circuit *Solar feeds in here…* opens with that
+  solar (and can just place it when the meter counts the solar already). A placed solar is
+  a block below its circuit in the diagram, the list, the card and «Save as image»; drag it
+  onto another circuit to move it, or tap it → *Remove placement*. The setup places its
+  solar too, whichever way it was opened. A meter that still counts a solar placed
+  elsewhere gets a hint with *Replace with …*. Placing changes no energy settings.
 - **Safety net for gross meters:** hints at a gross meter of the setup when an hour of the
   last 7 days is clearly off its gross power or falls, when it had no value for more than 1
   hour, and at the solar when the solar's helper counted clearly less or more than the
@@ -128,8 +136,10 @@ and Home Assistant show when they offer the update.
   show again. The safety net, the sum dialog and the reuse of the solar's energy work as
   before. Helpers made on 0.10.x (*Create meter*, *Create sum meter*) have no such record,
   as on 0.11.
+- 0.10.x does not know the solar places (`.storage/energy_flow_mapper.solar_places`) and
+  shows no solar blocks; back on 0.11 they are still there.
 - Removing the integration while on 0.10.x leaves `.storage/energy_flow_mapper.helper_records`
-  behind. It is harmless: 0.11 uses none of its records once the list of created helpers is
+  (and `energy_flow_mapper.solar_places`) behind. It is harmless: 0.11 uses none of its records once the list of created helpers is
   gone.
 - A backup made by this release that changed a source's power sensor shows «source_rate: N»
   (N changed sources) in its summary on 0.10.x.
